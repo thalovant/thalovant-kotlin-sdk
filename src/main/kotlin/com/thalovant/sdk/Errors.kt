@@ -28,3 +28,9 @@ public class ThalovantApiException(
 
 /** The requested data-plane protocol is unavailable or unsupported. */
 public class ThalovantUnsupportedProtocolException(message: String) : ThalovantException(message)
+
+/** The device sign-in request was denied in the browser. */
+public class ThalovantDeviceLoginDeniedException(message: String) : ThalovantException(message)
+
+/** The device sign-in code expired before it was approved. */
+public class ThalovantDeviceLoginExpiredException(message: String) : ThalovantException(message)

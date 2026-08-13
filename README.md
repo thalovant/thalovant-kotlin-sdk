@@ -19,7 +19,7 @@ Full docs: <https://docs.thalovant.com/developers/sdks/kotlin/>
 
 ```kotlin
 dependencies {
-    implementation("com.thalovant:thalovant-sdk:0.1.0")
+    implementation("com.thalovant:thalovant-sdk:0.1.1")
 }
 ```
 
@@ -78,6 +78,45 @@ api.login("you@example.com", "password", otpCode = "123456")
 // Or use a one-time recovery code instead:
 api.login("you@example.com", "password", recoveryCode = "abcd-efgh-ijkl")
 ```
+
+## Sign In With The Browser (Device Flow)
+
+Accounts without a password (for example Google sign-in) authenticate through
+the browser device flow. The SDK prints a short code and a verification URL,
+optionally opens the browser, and polls until you approve the request:
+
+```kotlin
+import com.thalovant.sdk.DeviceLoginOptions
+
+api.loginWithBrowser(
+    DeviceLoginOptions(scopes = listOf("hubs:read"), clientName = "kotlin-demo"),
+)
+```
+
+On approval the returned `access_token` is a durable scoped API token and is
+stored on the client exactly like `login(...)`. The server may normalize and
+expand the echoed scopes.
+
+- `openBrowser` (default `true`) is best-effort: the browser is opened through
+  a reflective `java.awt.Desktop` lookup, which is safely skipped on Android
+  and headless JVMs. Pass `prompt = { grant -> ... }` to present
+  `verification_uri` and `user_code` yourself (for example in an Android UI).
+- The poll honors the server interval and `slow_down` responses.
+- Denial throws `ThalovantDeviceLoginDeniedException`, an expired code throws
+  `ThalovantDeviceLoginExpiredException`, and exceeding `timeoutMillis`
+  (default 900 s) throws `ThalovantTimeoutException`.
+
+## Use A Pre-Made API Token (CI)
+
+Automation that already holds a durable API token (for example one issued by
+the device flow or the dashboard) can skip the login entirely:
+
+```kotlin
+val api = ThalovantControlPlane(accessToken = System.getenv("THALOVANT_API_TOKEN"))
+```
+
+`accessToken` is a mutable property, so a token can also be set (or rotated)
+after construction.
 
 ## List Your Hubs
 
@@ -158,7 +197,7 @@ Hubs may expose one or more public data-plane protocols:
 - `https`: request/response HTTP protocol exposed as HTTPS.
 - `mqtt`: broker-mediated MQTT over TLS. Requires per-client broker credentials.
 
-This release (0.1.0) connects over **WSS only**. Requesting `https` or `mqtt`
+This release (0.1.1) connects over **WSS only**. Requesting `https` or `mqtt`
 throws `ThalovantUnsupportedProtocolException`. Endpoint selection still honors
 the shared preference order `wss, https, mqtt`.
 
@@ -190,13 +229,14 @@ subscription.close()
 
 ## Common Issues
 
-- `Missing Thalovant API access token`: call `api.login(...)` before private
-  control-plane actions, or pass `accessToken` to `ThalovantControlPlane`.
+- `Missing Thalovant API access token`: call `api.login(...)` or
+  `api.loginWithBrowser(...)` before private control-plane actions, or pass
+  `accessToken` to `ThalovantControlPlane`.
 - `API access requires a paid plan`: upgrade the workspace before using the SDK
   control-plane API to provision private resources.
 - `Unsupported protocol`: the hub does not expose WSS, or the identity was
   created before WSS was enabled. `https` and `mqtt` runtimes are not part of
-  0.1.0.
+  0.1.1.
 - A request times out: pass a larger `timeoutMs` to `ask(...)`.
 
 ## API Shape
@@ -204,6 +244,7 @@ subscription.close()
 - `ThalovantControlPlane()`
 - `ThalovantControlPlane(apiUrl, accessToken, userAgent)` for local or self-hosted control planes
 - `controlPlane.login(email, password, scope, otpCode, recoveryCode)`
+- `controlPlane.loginWithBrowser(DeviceLoginOptions(scopes, clientName, openBrowser, prompt, timeoutMillis))`
 - `controlPlane.listPublicHubs(limit, cursor)`
 - `controlPlane.getPublicHub(hubRef)`
 - `controlPlane.listHubs(limit, cursor, ownerId)`

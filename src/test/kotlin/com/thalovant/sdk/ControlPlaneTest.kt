@@ -12,6 +12,7 @@ import kotlin.test.assertTrue
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.boolean
+import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import okhttp3.mockwebserver.MockResponse
@@ -475,10 +476,166 @@ class ControlPlaneTest {
     }
 
     @Test
+    fun `loginWithBrowser polls until the token is issued and stores it`() = runBlocking {
+        enqueueJson(200, DEVICE_GRANT)
+        enqueueJson(400, """{"error":"authorization_pending"}""")
+        enqueueJson(400, """{"error":"authorization_pending"}""")
+        enqueueJson(200, DEVICE_TOKEN)
+        val api = api()
+        val grants = mutableListOf<JsonObject>()
+
+        val token = api.loginWithBrowser(
+            DeviceLoginOptions(
+                scopes = listOf("hubs:read"),
+                clientName = "kotlin-test",
+                openBrowser = false,
+                prompt = { grants.add(it) },
+            ),
+        )
+
+        val authorize = server.takeRequest()
+        assertEquals("/api/v1/auth/device/authorize", authorize.requestUrl?.encodedPath)
+        assertNull(authorize.getHeader("Authorization"))
+        val authorizeBody = bodyJson(authorize)
+        assertEquals(
+            listOf("hubs:read"),
+            authorizeBody["scopes"]?.jsonArray?.map { it.jsonPrimitive.content },
+        )
+        assertEquals("kotlin-test", authorizeBody["client_name"]?.jsonPrimitive?.content)
+
+        repeat(3) {
+            val poll = server.takeRequest()
+            assertEquals("/api/v1/auth/device/token", poll.requestUrl?.encodedPath)
+            assertNull(poll.getHeader("Authorization"))
+            assertEquals("device-code-1", bodyJson(poll)["device_code"]?.jsonPrimitive?.content)
+        }
+
+        assertEquals("device-token", api.accessToken)
+        assertEquals("device-token", token["access_token"]?.jsonPrimitive?.content)
+        assertEquals("token-1", token["token_id"]?.jsonPrimitive?.content)
+        assertEquals(1, grants.size)
+        assertEquals("WDJB-MJHT", grants.single()["user_code"]?.jsonPrimitive?.content)
+    }
+
+    @Test
+    fun `loginWithBrowser default prompt prints the verification instructions`() = runBlocking {
+        enqueueJson(200, DEVICE_GRANT)
+        enqueueJson(200, DEVICE_TOKEN)
+        val captured = java.io.ByteArrayOutputStream()
+        val original = System.out
+        System.setOut(java.io.PrintStream(captured, true))
+        try {
+            api().loginWithBrowser(DeviceLoginOptions(openBrowser = false))
+        } finally {
+            System.setOut(original)
+        }
+
+        val authorizeBody = bodyJson(server.takeRequest())
+        assertTrue(authorizeBody.isEmpty())
+        val output = captured.toString()
+        assertTrue("visit https://dash.thalovant.com/activate" in output)
+        assertTrue("WDJB-MJHT" in output)
+    }
+
+    @Test
+    fun `device token poll grows the interval on slow_down`() = runBlocking {
+        enqueueJson(400, """{"error":"authorization_pending"}""")
+        enqueueJson(400, """{"error":"slow_down"}""")
+        enqueueJson(400, """{"error":"authorization_pending"}""")
+        enqueueJson(200, DEVICE_TOKEN)
+        val sleeps = mutableListOf<Long>()
+
+        val token = api().pollDeviceToken(
+            "device-code-1",
+            intervalMillis = 5_000,
+            timeoutMillis = 900_000,
+            sleep = { sleeps.add(it) },
+            clock = { 0L },
+        )
+
+        assertEquals(listOf(5_000L, 10_000L, 10_000L), sleeps)
+        assertEquals("device-token", token["access_token"]?.jsonPrimitive?.content)
+    }
+
+    @Test
+    fun `loginWithBrowser throws a distinct exception when denied`() = runBlocking {
+        enqueueJson(200, DEVICE_GRANT)
+        enqueueJson(400, """{"error":"access_denied"}""")
+        val api = api()
+
+        assertFailsWith<ThalovantDeviceLoginDeniedException> {
+            api.loginWithBrowser(DeviceLoginOptions(openBrowser = false, prompt = {}))
+        }
+        assertNull(api.accessToken)
+    }
+
+    @Test
+    fun `loginWithBrowser throws a distinct exception when the code expired`() = runBlocking {
+        enqueueJson(200, DEVICE_GRANT)
+        enqueueJson(400, """{"error":"expired_token"}""")
+        val api = api()
+
+        val error = assertFailsWith<ThalovantDeviceLoginExpiredException> {
+            api.loginWithBrowser(DeviceLoginOptions(openBrowser = false, prompt = {}))
+        }
+        assertTrue("again" in error.message.orEmpty())
+        assertNull(api.accessToken)
+    }
+
+    @Test
+    fun `device token poll rethrows unexpected API errors`() = runBlocking {
+        enqueueJson(500, """{"detail":"boom"}""")
+
+        val error = assertFailsWith<ThalovantApiException> {
+            api().pollDeviceToken("device-code-1", intervalMillis = 0, timeoutMillis = 900_000)
+        }
+        assertEquals(500, error.statusCode)
+    }
+
+    @Test
+    fun `device token poll times out`() = runBlocking {
+        repeat(3) { enqueueJson(400, """{"error":"authorization_pending"}""") }
+        var now = 0L
+
+        assertFailsWith<ThalovantTimeoutException> {
+            api().pollDeviceToken(
+                "device-code-1",
+                intervalMillis = 5_000,
+                timeoutMillis = 10_000,
+                sleep = { now += it },
+                clock = { now },
+            )
+        }
+        assertEquals(3, server.requestCount)
+        assertEquals(10_000L, now)
+    }
+
+    @Test
     fun `sends the SDK user agent on every request`() = runBlocking {
         enqueueJson(200, """{"id":"hub-1","name":"hub"}""")
         api(accessToken = "token").getHub("hub-1")
 
-        assertEquals("ThalovantKotlinSDK/0.1.0", server.takeRequest().getHeader("User-Agent"))
+        assertEquals("ThalovantKotlinSDK/0.1.1", server.takeRequest().getHeader("User-Agent"))
     }
 }
+
+private val DEVICE_GRANT = """
+    {
+      "device_code": "device-code-1",
+      "user_code": "WDJB-MJHT",
+      "verification_uri": "https://dash.thalovant.com/activate",
+      "verification_uri_complete": "https://dash.thalovant.com/activate?user_code=WDJB-MJHT",
+      "expires_in": 900,
+      "interval": 0
+    }
+""".trimIndent()
+
+private val DEVICE_TOKEN = """
+    {
+      "access_token": "device-token",
+      "token_type": "bearer",
+      "scopes": ["hubs:read", "clients:write"],
+      "expires_at": "2027-08-13T00:00:00Z",
+      "token_id": "token-1"
+    }
+""".trimIndent()

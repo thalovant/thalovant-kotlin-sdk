@@ -4,6 +4,7 @@ import java.security.SecureRandom
 import java.util.Base64
 import java.util.UUID
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
@@ -132,6 +133,30 @@ public data class AnalyticsOverviewOptions(
     public val hour: Int? = null,
 )
 
+/** Default `POST /v1/auth/device/token` poll interval when the API omits `interval`. */
+public const val DEFAULT_DEVICE_POLL_INTERVAL_MILLIS: Long = 5_000
+
+/** Options for [ThalovantControlPlane.loginWithBrowser]. */
+public data class DeviceLoginOptions(
+    /** Scopes to request for the durable API token; omitted from the request when null. */
+    public val scopes: List<String>? = null,
+    /** Human-readable name shown on the browser approval page; omitted when null. */
+    public val clientName: String? = null,
+    /**
+     * Best-effort open of `verification_uri_complete` in the system browser via a
+     * reflective `java.awt.Desktop` lookup. Safely skipped on Android and headless
+     * JVMs, where the class or the browse action is unavailable; never throws.
+     */
+    public val openBrowser: Boolean = true,
+    /**
+     * Receives the raw device authorization payload to present the code yourself.
+     * When null, the SDK prints `verification_uri` and `user_code` to stdout.
+     */
+    public val prompt: ((JsonObject) -> Unit)? = null,
+    /** How long to keep polling before [ThalovantTimeoutException]; default 900 s. */
+    public val timeoutMillis: Long = 900_000,
+)
+
 public data class CreateClientIdentityOptions(
     public val name: String,
     public val siteId: String? = null,
@@ -202,6 +227,109 @@ public class ThalovantControlPlane(
         }
         this.accessToken = accessToken
         return token
+    }
+
+    /**
+     * Signs in through the browser device flow and stores the API token.
+     *
+     * This is the sign-in path for accounts without a password (for example
+     * Google sign-in). It requests a device authorization via
+     * `POST /v1/auth/device/authorize`, tells the user to visit
+     * `verification_uri` and enter the short `user_code` (pass
+     * [DeviceLoginOptions.prompt] to present the authorization payload
+     * yourself), optionally opens the browser at `verification_uri_complete`,
+     * and polls `POST /v1/auth/device/token` until the request is approved,
+     * denied ([ThalovantDeviceLoginDeniedException]), expired
+     * ([ThalovantDeviceLoginExpiredException]), or
+     * [DeviceLoginOptions.timeoutMillis] elapses
+     * ([ThalovantTimeoutException]). A `slow_down` response grows the poll
+     * interval by 5 seconds.
+     *
+     * On approval the returned `access_token` is a durable scoped API token
+     * and is stored on [accessToken] exactly like [login]. The server may
+     * normalize and expand the echoed `scopes`.
+     */
+    public suspend fun loginWithBrowser(options: DeviceLoginOptions = DeviceLoginOptions()): JsonObject {
+        val body = buildJsonObject {
+            options.scopes?.let { scopes -> put("scopes", JsonArray(scopes.map { JsonPrimitive(it) })) }
+            options.clientName?.takeIf { it.isNotEmpty() }?.let { put("client_name", it) }
+        }
+        val grant = request("POST", "/v1/auth/device/authorize", body = body, auth = false)
+
+        val deviceCode = grant.optionalString("device_code")
+        val userCode = grant.optionalString("user_code")
+        val verificationUri = grant.optionalString("verification_uri")
+        if (deviceCode == null || userCode == null || verificationUri == null) {
+            throw ThalovantApiException("Thalovant API device authorization response was incomplete.")
+        }
+        val intervalSeconds = optionalString(grant["interval"])?.toLongOrNull()
+        val intervalMillis = if (intervalSeconds != null && intervalSeconds >= 0) {
+            intervalSeconds * 1_000
+        } else {
+            DEFAULT_DEVICE_POLL_INTERVAL_MILLIS
+        }
+
+        val prompt = options.prompt
+        if (prompt != null) {
+            prompt(grant)
+        } else {
+            println("To sign in, visit $verificationUri and enter the code $userCode")
+        }
+        if (options.openBrowser) {
+            grant.optionalString("verification_uri_complete")?.let { openBrowserBestEffort(it) }
+        }
+
+        val token = pollDeviceToken(deviceCode, intervalMillis, options.timeoutMillis)
+        val accessToken = (token["access_token"] as? JsonPrimitive)?.takeIf { it.isString }?.content
+        if (accessToken.isNullOrEmpty()) {
+            throw ThalovantApiException("Thalovant API token response did not include access_token.")
+        }
+        this.accessToken = accessToken
+        return token
+    }
+
+    /**
+     * Polls the device token endpoint until approval or a terminal state.
+     * [sleep] and [clock] are injectable so tests can drive the loop without
+     * real waiting; the defaults use coroutine [delay] and a monotonic clock.
+     */
+    internal suspend fun pollDeviceToken(
+        deviceCode: String,
+        intervalMillis: Long,
+        timeoutMillis: Long,
+        sleep: suspend (Long) -> Unit = { delay(it) },
+        clock: () -> Long = { System.nanoTime() / 1_000_000 },
+    ): JsonObject {
+        val deadline = clock() + timeoutMillis
+        var waitMillis = intervalMillis
+        while (true) {
+            try {
+                return request(
+                    "POST",
+                    "/v1/auth/device/token",
+                    body = buildJsonObject { put("device_code", deviceCode) },
+                    auth = false,
+                )
+            } catch (exception: ThalovantApiException) {
+                when (deviceFlowError(exception)) {
+                    "authorization_pending" -> Unit
+                    "slow_down" -> waitMillis += 5_000
+                    "access_denied" -> throw ThalovantDeviceLoginDeniedException(
+                        "The device sign-in request was denied in the browser.",
+                    )
+                    "expired_token" -> throw ThalovantDeviceLoginExpiredException(
+                        "The device sign-in code expired before it was approved. " +
+                            "Call loginWithBrowser() again to request a new code.",
+                    )
+                    else -> throw exception
+                }
+            }
+            val remainingMillis = deadline - clock()
+            if (remainingMillis <= 0) {
+                throw ThalovantTimeoutException("Timed out waiting for the device sign-in to be approved.")
+            }
+            sleep(minOf(waitMillis, remainingMillis))
+        }
     }
 
     public suspend fun listHubs(limit: Int = 100, cursor: String? = null, ownerId: String? = null): JsonObject {
@@ -415,6 +543,49 @@ public class ThalovantControlPlane(
 
     private companion object {
         val defaultHttpClient: OkHttpClient = OkHttpClient()
+    }
+}
+
+/** Extracts the device-flow `error` code from an HTTP 400 body, or null. */
+private fun deviceFlowError(exception: ThalovantApiException): String? {
+    if (exception.statusCode != 400) {
+        return null
+    }
+    val body = exception.body?.takeIf { it.isNotBlank() } ?: return null
+    val parsed = try {
+        ThalovantJson.parseToJsonElement(body).asObjectOrNull()
+    } catch (_: Exception) {
+        null
+    }
+    return parsed?.optionalString("error")
+}
+
+/**
+ * Best-effort browser open through a reflective `java.awt.Desktop` lookup.
+ * `java.awt` does not exist on Android, and headless JVMs report the browse
+ * action as unsupported; both paths simply do nothing. Never throws.
+ */
+private suspend fun openBrowserBestEffort(uri: String) {
+    withContext(Dispatchers.IO) {
+        try {
+            val desktopClass = Class.forName("java.awt.Desktop")
+            val desktopSupported =
+                desktopClass.getMethod("isDesktopSupported").invoke(null) as? Boolean ?: false
+            if (!desktopSupported) {
+                return@withContext
+            }
+            val desktop = desktopClass.getMethod("getDesktop").invoke(null)
+            val actionClass = Class.forName("java.awt.Desktop\$Action")
+            val browseAction = actionClass.enumConstants?.firstOrNull { it.toString() == "BROWSE" }
+                ?: return@withContext
+            val browseSupported =
+                desktopClass.getMethod("isSupported", actionClass).invoke(desktop, browseAction) as? Boolean ?: false
+            if (browseSupported) {
+                desktopClass.getMethod("browse", java.net.URI::class.java).invoke(desktop, java.net.URI(uri))
+            }
+        } catch (_: Throwable) {
+            // Browser availability is best-effort; the prompt already carries the URI and code.
+        }
     }
 }
 
