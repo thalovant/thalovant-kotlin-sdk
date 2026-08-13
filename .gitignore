@@ -1,0 +1,6 @@
+.gradle/
+build/
+.kotlin/
+.idea/
+.env
+_identity.json
