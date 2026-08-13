@@ -1,0 +1,144 @@
+name: Publish Maven Package
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Immutable release tag to check out and attach evidence to
+        required: false
+        type: string
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    name: Build and publish
+    runs-on: ubuntu-latest
+    environment:
+      name: maven-central
+      url: https://central.sonatype.com/artifact/com.thalovant/thalovant-sdk
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    env:
+      RELEASE_TAG: ${{ github.event_name == 'release' && github.event.release.tag_name || inputs.release_tag || '' }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ env.RELEASE_TAG || github.ref }}
+
+      - name: Set up Java
+        uses: actions/setup-java@c5195efecf7bdfc987ee8bae7a71cb8b11521c00 # v4.7.1
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Read project version
+        id: version
+        run: |
+          VERSION="$(./gradlew --no-daemon -q properties | sed -n 's/^version: //p')"
+          test -n "$VERSION"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Verify release tag matches the project version
+        if: env.RELEASE_TAG != ''
+        env:
+          PROJECT_VERSION: ${{ steps.version.outputs.version }}
+        run: test "$RELEASE_TAG" = "v$PROJECT_VERSION"
+
+      - name: Check whether version is already on Maven Central
+        id: registry
+        env:
+          PROJECT_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          if curl -sfIo /dev/null "https://repo1.maven.org/maven2/com/thalovant/thalovant-sdk/$PROJECT_VERSION/thalovant-sdk-$PROJECT_VERSION.pom"; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build and test
+        run: ./gradlew --no-daemon build
+
+      - name: Build release artifacts and CycloneDX SBOM
+        id: artifacts
+        env:
+          PROJECT_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          ./gradlew --no-daemon cyclonedxBom
+          mkdir -p release-artifacts
+          cp "build/libs/thalovant-sdk-$PROJECT_VERSION.jar" release-artifacts/
+          cp build/reports/bom.json "release-artifacts/thalovant-sdk-$PROJECT_VERSION.cdx.json"
+          echo "jar=$GITHUB_WORKSPACE/release-artifacts/thalovant-sdk-$PROJECT_VERSION.jar" >> "$GITHUB_OUTPUT"
+          echo "sbom=$GITHUB_WORKSPACE/release-artifacts/thalovant-sdk-$PROJECT_VERSION.cdx.json" >> "$GITHUB_OUTPUT"
+
+      - name: Attest artifact provenance
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: ${{ steps.artifacts.outputs.jar }}
+
+      - name: Attest artifact SBOM
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: ${{ steps.artifacts.outputs.jar }}
+          sbom-path: ${{ steps.artifacts.outputs.sbom }}
+
+      - name: Publish skipped
+        if: steps.registry.outputs.exists == 'true'
+        run: echo "com.thalovant:thalovant-sdk ${{ steps.version.outputs.version }} is already published on Maven Central."
+
+      - name: Publish to the Sonatype Central Portal
+        if: steps.registry.outputs.exists == 'false'
+        env:
+          ORG_GRADLE_PROJECT_mavenCentralUsername: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
+          ORG_GRADLE_PROJECT_mavenCentralPassword: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}
+          SIGNING_KEY: ${{ secrets.SIGNING_KEY }}
+          SIGNING_PASSWORD: ${{ secrets.SIGNING_PASSWORD }}
+        run: ./gradlew --no-daemon publishAndReleaseToMavenCentral
+
+      - name: Verify Maven Central version
+        env:
+          PROJECT_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          # The Central Portal releases the deployment immediately, but the sync
+          # to repo1.maven.org runs on its own schedule and routinely takes
+          # 10-30 minutes (occasionally longer). Poll with a generous timeout.
+          for attempt in $(seq 1 45); do
+            if curl -sfIo /dev/null "https://repo1.maven.org/maven2/com/thalovant/thalovant-sdk/$PROJECT_VERSION/thalovant-sdk-$PROJECT_VERSION.pom"; then
+              echo "Verified com.thalovant:thalovant-sdk $PROJECT_VERSION on Maven Central."
+              exit 0
+            fi
+            echo "Attempt $attempt/45: version $PROJECT_VERSION not visible on repo1.maven.org yet; waiting 60s."
+            sleep 60
+          done
+          echo "com.thalovant:thalovant-sdk $PROJECT_VERSION was not visible on repo1.maven.org after 45 minutes." >&2
+          echo "This is usually only the Maven Central sync delay, not a failed publish: check the deployment" >&2
+          echo "status at https://central.sonatype.com/publishing/deployments and re-run this step (or poll" >&2
+          echo "https://repo1.maven.org/maven2/com/thalovant/thalovant-sdk/ manually) before assuming failure." >&2
+          exit 1
+
+      - name: Attach jar and SBOM to the GitHub release
+        if: env.RELEASE_TAG != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          JAR: ${{ steps.artifacts.outputs.jar }}
+          SBOM: ${{ steps.artifacts.outputs.sbom }}
+        run: |
+          EXISTING_ASSETS="$(gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name')"
+          for artifact in "$JAR" "$SBOM"; do
+            name="$(basename "$artifact")"
+            if grep -Fxq "$name" <<< "$EXISTING_ASSETS"; then
+              echo "$name is already attached to $RELEASE_TAG; preserving the existing asset."
+            else
+              gh release upload "$RELEASE_TAG" "$artifact"
+            fi
+          done

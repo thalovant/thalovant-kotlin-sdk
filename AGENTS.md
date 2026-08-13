@@ -14,4 +14,6 @@ Rules:
 
 Validate with `./gradlew build` (compiles, runs the mock-server unit tests, and assembles the jar). A published release also requires a clean-project dependency resolution and an import smoke test on JVM 17.
 
+Releases are automated: `auto-release.yml` tags and creates the GitHub release for an untagged version on `main`, and `publish.yml` publishes the signed bundle to Maven Central via the Sonatype Central Portal. See `RELEASING.md` for required secrets, the namespace prerequisite, and rollback rules.
+
 Rollback by publishing a corrected patch release; published Maven artifacts are immutable and must not be deleted once consumers may depend on them.
