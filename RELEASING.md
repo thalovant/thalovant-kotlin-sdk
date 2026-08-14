@@ -2,9 +2,9 @@
 
 The SDK is published to Maven Central as `com.thalovant:thalovant-sdk` through
 the Sonatype Central Portal (central.sonatype.com). The Gradle `version`,
-`SDK_VERSION`, `DEFAULT_USER_AGENT` (`ThalovantKotlinSDK/<version>`),
-`CHANGELOG.md`, and the `README.md` install snippet must move together in a
-release.
+`SDK_VERSION`, `CHANGELOG.md`, and the `README.md` install snippet must move
+together in a release. `DEFAULT_USER_AGENT` is derived from `SDK_VERSION`
+(`ThalovantKotlinSDK/$SDK_VERSION`), so it is never bumped by hand.
 
 ## Prerequisites (one-time)
 
@@ -26,9 +26,10 @@ release.
 
 ## Publish
 
-1. Update `build.gradle.kts` `version`, `SDK_VERSION` and `DEFAULT_USER_AGENT`
-   in `src/main/kotlin/com/thalovant/sdk/Constants.kt`, `CHANGELOG.md`, the
+1. Update `build.gradle.kts` `version`, `SDK_VERSION` in
+   `src/main/kotlin/com/thalovant/sdk/Constants.kt`, `CHANGELOG.md`, the
    `README.md` install snippet, and any affected docs to the same version.
+   `DEFAULT_USER_AGENT` follows `SDK_VERSION` automatically.
 2. Run `./gradlew build` and `./gradlew publishToMavenLocal`, and inspect the
    staged POM and jars under `~/.m2/repository/com/thalovant/thalovant-sdk/`.
 3. Merge to `main`. The **Auto Release** workflow detects that the version has

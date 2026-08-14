@@ -19,7 +19,7 @@ Full docs: <https://docs.thalovant.com/developers/sdks/kotlin/>
 
 ```kotlin
 dependencies {
-    implementation("com.thalovant:thalovant-sdk:0.1.1")
+    implementation("com.thalovant:thalovant-sdk:0.1.2")
 }
 ```
 
@@ -197,7 +197,7 @@ Hubs may expose one or more public data-plane protocols:
 - `https`: request/response HTTP protocol exposed as HTTPS.
 - `mqtt`: broker-mediated MQTT over TLS. Requires per-client broker credentials.
 
-This release (0.1.1) connects over **WSS only**. Requesting `https` or `mqtt`
+This release (0.1.2) connects over **WSS only**. Requesting `https` or `mqtt`
 throws `ThalovantUnsupportedProtocolException`. Endpoint selection still honors
 the shared preference order `wss, https, mqtt`.
 
@@ -236,8 +236,23 @@ subscription.close()
   control-plane API to provision private resources.
 - `Unsupported protocol`: the hub does not expose WSS, or the identity was
   created before WSS was enabled. `https` and `mqtt` runtimes are not part of
-  0.1.1.
+  0.1.2.
 - A request times out: pass a larger `timeoutMs` to `ask(...)`.
+- `HTTP 429` with `"code": "token_rate_limited"`: the API token exceeded its
+  plan's per-minute request rate (60 requests per minute on the free plan).
+  The response carries a `Retry-After` header and a matching
+  `retry_after_seconds`; wait that long and resend.
+- `HTTP 429` with `"code": "token_quota_exceeded"`: the API token exhausted
+  its plan's daily or monthly call quota. The body names which in `quota`
+  (`daily` or `monthly`) alongside `limit` and `used`, and `Retry-After`
+  points at the next UTC day or month boundary.
+
+Both 429s apply to token-authenticated control-plane calls and surface as
+`ThalovantApiException`, whose `statusCode` is 429 and whose `body` holds the
+JSON above (the codes and fields live under `detail`). The SDK does not retry
+automatically: `Retry-After` is authoritative, so honor it before resending.
+Per-plan limits are listed in the dashboard and at
+<https://docs.thalovant.com/developers/sdks/kotlin/>.
 
 ## API Shape
 

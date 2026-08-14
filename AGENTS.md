@@ -5,7 +5,7 @@ This repository owns the published Kotlin (JVM and Android) client and agent SDK
 Rules:
 
 - Preserve compatibility with the documented JVM 17 bytecode target and the Thalovant API support window.
-- Update types, implementation, examples, tests, changelog, version, and public documentation together for observable contract changes. The Gradle `version`, `SDK_VERSION`, `DEFAULT_USER_AGENT` (`ThalovantKotlinSDK/<version>`), `CHANGELOG.md`, and `README.md` install snippet must move together in a release.
+- Update types, implementation, examples, tests, changelog, version, and public documentation together for observable contract changes. The Gradle `version`, `SDK_VERSION`, `CHANGELOG.md`, and `README.md` install snippet must move together in a release. `DEFAULT_USER_AGENT` is derived from `SDK_VERSION` and must stay derived — never reintroduce a second version literal.
 - Consume additive server behavior only after compatible server support exists.
 - Never publish credentials, Maven tokens, identity files, or generated secrets.
 - Do not create a release for internal platform changes with no Kotlin SDK impact; record `no SDK impact` in the coordinated change instead.
