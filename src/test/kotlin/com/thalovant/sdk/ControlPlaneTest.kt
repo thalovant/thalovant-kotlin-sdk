@@ -615,7 +615,15 @@ class ControlPlaneTest {
         enqueueJson(200, """{"id":"hub-1","name":"hub"}""")
         api(accessToken = "token").getHub("hub-1")
 
-        assertEquals("ThalovantKotlinSDK/0.1.1", server.takeRequest().getHeader("User-Agent"))
+        // Asserted against SDK_VERSION rather than a hardcoded literal: a
+        // hardcoded expectation only fails when the user agent is bumped and
+        // the test is not, so it cannot catch a release that bumps neither.
+        assertEquals("ThalovantKotlinSDK/$SDK_VERSION", server.takeRequest().getHeader("User-Agent"))
+    }
+
+    @Test
+    fun `default user agent is derived from the SDK version`() {
+        assertEquals("ThalovantKotlinSDK/$SDK_VERSION", DEFAULT_USER_AGENT)
     }
 }
 

@@ -123,16 +123,14 @@ jobs:
           if tag_exists(f"v{version}"):
               next_version = bump_patch(version)
               replace_required("build.gradle.kts", f'version = "{version}"', f'version = "{next_version}"')
+              # DEFAULT_USER_AGENT is "ThalovantKotlinSDK/$SDK_VERSION" and the
+              # test asserts against SDK_VERSION, so this constant is the only
+              # user-agent literal a release has to move.
               replace_required(
                   "src/main/kotlin/com/thalovant/sdk/Constants.kt",
                   f'SDK_VERSION: String = "{version}"',
                   f'SDK_VERSION: String = "{next_version}"',
               )
-              for path in [
-                  "src/main/kotlin/com/thalovant/sdk/Constants.kt",
-                  "src/test/kotlin/com/thalovant/sdk/ControlPlaneTest.kt",
-              ]:
-                  replace_required(path, f"ThalovantKotlinSDK/{version}", f"ThalovantKotlinSDK/{next_version}")
               replace_required("README.md", f"thalovant-sdk:{version}", f"thalovant-sdk:{next_version}")
               prepend_changelog_entry(next_version, f"v{version}")
               git("config", "user.name", "github-actions[bot]")
@@ -141,7 +139,6 @@ jobs:
                   "add",
                   "build.gradle.kts",
                   "src/main/kotlin/com/thalovant/sdk/Constants.kt",
-                  "src/test/kotlin/com/thalovant/sdk/ControlPlaneTest.kt",
                   "README.md",
                   "CHANGELOG.md",
               )
