@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.4
+
+- Automated patch release of the unreleased changes on `main` since v0.1.3.
+
 ## Unreleased
 
 - **BREAKING (security):** Removed the admin analytics endpoint from `getAnalyticsOverview`. `AnalyticsOverviewOptions` no longer has an `admin` flag or an `ownerId` field, and the SDK only ever calls `GET /v1/analytics/overview` (never `GET /v1/admin/analytics/overview`). This SDK ships to non-admin customers, for whom the admin route only ever returned HTTP 403; callers that passed `admin = true` or `ownerId` must drop those arguments.
