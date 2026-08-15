@@ -476,6 +476,131 @@ class ControlPlaneTest {
     }
 
     @Test
+    fun `asJson gates hub and client bootstrap secrets behind includeSecrets`() = runBlocking {
+        enqueueJson(
+            200,
+            """
+            {
+              "id": "hub-mqtt",
+              "name": "mqtt-hub",
+              "domain": "mqtt.thalovant.io",
+              "data_plane_endpoints": {
+                "https": "https://mqtt.thalovant.io",
+                "wss": "wss://mqtt.thalovant.io",
+                "mqtt": "mqtts://hub-user:hub-broker-secret@broker.thalovant.io:8883"
+              },
+              "spec": {
+                "protocols": {
+                  "wss": {"enabled": true},
+                  "http": {"enabled": true},
+                  "mqtt": {"enabled": true}
+                }
+              }
+            }
+            """.trimIndent(),
+        )
+        enqueueJson(
+            201,
+            """
+            {
+              "id": "client-mqtt",
+              "name": "kiosk",
+              "hub_id": "hub-mqtt",
+              "spec": {
+                "version": "1",
+                "siteId": "kiosk",
+                "apiKey": "spec-api-key",
+                "password": "spec-password",
+                "cryptoKey": "spec-crypto-key",
+                "apiKeyRef": {"name": "secret", "key": "apiKey"}
+              },
+              "initial_identify": {
+                "access_key": "server-access",
+                "password": "server-password",
+                "crypto_key": "server-crypto",
+                "site_id": "server-site",
+                "default_port": 443,
+                "default_master": "wss://mqtt.thalovant.io",
+                "mqtt": {
+                  "endpoint": "mqtts://broker.thalovant.io:8883",
+                  "username": "server-access",
+                  "password": "broker-password",
+                  "topic_prefix": "hivemind/hub-mqtt/server-access",
+                  "tls": true
+                }
+              },
+              "initial_identify_token": "identify-token-secret"
+            }
+            """.trimIndent(),
+        )
+
+        val result = api(accessToken = "token")
+            .createClientIdentity("hub-mqtt", CreateClientIdentityOptions(name = "kiosk"))
+
+        val redacted = result.asJson()
+        val client = redacted["client"]?.jsonObject
+        assertNotNull(client)
+        assertFalse("initial_identify" in client)
+        assertFalse("initial_identify_token" in client)
+        val spec = client["spec"]?.jsonObject
+        assertNotNull(spec)
+        assertFalse("apiKey" in spec)
+        assertFalse("password" in spec)
+        assertFalse("cryptoKey" in spec)
+        // Non-secret fields survive, including reference shapes that merely name secrets.
+        assertEquals("client-mqtt", client["id"]?.jsonPrimitive?.content)
+        assertEquals("1", spec["version"]?.jsonPrimitive?.content)
+        assertEquals("kiosk", spec["siteId"]?.jsonPrimitive?.content)
+        assertEquals("secret", spec["apiKeyRef"]?.jsonObject?.get("name")?.jsonPrimitive?.content)
+
+        val hub = redacted["hub"]?.jsonObject
+        assertNotNull(hub)
+        assertEquals("hub-mqtt", hub["id"]?.jsonPrimitive?.content)
+        // Endpoint URLs stay, but their userinfo credentials are stripped like the identity view.
+        assertEquals(
+            "mqtts://broker.thalovant.io:8883",
+            hub["data_plane_endpoints"]?.jsonObject?.get("mqtt")?.jsonPrimitive?.content,
+        )
+
+        // No secret literal may appear anywhere in the redacted serialization.
+        val serialized = redacted.toString()
+        for (secret in listOf(
+            "server-access", "server-password", "server-crypto", "broker-password",
+            "identify-token-secret", "spec-api-key", "spec-password", "spec-crypto-key",
+            "hub-user", "hub-broker-secret",
+        )) {
+            assertFalse(secret in serialized, "redacted asJson() leaked $secret")
+        }
+
+        // includeSecrets = true returns the raw API resources byte-for-byte.
+        val full = result.asJson(includeSecrets = true)
+        assertEquals(result.hub, full["hub"])
+        assertEquals(result.client, full["client"])
+        assertEquals(
+            "server-password",
+            full["client"]?.jsonObject?.get("initial_identify")?.jsonObject?.get("password")?.jsonPrimitive?.content,
+        )
+        assertEquals(
+            "identify-token-secret",
+            full["client"]?.jsonObject?.get("initial_identify_token")?.jsonPrimitive?.content,
+        )
+        assertEquals(
+            "mqtts://hub-user:hub-broker-secret@broker.thalovant.io:8883",
+            full["hub"]?.jsonObject?.get("data_plane_endpoints")?.jsonObject?.get("mqtt")?.jsonPrimitive?.content,
+        )
+
+        // Secret-holding types stay plain classes: the default toString() must
+        // not leak secrets the way a generated data-class toString() would.
+        val mqtt = result.identity.mqtt
+        assertNotNull(mqtt)
+        for (repr in listOf(result.toString(), result.identity.toString(), mqtt.toString())) {
+            assertFalse("server-password" in repr)
+            assertFalse("broker-password" in repr)
+            assertFalse("server-crypto" in repr)
+        }
+    }
+
+    @Test
     fun `loginWithBrowser polls until the token is issued and stores it`() = runBlocking {
         enqueueJson(200, DEVICE_GRANT)
         enqueueJson(400, """{"error":"authorization_pending"}""")

@@ -9,6 +9,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
@@ -261,7 +262,12 @@ public data class CreateClientIdentityOptions(
     public val idempotencyKey: String? = null,
 )
 
-/** Result of [ThalovantControlPlane.createClientIdentity]. Keep [identity] secret. */
+/**
+ * Result of [ThalovantControlPlane.createClientIdentity]. Keep [identity]
+ * secret; the raw [hub] and [client] API resources carry the same bootstrap
+ * credentials (`initial_identify`, `initial_identify_token`, and the secret
+ * `spec` fields), so treat them the same way.
+ */
 public class BootstrapIdentityResult internal constructor(
     public val identity: ThalovantIdentity,
     public val hub: JsonObject,
@@ -270,13 +276,21 @@ public class BootstrapIdentityResult internal constructor(
 ) {
     public val selectedProtocol: HubProtocol? get() = endpoint?.protocol
 
+    /**
+     * Serializes the result. Without [includeSecrets] the hub/client secret
+     * subkeys are gated the same way [ThalovantIdentity.asJson] gates the
+     * identity secrets: `initial_identify`, `initial_identify_token`, the
+     * secret `spec` fields (`apiKey`/`password`/`cryptoKey`), and URL
+     * userinfo credentials are all omitted. Pass `includeSecrets = true` to
+     * get the raw API resources back unchanged.
+     */
     public fun asJson(includeSecrets: Boolean = false): JsonObject = buildJsonObject {
         put("identity", identity.asJson(includeSecrets))
-        put("hub", hub)
-        put("client", client)
+        put("hub", if (includeSecrets) hub else redactBootstrapSecrets(hub))
+        put("client", if (includeSecrets) client else redactBootstrapSecrets(client))
         endpoint?.let {
             put("selected_protocol", it.protocol.wireName)
-            put("selected_endpoint", it.endpoint)
+            put("selected_endpoint", if (includeSecrets) it.endpoint else redactEndpointCredentials(it.endpoint))
         }
     }
 }
@@ -1096,6 +1110,43 @@ private fun installSkillBody(skillId: String, options: InstallSkillOptions): Jso
     options.marketplaceSkillId?.let { put("marketplace_skill_id", it) }
     options.sourceRef?.let { put("source_ref", it) }
     options.versionPin?.let { put("version_pin", it) }
+}
+
+/**
+ * Keys that carry credential material in the raw hub/client resources returned
+ * by [ThalovantControlPlane.createClientIdentity]: the `POST /v1/clients`
+ * bootstrap payloads (`initial_identify`, `initial_identify_token`) plus the
+ * identity secrets echoed inside `spec` (camelCase) and `initial_identify`
+ * (snake_case). Matched by exact key name, so reference shapes such as
+ * `apiKeyRef` are untouched.
+ */
+private val BOOTSTRAP_SECRET_KEYS = setOf(
+    "initial_identify",
+    "initial_identify_token",
+    "access_key",
+    "api_key",
+    "apiKey",
+    "password",
+    "crypto_key",
+    "cryptoKey",
+)
+
+/**
+ * Recursively removes [BOOTSTRAP_SECRET_KEYS] and strips URL userinfo
+ * credentials from string values, mirroring the `includeSecrets = false`
+ * behavior of [ThalovantIdentity.asJson] for raw API resources. Used only for
+ * the redacted [BootstrapIdentityResult.asJson] view — never for request
+ * bodies or identity persistence.
+ */
+private fun redactBootstrapSecrets(value: JsonObject): JsonObject = JsonObject(
+    value.filterKeys { it !in BOOTSTRAP_SECRET_KEYS }
+        .mapValues { (_, child) -> redactBootstrapElement(child) },
+)
+
+private fun redactBootstrapElement(value: JsonElement): JsonElement = when (value) {
+    is JsonObject -> redactBootstrapSecrets(value)
+    is JsonArray -> JsonArray(value.map { redactBootstrapElement(it) })
+    is JsonPrimitive -> if (value.isString) JsonPrimitive(redactEndpointCredentials(value.content)) else value
 }
 
 private val secretRandom = SecureRandom()
