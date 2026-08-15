@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- **BREAKING (security):** Removed the admin analytics endpoint from `getAnalyticsOverview`. `AnalyticsOverviewOptions` no longer has an `admin` flag or an `ownerId` field, and the SDK only ever calls `GET /v1/analytics/overview` (never `GET /v1/admin/analytics/overview`). This SDK ships to non-admin customers, for whom the admin route only ever returned HTTP 403; callers that passed `admin = true` or `ownerId` must drop those arguments.
+- **Security:** `BootstrapIdentityResult.asJson()` (the default, `includeSecrets = false`) now redacts the bootstrap secrets the raw `hub` and `client` resources carry — `initial_identify`, the one-shot `initial_identify_token`, the secret `spec` fields (`apiKey` / `password` / `cryptoKey`), and URL userinfo credentials — the same way it already redacted the identity. Previously the redacted view returned `hub` and `client` verbatim and leaked those `POST /v1/clients` credentials. `asJson(includeSecrets = true)` still returns the raw resources unchanged, and no wire-protocol or identity-persistence serialization is affected.
+- **Security:** `ThalovantApiException` messages no longer interpolate the raw HTTP response body. The message now carries the status plus a short, single-line, bounded slice of the server detail, so an error body that echoes sent credentials (for example from `POST /v1/clients`, `POST /v1/auth/token`, or `POST /v1/auth/device/token`) is no longer dumped wholesale into logs and stack traces. The full body remains available on `ThalovantApiException.body` for programmatic use, so device-flow error parsing is unaffected.
+- **Security:** Documented and test-pinned the secret-bearing types (`ThalovantIdentity`, `MqttBrokerCredentials`, `BootstrapIdentityResult`, `ThalovantControlPlane`) as intentionally plain classes (not `data class`), so their `toString()` cannot leak secrets into logs; a test fails if any is later converted to a `data class`.
+- Corrected README guidance that implied the default `asJson()` view was safe while only `asJson(includeSecrets = true)` was sensitive: the raw `hub` / `client` fields carry secrets, and the default `asJson()` now redacts them.
+
 ## 0.1.3
 
 - Hub provisioning on `ThalovantControlPlane`: `createHub`, `updateHub`, `deleteHub`, `releaseHub`, `setHubRating`, `clearHubRating`, and `getHubRuntimeCapabilities`, with `HubCreatePayload` / `HubUpdatePayload` / `ReleaseOptions` mapping camelCase Kotlin fields to the API's snake_case body and omitting unset options so the server applies its own defaults.

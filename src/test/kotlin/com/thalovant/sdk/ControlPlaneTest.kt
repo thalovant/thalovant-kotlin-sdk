@@ -105,6 +105,29 @@ class ControlPlaneTest {
     }
 
     @Test
+    fun `api error message strips newlines and bounds the server detail`() = runBlocking {
+        val secret = "SUPER-SECRET-ECHOED-CREDENTIAL"
+        // A multi-line body whose secret sits well past the bounded slice, as a
+        // server might echo a rejected POST /v1/clients body back to the caller.
+        val body = "{\n  \"detail\": \"" + "x".repeat(400) + secret + "\"\n}"
+        enqueueJson(400, body)
+
+        val error = assertFailsWith<ThalovantApiException> {
+            api().login("ada@example.com", "secret")
+        }
+
+        // The full body stays available for programmatic use (device-flow parsing, etc.).
+        assertEquals(body, error.body)
+        val message = error.message.orEmpty()
+        assertTrue("HTTP 400" in message)
+        // The human-facing message is single-line and bounded, so a raw echoed
+        // secret past the bound never reaches logs or stack traces.
+        assertFalse('\n' in message)
+        assertFalse(secret in message)
+        assertTrue(message.length < body.length)
+    }
+
+    @Test
     fun `lists public hubs without auth`() = runBlocking {
         enqueueJson(
             200,
@@ -269,15 +292,13 @@ class ControlPlaneTest {
     }
 
     @Test
-    fun `fetches admin analytics overview with all filters`() = runBlocking {
-        enqueueJson(200, """{"meta":{"scope":"admin"},"totals":{"utterances":7}}""")
+    fun `fetches the workspace analytics overview with all filters and never the admin endpoint`() = runBlocking {
+        enqueueJson(200, """{"meta":{"scope":"workspace"},"totals":{"utterances":7}}""")
 
         val overview = api(accessToken = "token").getAnalyticsOverview(
             AnalyticsOverviewOptions(
-                admin = true,
                 range = "30d",
                 bucket = "1d",
-                ownerId = "owner-1",
                 hubId = "hub-1",
                 clientId = "client-1",
                 country = "CA",
@@ -292,10 +313,12 @@ class ControlPlaneTest {
         )
 
         val request = server.takeRequest()
-        assertEquals("/api/v1/admin/analytics/overview", request.requestUrl?.encodedPath)
+        // The admin endpoint and its owner scoping were removed: this SDK only
+        // ever calls the workspace route and never sends owner_id.
+        assertEquals("/api/v1/analytics/overview", request.requestUrl?.encodedPath)
+        assertNull(request.requestUrl?.queryParameter("owner_id"))
         assertEquals("30d", request.requestUrl?.queryParameter("range"))
         assertEquals("1d", request.requestUrl?.queryParameter("bucket"))
-        assertEquals("owner-1", request.requestUrl?.queryParameter("owner_id"))
         assertEquals("hub-1", request.requestUrl?.queryParameter("hub_id"))
         assertEquals("client-1", request.requestUrl?.queryParameter("client_id"))
         assertEquals("CA", request.requestUrl?.queryParameter("country"))
@@ -307,20 +330,6 @@ class ControlPlaneTest {
         assertEquals("6", request.requestUrl?.queryParameter("weekday"))
         assertEquals("0", request.requestUrl?.queryParameter("hour"))
         assertEquals("7", overview["totals"]?.jsonObject?.get("utterances")?.jsonPrimitive?.content)
-    }
-
-    @Test
-    fun `analytics overview omits owner_id without admin`() = runBlocking {
-        enqueueJson(200, """{"totals":{"utterances":0}}""")
-
-        api(accessToken = "token").getAnalyticsOverview(
-            AnalyticsOverviewOptions(range = "7d", ownerId = "owner-1"),
-        )
-
-        val request = server.takeRequest()
-        assertEquals("/api/v1/analytics/overview", request.requestUrl?.encodedPath)
-        assertEquals("7d", request.requestUrl?.queryParameter("range"))
-        assertNull(request.requestUrl?.queryParameter("owner_id"))
     }
 
     @Test

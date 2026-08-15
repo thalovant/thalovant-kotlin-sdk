@@ -63,8 +63,14 @@ fun main() = runBlocking {
 `ThalovantControlPlane()` uses `https://api.thalovant.com` by default. Pass a
 different URL only for local development or a self-hosted control plane.
 
-Keep `result.identity` secret. It contains the client credentials used by the
-hub. Do not log `result.asJson(includeSecrets = true)`.
+Keep `result.identity` secret, and treat the raw `result.hub` and
+`result.client` API resources the same way: they carry the bootstrap
+credentials (`initial_identify`, the one-shot `initial_identify_token`, and the
+secret `spec` fields). The default `result.asJson()` redacts all of these — the
+identity secrets, the hub/client secret subkeys, and any URL userinfo
+credentials — so it is safe to log. `result.asJson(includeSecrets = true)`
+returns the real secrets unchanged, so never log or persist it in a
+world-readable place.
 
 ## Log In With MFA
 
