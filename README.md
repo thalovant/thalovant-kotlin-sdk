@@ -19,7 +19,7 @@ Full docs: <https://docs.thalovant.com/developers/sdks/kotlin/>
 
 ```kotlin
 dependencies {
-    implementation("com.thalovant:thalovant-sdk:0.1.2")
+    implementation("com.thalovant:thalovant-sdk:0.1.3")
 }
 ```
 
@@ -127,6 +127,148 @@ val page = api.listHubs(limit = 50)
 println(page["data"])
 ```
 
+## Provision Hubs
+
+Hubs, runtime groups, and skills can be created and managed from code. These
+routes need a **paid plan** and a token with the **`hubs:write`** scope
+("Create and update your hubs" on the dashboard's API Tokens page). A free-plan
+token fails with HTTP 402 `API access requires a paid plan.`, and a token
+without the scope fails with HTTP 403 `Insufficient scopes`; both arrive as
+`ThalovantApiException` with the status code on `statusCode`.
+
+```kotlin
+import com.thalovant.sdk.HubCreatePayload
+import com.thalovant.sdk.ReleaseOptions
+import com.thalovant.sdk.RuntimeGroupCreatePayload
+import com.thalovant.sdk.ThalovantControlPlane
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.put
+
+val api = ThalovantControlPlane(accessToken = System.getenv("THALOVANT_API_TOKEN"))
+
+// 1. Discover what is installable before provisioning anything.
+//    The catalog needs only `hubs:read` and is not paid-gated.
+for (skill in api.listMarketplaceSkills()["data"]!!.jsonArray) {
+    val entry = skill.jsonObject
+    println("${entry["skill_id"]?.jsonPrimitive?.content} ${entry["access_tier"]?.jsonPrimitive?.content}")
+}
+
+// 2. Create a runtime group to run the skills.
+val group = api.createRuntimeGroup(
+    RuntimeGroupCreatePayload(name = "kiosks", description = "Lobby kiosks"),
+)
+val groupId = group["id"]!!.jsonPrimitive.content
+
+// 3. Create a hub attached to it.
+val hub = api.createHub(
+    HubCreatePayload(
+        name = "joke-garden",
+        spec = buildJsonObject {
+            put("protocols", buildJsonObject { put("wss", buildJsonObject { put("enabled", true) }) })
+        },
+        runtimeGroupId = groupId,
+    ),
+)
+val hubId = hub["id"]!!.jsonPrimitive.content
+
+// 4. Install a skill from the marketplace catalog.
+api.installRuntimeGroupSkill(groupId, "skill-weather")
+
+// 5. Release: roll the runtime and the hub onto a release channel.
+api.releaseRuntimeGroup(groupId, ReleaseOptions(channel = "stable"))
+api.releaseHub(hubId, ReleaseOptions(channel = "stable"))
+```
+
+Creating a hub is idempotent. `createHub` sends a generated `Idempotency-Key`
+header, so a call retried after a timeout returns the hub that was already
+created instead of making a second one. Pass your own `idempotencyKey` to
+control the key.
+
+Updating and deleting a hub use optimistic locking, so `etag` is a **required**
+parameter rather than an optional one — the API rejects a missing `If-Match`
+exactly as it rejects a stale one, with HTTP 412 and no change made:
+
+```kotlin
+import com.thalovant.sdk.HubUpdatePayload
+
+val current = api.getHub(hubId)
+val etag = current["etag"]!!.jsonPrimitive.content
+api.updateHub(hubId, HubUpdatePayload(active = false), etag = etag)
+api.deleteHub(hubId, etag = api.getHub(hubId)["etag"]!!.jsonPrimitive.content)
+```
+
+Build the patch from the fields you mean to change rather than round-tripping a
+whole hub resource: `name`, `namespace`, and `domain` are immutable after
+creation, and sending a *changed* value for any of them fails with HTTP 400.
+Deleting a hub also deletes its clients and ACLs. Runtime groups have no
+`If-Match` requirement — no runtime-group route reads one — but the API refuses
+to delete the workspace default group or a group that still has hubs attached
+(HTTP 409).
+
+Runtime configuration is merged, not replaced, and `personas` is replaced only
+when you pass it:
+
+```kotlin
+api.updateRuntimeGroupConfig(groupId, buildJsonObject { put("lang", "en-us") })
+println(api.getRuntimeGroupConfig(groupId)["config"])
+```
+
+Rating a public hub needs the `hubs:write` scope but **no paid plan**:
+
+```kotlin
+api.setHubRating(hubId, 5)
+api.clearHubRating(hubId)
+```
+
+## Discover Skills
+
+The marketplace catalog is readable with the **`hubs:read`** scope and, unlike
+the provisioning routes above, is **not paid-gated** — a free-plan token can
+browse the whole catalog before upgrading, and only the install needs a paid
+plan. Each entry carries what an install needs (`skill_id`, `source_type`,
+`source_ref`, `config_schema`, `secret_schema`) next to presentation fields
+(`title`, `summary`, `tags`, `verified`). Admin tokens can additionally pass
+`ownerId` to read another tenant's catalog and `includeInactive = true` to see
+retired entries; both are silently ignored for non-admin callers rather than
+rejected. `forceRefresh = true` re-syncs the global catalog from source first,
+which is slower.
+
+Two group-scoped reads need the **`hubs:inspect`** scope and are likewise not
+paid-gated. The first resolves the catalog against one runtime group, so each
+entry reports whether it is already desired, whether it was observed running,
+and whether the tenant plan allows installing it. The second answers what the
+group is actually running right now:
+
+```kotlin
+val view = api.listRuntimeGroupMarketplace(groupId)
+val inventory = api.listRuntimeGroupInventory(groupId, refresh = true)
+println("${inventory["source"]} ${inventory["data"]?.jsonArray?.size}")
+```
+
+Both answer from a cached snapshot by default; pass `refreshInventory = true`
+or `refresh = true` to force a live read from the runtime operator. Neither
+fails when nothing is reporting yet — they return an empty `data` list and say
+so through the envelope's `source` (`ovos-runtime-operator`,
+`runtime-group-cache`, `runtime-group-cache-empty`, or
+`ovos-runtime-operator-pending`).
+
+Reading what one *hub* is running needs `hubs:inspect` too, and is the one
+discovery read that can fail instead of answering empty:
+
+```kotlin
+val capabilities = api.getHubRuntimeCapabilities(hubId)
+println(capabilities["counts"]?.jsonObject?.get("total_intents"))
+```
+
+With no connected client the API first falls back to the hub's runtime-group
+snapshot and answers HTTP 200 with a `source` saying the inventory is not live;
+only when there is no snapshot either does it answer HTTP 409. Branch on
+`source` rather than assuming a disconnected hub means 409. The route is also
+rate-limited and may answer HTTP 429 with a `Retry-After` header.
+
 ## Workspace Analytics
 
 Authenticated accounts can read the same overview used by the dashboard:
@@ -197,7 +339,7 @@ Hubs may expose one or more public data-plane protocols:
 - `https`: request/response HTTP protocol exposed as HTTPS.
 - `mqtt`: broker-mediated MQTT over TLS. Requires per-client broker credentials.
 
-This release (0.1.2) connects over **WSS only**. Requesting `https` or `mqtt`
+This release (0.1.3) connects over **WSS only**. Requesting `https` or `mqtt`
 throws `ThalovantUnsupportedProtocolException`. Endpoint selection still honors
 the shared preference order `wss, https, mqtt`.
 
@@ -236,7 +378,7 @@ subscription.close()
   control-plane API to provision private resources.
 - `Unsupported protocol`: the hub does not expose WSS, or the identity was
   created before WSS was enabled. `https` and `mqtt` runtimes are not part of
-  0.1.2.
+  0.1.3.
 - A request times out: pass a larger `timeoutMs` to `ask(...)`.
 - `HTTP 429` with `"code": "token_rate_limited"`: the API token exceeded its
   plan's per-minute request rate (60 requests per minute on the free plan).
@@ -265,6 +407,18 @@ Per-plan limits are listed in the dashboard and at
 - `controlPlane.listHubs(limit, cursor, ownerId)`
 - `controlPlane.getHub(hubId)`
 - `controlPlane.getOperation(operationId)` returning a typed `OperationResource`
+- `controlPlane.createHub(payload, idempotencyKey)` — paid plan, `hubs:write`
+- `controlPlane.updateHub(hubId, payload, etag)` / `controlPlane.deleteHub(hubId, etag)` — `etag` required, sent as `If-Match`
+- `controlPlane.releaseHub(hubId, options)`
+- `controlPlane.setHubRating(hubId, rating)` / `controlPlane.clearHubRating(hubId)` — `hubs:write`, no paid plan
+- `controlPlane.getHubRuntimeCapabilities(hubId)` — `hubs:inspect`, no paid plan
+- `controlPlane.listRuntimeGroups(ownerId)` / `controlPlane.getRuntimeGroup(runtimeGroupId)`
+- `controlPlane.createRuntimeGroup(payload)` / `controlPlane.updateRuntimeGroup(runtimeGroupId, payload)`
+- `controlPlane.getRuntimeGroupConfig(runtimeGroupId)` / `controlPlane.updateRuntimeGroupConfig(runtimeGroupId, config, personas)`
+- `controlPlane.releaseRuntimeGroup(runtimeGroupId, options)` / `controlPlane.deleteRuntimeGroup(runtimeGroupId)`
+- `controlPlane.installRuntimeGroupSkill(runtimeGroupId, skillId, options)` / `controlPlane.uninstallRuntimeGroupSkill(runtimeGroupId, skillId)`
+- `controlPlane.listMarketplaceSkills(options)` — `hubs:read`, no paid plan
+- `controlPlane.listRuntimeGroupMarketplace(runtimeGroupId, refreshInventory)` / `controlPlane.listRuntimeGroupInventory(runtimeGroupId, refresh)` — `hubs:inspect`, no paid plan
 - `controlPlane.getAnalyticsOverview(options)`
 - `controlPlane.listMemoryItems(options)`
 - `controlPlane.getMemorySummary(ownerId)`
