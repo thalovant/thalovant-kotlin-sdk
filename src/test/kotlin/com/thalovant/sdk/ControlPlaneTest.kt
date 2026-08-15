@@ -105,6 +105,29 @@ class ControlPlaneTest {
     }
 
     @Test
+    fun `api error message strips newlines and bounds the server detail`() = runBlocking {
+        val secret = "SUPER-SECRET-ECHOED-CREDENTIAL"
+        // A multi-line body whose secret sits well past the bounded slice, as a
+        // server might echo a rejected POST /v1/clients body back to the caller.
+        val body = "{\n  \"detail\": \"" + "x".repeat(400) + secret + "\"\n}"
+        enqueueJson(400, body)
+
+        val error = assertFailsWith<ThalovantApiException> {
+            api().login("ada@example.com", "secret")
+        }
+
+        // The full body stays available for programmatic use (device-flow parsing, etc.).
+        assertEquals(body, error.body)
+        val message = error.message.orEmpty()
+        assertTrue("HTTP 400" in message)
+        // The human-facing message is single-line and bounded, so a raw echoed
+        // secret past the bound never reaches logs or stack traces.
+        assertFalse('\n' in message)
+        assertFalse(secret in message)
+        assertTrue(message.length < body.length)
+    }
+
+    @Test
     fun `lists public hubs without auth`() = runBlocking {
         enqueueJson(
             200,
@@ -269,15 +292,13 @@ class ControlPlaneTest {
     }
 
     @Test
-    fun `fetches admin analytics overview with all filters`() = runBlocking {
-        enqueueJson(200, """{"meta":{"scope":"admin"},"totals":{"utterances":7}}""")
+    fun `fetches the workspace analytics overview with all filters and never the admin endpoint`() = runBlocking {
+        enqueueJson(200, """{"meta":{"scope":"workspace"},"totals":{"utterances":7}}""")
 
         val overview = api(accessToken = "token").getAnalyticsOverview(
             AnalyticsOverviewOptions(
-                admin = true,
                 range = "30d",
                 bucket = "1d",
-                ownerId = "owner-1",
                 hubId = "hub-1",
                 clientId = "client-1",
                 country = "CA",
@@ -292,10 +313,12 @@ class ControlPlaneTest {
         )
 
         val request = server.takeRequest()
-        assertEquals("/api/v1/admin/analytics/overview", request.requestUrl?.encodedPath)
+        // The admin endpoint and its owner scoping were removed: this SDK only
+        // ever calls the workspace route and never sends owner_id.
+        assertEquals("/api/v1/analytics/overview", request.requestUrl?.encodedPath)
+        assertNull(request.requestUrl?.queryParameter("owner_id"))
         assertEquals("30d", request.requestUrl?.queryParameter("range"))
         assertEquals("1d", request.requestUrl?.queryParameter("bucket"))
-        assertEquals("owner-1", request.requestUrl?.queryParameter("owner_id"))
         assertEquals("hub-1", request.requestUrl?.queryParameter("hub_id"))
         assertEquals("client-1", request.requestUrl?.queryParameter("client_id"))
         assertEquals("CA", request.requestUrl?.queryParameter("country"))
@@ -307,20 +330,6 @@ class ControlPlaneTest {
         assertEquals("6", request.requestUrl?.queryParameter("weekday"))
         assertEquals("0", request.requestUrl?.queryParameter("hour"))
         assertEquals("7", overview["totals"]?.jsonObject?.get("utterances")?.jsonPrimitive?.content)
-    }
-
-    @Test
-    fun `analytics overview omits owner_id without admin`() = runBlocking {
-        enqueueJson(200, """{"totals":{"utterances":0}}""")
-
-        api(accessToken = "token").getAnalyticsOverview(
-            AnalyticsOverviewOptions(range = "7d", ownerId = "owner-1"),
-        )
-
-        val request = server.takeRequest()
-        assertEquals("/api/v1/analytics/overview", request.requestUrl?.encodedPath)
-        assertEquals("7d", request.requestUrl?.queryParameter("range"))
-        assertNull(request.requestUrl?.queryParameter("owner_id"))
     }
 
     @Test
@@ -473,6 +482,131 @@ class ControlPlaneTest {
             SelectedHubEndpoint(HubProtocol.MQTT, "mqtts://broker.thalovant.io:8883"),
             api.requireRuntimeProtocol(result, HubProtocol.MQTT),
         )
+    }
+
+    @Test
+    fun `asJson gates hub and client bootstrap secrets behind includeSecrets`() = runBlocking {
+        enqueueJson(
+            200,
+            """
+            {
+              "id": "hub-mqtt",
+              "name": "mqtt-hub",
+              "domain": "mqtt.thalovant.io",
+              "data_plane_endpoints": {
+                "https": "https://mqtt.thalovant.io",
+                "wss": "wss://mqtt.thalovant.io",
+                "mqtt": "mqtts://hub-user:hub-broker-secret@broker.thalovant.io:8883"
+              },
+              "spec": {
+                "protocols": {
+                  "wss": {"enabled": true},
+                  "http": {"enabled": true},
+                  "mqtt": {"enabled": true}
+                }
+              }
+            }
+            """.trimIndent(),
+        )
+        enqueueJson(
+            201,
+            """
+            {
+              "id": "client-mqtt",
+              "name": "kiosk",
+              "hub_id": "hub-mqtt",
+              "spec": {
+                "version": "1",
+                "siteId": "kiosk",
+                "apiKey": "spec-api-key",
+                "password": "spec-password",
+                "cryptoKey": "spec-crypto-key",
+                "apiKeyRef": {"name": "secret", "key": "apiKey"}
+              },
+              "initial_identify": {
+                "access_key": "server-access",
+                "password": "server-password",
+                "crypto_key": "server-crypto",
+                "site_id": "server-site",
+                "default_port": 443,
+                "default_master": "wss://mqtt.thalovant.io",
+                "mqtt": {
+                  "endpoint": "mqtts://broker.thalovant.io:8883",
+                  "username": "server-access",
+                  "password": "broker-password",
+                  "topic_prefix": "hivemind/hub-mqtt/server-access",
+                  "tls": true
+                }
+              },
+              "initial_identify_token": "identify-token-secret"
+            }
+            """.trimIndent(),
+        )
+
+        val result = api(accessToken = "token")
+            .createClientIdentity("hub-mqtt", CreateClientIdentityOptions(name = "kiosk"))
+
+        val redacted = result.asJson()
+        val client = redacted["client"]?.jsonObject
+        assertNotNull(client)
+        assertFalse("initial_identify" in client)
+        assertFalse("initial_identify_token" in client)
+        val spec = client["spec"]?.jsonObject
+        assertNotNull(spec)
+        assertFalse("apiKey" in spec)
+        assertFalse("password" in spec)
+        assertFalse("cryptoKey" in spec)
+        // Non-secret fields survive, including reference shapes that merely name secrets.
+        assertEquals("client-mqtt", client["id"]?.jsonPrimitive?.content)
+        assertEquals("1", spec["version"]?.jsonPrimitive?.content)
+        assertEquals("kiosk", spec["siteId"]?.jsonPrimitive?.content)
+        assertEquals("secret", spec["apiKeyRef"]?.jsonObject?.get("name")?.jsonPrimitive?.content)
+
+        val hub = redacted["hub"]?.jsonObject
+        assertNotNull(hub)
+        assertEquals("hub-mqtt", hub["id"]?.jsonPrimitive?.content)
+        // Endpoint URLs stay, but their userinfo credentials are stripped like the identity view.
+        assertEquals(
+            "mqtts://broker.thalovant.io:8883",
+            hub["data_plane_endpoints"]?.jsonObject?.get("mqtt")?.jsonPrimitive?.content,
+        )
+
+        // No secret literal may appear anywhere in the redacted serialization.
+        val serialized = redacted.toString()
+        for (secret in listOf(
+            "server-access", "server-password", "server-crypto", "broker-password",
+            "identify-token-secret", "spec-api-key", "spec-password", "spec-crypto-key",
+            "hub-user", "hub-broker-secret",
+        )) {
+            assertFalse(secret in serialized, "redacted asJson() leaked $secret")
+        }
+
+        // includeSecrets = true returns the raw API resources byte-for-byte.
+        val full = result.asJson(includeSecrets = true)
+        assertEquals(result.hub, full["hub"])
+        assertEquals(result.client, full["client"])
+        assertEquals(
+            "server-password",
+            full["client"]?.jsonObject?.get("initial_identify")?.jsonObject?.get("password")?.jsonPrimitive?.content,
+        )
+        assertEquals(
+            "identify-token-secret",
+            full["client"]?.jsonObject?.get("initial_identify_token")?.jsonPrimitive?.content,
+        )
+        assertEquals(
+            "mqtts://hub-user:hub-broker-secret@broker.thalovant.io:8883",
+            full["hub"]?.jsonObject?.get("data_plane_endpoints")?.jsonObject?.get("mqtt")?.jsonPrimitive?.content,
+        )
+
+        // Secret-holding types stay plain classes: the default toString() must
+        // not leak secrets the way a generated data-class toString() would.
+        val mqtt = result.identity.mqtt
+        assertNotNull(mqtt)
+        for (repr in listOf(result.toString(), result.identity.toString(), mqtt.toString())) {
+            assertFalse("server-password" in repr)
+            assertFalse("broker-password" in repr)
+            assertFalse("server-crypto" in repr)
+        }
     }
 
     @Test

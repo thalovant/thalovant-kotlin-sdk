@@ -10,6 +10,12 @@ import kotlinx.serialization.json.put
 /**
  * Client-scoped MQTT broker credentials, matching the API
  * `ClientMqttCredentials` schema: endpoint, username, password, topic_prefix, tls.
+ *
+ * Security: this is intentionally a plain `class`, not a `data class`. A
+ * generated `data class` `toString()` would print [username]/[password]/
+ * [topicPrefix] and leak them into logs and stack traces. Do not convert it to
+ * a `data class`; a test asserts `toString()` leaks no secret values. Use
+ * [asJson] for a redaction-aware serialization instead.
  */
 public class MqttBrokerCredentials internal constructor(
     public val endpoint: String,
@@ -53,6 +59,12 @@ public class MqttBrokerCredentials internal constructor(
 /**
  * A hub client identity, matching the API `ClientIdentifyResource` schema:
  * access_key, password, crypto_key, site_id, default_port, default_master, mqtt.
+ *
+ * Security: this is intentionally a plain `class`, not a `data class`. A
+ * generated `data class` `toString()` would print [accessKey]/[password]/
+ * [cryptoKey] (and the [mqtt] credentials) and leak them into logs and stack
+ * traces. Do not convert it to a `data class`; a test asserts `toString()`
+ * leaks no secret values. Use [asJson] for a redaction-aware serialization.
  */
 public class ThalovantIdentity(input: JsonObject) {
     public val accessKey: String = requiredString(input, "access_key", "accessKey", "access_key", "api_key", "key")

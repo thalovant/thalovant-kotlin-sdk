@@ -9,6 +9,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
@@ -116,11 +117,8 @@ public data class MemoryUpdatePayload(
 )
 
 public data class AnalyticsOverviewOptions(
-    public val admin: Boolean = false,
     public val range: String? = null,
     public val bucket: String? = null,
-    /** Only sent on the admin endpoint, matching the other SDKs. */
-    public val ownerId: String? = null,
     public val hubId: String? = null,
     public val clientId: String? = null,
     public val country: String? = null,
@@ -261,7 +259,17 @@ public data class CreateClientIdentityOptions(
     public val idempotencyKey: String? = null,
 )
 
-/** Result of [ThalovantControlPlane.createClientIdentity]. Keep [identity] secret. */
+/**
+ * Result of [ThalovantControlPlane.createClientIdentity]. Keep [identity]
+ * secret; the raw [hub] and [client] API resources carry the same bootstrap
+ * credentials (`initial_identify`, `initial_identify_token`, and the secret
+ * `spec` fields), so treat them the same way.
+ *
+ * Security: this is intentionally a plain `class`, not a `data class`. A
+ * generated `data class` `toString()` would dump [identity]/[hub]/[client] and
+ * leak those secrets into logs and stack traces. Do not convert it to a
+ * `data class`; a test asserts `toString()` leaks no secret values.
+ */
 public class BootstrapIdentityResult internal constructor(
     public val identity: ThalovantIdentity,
     public val hub: JsonObject,
@@ -270,13 +278,21 @@ public class BootstrapIdentityResult internal constructor(
 ) {
     public val selectedProtocol: HubProtocol? get() = endpoint?.protocol
 
+    /**
+     * Serializes the result. Without [includeSecrets] the hub/client secret
+     * subkeys are gated the same way [ThalovantIdentity.asJson] gates the
+     * identity secrets: `initial_identify`, `initial_identify_token`, the
+     * secret `spec` fields (`apiKey`/`password`/`cryptoKey`), and URL
+     * userinfo credentials are all omitted. Pass `includeSecrets = true` to
+     * get the raw API resources back unchanged.
+     */
     public fun asJson(includeSecrets: Boolean = false): JsonObject = buildJsonObject {
         put("identity", identity.asJson(includeSecrets))
-        put("hub", hub)
-        put("client", client)
+        put("hub", if (includeSecrets) hub else redactBootstrapSecrets(hub))
+        put("client", if (includeSecrets) client else redactBootstrapSecrets(client))
         endpoint?.let {
             put("selected_protocol", it.protocol.wireName)
-            put("selected_endpoint", it.endpoint)
+            put("selected_endpoint", if (includeSecrets) it.endpoint else redactEndpointCredentials(it.endpoint))
         }
     }
 }
@@ -284,6 +300,11 @@ public class BootstrapIdentityResult internal constructor(
 /**
  * Thalovant control-plane API client. Discovers hubs, manages memory and
  * analytics, and provisions client identities.
+ *
+ * Security: this is intentionally a plain `class`, not a `data class`. It holds
+ * the bearer [accessToken]; a generated `data class` `toString()` would print
+ * it and leak it into logs and stack traces. Do not convert it to a
+ * `data class`; a test asserts `toString()` does not contain the token.
  */
 public class ThalovantControlPlane(
     apiUrl: String = DEFAULT_CONTROL_API_URL,
@@ -482,17 +503,12 @@ public class ThalovantControlPlane(
     }
 
     /**
-     * Workspace analytics overview; `admin = true` switches to
-     * `/v1/admin/analytics/overview` and enables the `owner_id` filter.
+     * Reads the workspace analytics overview from `GET /v1/analytics/overview`.
      */
     public suspend fun getAnalyticsOverview(options: AnalyticsOverviewOptions = AnalyticsOverviewOptions()): JsonObject {
-        val endpoint = if (options.admin) "/v1/admin/analytics/overview" else "/v1/analytics/overview"
         val query = LinkedHashMap<String, String>()
         options.range?.takeIf { it.isNotBlank() }?.let { query["range"] = it }
         options.bucket?.takeIf { it.isNotBlank() }?.let { query["bucket"] = it }
-        if (options.admin) {
-            options.ownerId?.takeIf { it.isNotBlank() }?.let { query["owner_id"] = it }
-        }
         options.hubId?.takeIf { it.isNotBlank() }?.let { query["hub_id"] = it }
         options.clientId?.takeIf { it.isNotBlank() }?.let { query["client_id"] = it }
         options.country?.takeIf { it.isNotBlank() }?.let { query["country"] = it }
@@ -503,7 +519,7 @@ public class ThalovantControlPlane(
         options.timeEnd?.takeIf { it.isNotBlank() }?.let { query["time_end"] = it }
         options.weekday?.let { query["weekday"] = it.toString() }
         options.hour?.let { query["hour"] = it.toString() }
-        return request("GET", endpoint, query = query)
+        return request("GET", "/v1/analytics/overview", query = query)
     }
 
     /**
@@ -930,7 +946,7 @@ public class ThalovantControlPlane(
                 val text = response.body?.string().orEmpty()
                 if (!response.isSuccessful) {
                     throw ThalovantApiException(
-                        "Thalovant API request failed with HTTP ${response.code}: $text",
+                        apiErrorMessage(response.code, text),
                         statusCode = response.code,
                         body = text,
                     )
@@ -947,6 +963,29 @@ public class ThalovantControlPlane(
 
     private companion object {
         val defaultHttpClient: OkHttpClient = OkHttpClient()
+    }
+}
+
+/** Upper bound on the server detail echoed into a [ThalovantApiException] message. */
+private const val API_ERROR_DETAIL_MAX_LENGTH: Int = 200
+
+private val API_ERROR_WHITESPACE: Regex = Regex("\\s+")
+
+/**
+ * Builds the human-facing message for a failed API request. The full response
+ * body stays on [ThalovantApiException.body] for programmatic inspection (the
+ * device flow parses its `error` code from it), but the message keeps only the
+ * status and a short, single-line, bounded slice of the server detail. This
+ * keeps a raw body — which for `POST /v1/clients`, `POST /v1/auth/token`, and
+ * `POST /v1/auth/device/token` can echo the credentials that were sent — from
+ * being interpolated wholesale into logs and stack traces.
+ */
+private fun apiErrorMessage(statusCode: Int, body: String): String {
+    val detail = body.replace(API_ERROR_WHITESPACE, " ").trim().take(API_ERROR_DETAIL_MAX_LENGTH)
+    return if (detail.isEmpty()) {
+        "Thalovant API request failed with HTTP $statusCode."
+    } else {
+        "Thalovant API request failed with HTTP $statusCode: $detail"
     }
 }
 
@@ -1096,6 +1135,43 @@ private fun installSkillBody(skillId: String, options: InstallSkillOptions): Jso
     options.marketplaceSkillId?.let { put("marketplace_skill_id", it) }
     options.sourceRef?.let { put("source_ref", it) }
     options.versionPin?.let { put("version_pin", it) }
+}
+
+/**
+ * Keys that carry credential material in the raw hub/client resources returned
+ * by [ThalovantControlPlane.createClientIdentity]: the `POST /v1/clients`
+ * bootstrap payloads (`initial_identify`, `initial_identify_token`) plus the
+ * identity secrets echoed inside `spec` (camelCase) and `initial_identify`
+ * (snake_case). Matched by exact key name, so reference shapes such as
+ * `apiKeyRef` are untouched.
+ */
+private val BOOTSTRAP_SECRET_KEYS = setOf(
+    "initial_identify",
+    "initial_identify_token",
+    "access_key",
+    "api_key",
+    "apiKey",
+    "password",
+    "crypto_key",
+    "cryptoKey",
+)
+
+/**
+ * Recursively removes [BOOTSTRAP_SECRET_KEYS] and strips URL userinfo
+ * credentials from string values, mirroring the `includeSecrets = false`
+ * behavior of [ThalovantIdentity.asJson] for raw API resources. Used only for
+ * the redacted [BootstrapIdentityResult.asJson] view — never for request
+ * bodies or identity persistence.
+ */
+private fun redactBootstrapSecrets(value: JsonObject): JsonObject = JsonObject(
+    value.filterKeys { it !in BOOTSTRAP_SECRET_KEYS }
+        .mapValues { (_, child) -> redactBootstrapElement(child) },
+)
+
+private fun redactBootstrapElement(value: JsonElement): JsonElement = when (value) {
+    is JsonObject -> redactBootstrapSecrets(value)
+    is JsonArray -> JsonArray(value.map { redactBootstrapElement(it) })
+    is JsonPrimitive -> if (value.isString) JsonPrimitive(redactEndpointCredentials(value.content)) else value
 }
 
 private val secretRandom = SecureRandom()
