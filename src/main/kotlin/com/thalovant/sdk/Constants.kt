@@ -4,7 +4,7 @@ package com.thalovant.sdk
  * SDK release version — the single source of truth for the version inside this
  * package. Keep in sync with the Gradle `version`, README, and CHANGELOG.
  */
-public const val SDK_VERSION: String = "0.1.2"
+public const val SDK_VERSION: String = "0.1.3"
 
 /**
  * Default User-Agent sent to the control plane and the hub data plane.
