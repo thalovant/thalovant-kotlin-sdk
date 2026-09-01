@@ -2,7 +2,8 @@
 
 ## 0.1.5
 
-- `ThalovantEvents.FAILURE_EVENTS` now also recognises `ovos.intent.unmatched`, the current OVOS bus event for an utterance that matched no intent (renamed from the legacy Mycroft `complete_intent_failure`, which is retained). Previously only the old name was treated as terminal, so `ask()` waited out its full timeout instead of failing promptly when no intent matched (#22).
+- `ThalovantEvents.FAILURE_EVENTS` now also recognises `ovos.intent.unmatched`, the current OVOS bus event for an utterance that matched no intent (renamed from the legacy Mycroft `complete_intent_failure`, which is retained).
+- **Behavior change:** `ask()` now fails fast on an intent failure. Both intent-failure names (`ovos.intent.unmatched` and the legacy `complete_intent_failure`) now set the reply's `failureEvent` and terminate the ask loop immediately, exactly like `hive.policy.denied` / `hive.query.timeout`. Previously `complete_intent_failure` was merely recorded and never marked terminal, so `ask()` waited out its full empty-reply window before giving up; this matches the fail-fast behavior of the Python/Node/Go/Rust SDKs (#22).
 
 ## 0.1.4
 

@@ -4,6 +4,7 @@ import java.util.Base64
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
+import kotlin.system.measureTimeMillis
 import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
@@ -251,6 +252,56 @@ class TransportTest {
             val error = reply.await().exceptionOrNull()
             assertIs<ThalovantRuntimeException>(error)
             assertTrue("No answer before HiveMind timed out" in error.message.orEmpty())
+        } finally {
+            client.close()
+        }
+    }
+
+    @Test
+    fun `ask fails fast on a current OVOS intent-unmatched event`(): Unit =
+        assertIntentFailureIsTerminal("ovos.intent.unmatched")
+
+    @Test
+    fun `ask fails fast on a legacy Mycroft complete_intent_failure event`(): Unit =
+        assertIntentFailureIsTerminal("complete_intent_failure")
+
+    /**
+     * Drives the real [ThalovantClient.ask] loop: a terminal intent-failure event
+     * must set `failureEvent` and end the loop promptly, NOT wait out the (here
+     * deliberately huge) empty-reply wait. The elapsed-time assertion is what
+     * distinguishes "recognised as terminal" from "merely recorded".
+     */
+    private fun assertIntentFailureIsTerminal(eventName: String) = runBlocking {
+        startHub()
+        val client = ThalovantClient(identity(), protocol = HubProtocol.WSS, replySettleMs = 0)
+        client.connect(5000)
+        try {
+            awaitMessage() // hello
+            val elapsed: Long
+            val reply = async(Dispatchers.Default) {
+                // A 60s empty-reply wait: if the failure branch does not fire, ask()
+                // blocks here and the test times out instead of returning promptly.
+                runCatching { client.ask("what is up?", requestId = "req-1", emptyReplyWaitMs = 60_000) }
+            }
+            val envelope = ThalovantJson.parseToJsonElement(awaitMessage()).jsonObject
+            val context = ThalovantJson.parseToJsonElement(
+                HiveMindCrypto.decryptFromJson(CRYPTO_KEY, envelope),
+            ).jsonObject["payload"]?.jsonObject?.get("context")?.jsonObject
+            assertNotNull(context)
+
+            sendBus(
+                eventName,
+                buildJsonObject { put("utterance", "Sorry, I did not understand.") },
+                context,
+            )
+
+            val result: Result<ThalovantReply>
+            elapsed = measureTimeMillis { result = reply.await() }
+            // Terminal: ask() ends far inside the 60s empty-wait window.
+            assertTrue(elapsed < 10_000, "ask() waited out the empty-reply wait ($elapsed ms) instead of failing fast")
+            val error = result.exceptionOrNull()
+            assertIs<ThalovantRuntimeException>(error)
+            assertTrue("Sorry, I did not understand." in error.message.orEmpty())
         } finally {
             client.close()
         }
