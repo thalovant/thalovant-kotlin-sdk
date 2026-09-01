@@ -13,11 +13,17 @@ public object ThalovantEvents {
     public const val SPEAK: String = "speak"
     public const val OVOS_UTTERANCE_SPEAK: String = "ovos.utterance.speak"
     public const val UTTERANCE_HANDLED: String = "ovos.utterance.handled"
+
+    /** Current OVOS name for an utterance that matched no intent. */
+    public const val INTENT_UNMATCHED: String = "ovos.intent.unmatched"
+
+    /** Legacy Mycroft name for [INTENT_UNMATCHED]; still emitted by older hubs. */
     public const val INTENT_FAILURE: String = "complete_intent_failure"
     public const val POLICY_DENIED: String = "hive.policy.denied"
     public const val QUERY_TIMEOUT: String = "hive.query.timeout"
 
-    public val FAILURE_EVENTS: Set<String> = setOf(INTENT_FAILURE, POLICY_DENIED, QUERY_TIMEOUT)
+    public val FAILURE_EVENTS: Set<String> =
+        setOf(INTENT_UNMATCHED, INTENT_FAILURE, POLICY_DENIED, QUERY_TIMEOUT)
 }
 
 /** A bus event received from the hub. */

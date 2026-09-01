@@ -144,7 +144,7 @@ public class ThalovantClient(
                     synchronized(lock) { events.add(event) }
                     handled.complete(Unit)
                 }
-                ThalovantEvents.INTENT_FAILURE -> synchronized(lock) { events.add(event) }
+                ThalovantEvents.INTENT_FAILURE, ThalovantEvents.INTENT_UNMATCHED,
                 ThalovantEvents.POLICY_DENIED, ThalovantEvents.QUERY_TIMEOUT -> {
                     synchronized(lock) {
                         failureEvent = event
