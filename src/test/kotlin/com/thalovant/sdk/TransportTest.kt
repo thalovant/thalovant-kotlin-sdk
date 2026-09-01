@@ -258,30 +258,27 @@ class TransportTest {
     }
 
     @Test
-    fun `ask fails fast on a current OVOS intent-unmatched event`(): Unit =
-        assertIntentFailureIsTerminal("ovos.intent.unmatched")
+    fun `intent miss with no fallback surfaces the failure after the empty-reply wait`(): Unit =
+        assertIntentMissSurfacesWithoutFallback("ovos.intent.unmatched")
 
     @Test
-    fun `ask fails fast on a legacy Mycroft complete_intent_failure event`(): Unit =
-        assertIntentFailureIsTerminal("complete_intent_failure")
+    fun `legacy intent miss with no fallback surfaces the failure`(): Unit =
+        assertIntentMissSurfacesWithoutFallback("complete_intent_failure")
 
     /**
-     * Drives the real [ThalovantClient.ask] loop: a terminal intent-failure event
-     * must set `failureEvent` and end the loop promptly, NOT wait out the (here
-     * deliberately huge) empty-reply wait. The elapsed-time assertion is what
-     * distinguishes "recognised as terminal" from "merely recorded".
+     * An intent miss is a SOFT failure: it must not terminate the loop before the
+     * empty-reply wait (a fallback skill may still answer). With no fallback, the
+     * miss is surfaced as a [ThalovantRuntimeException] once the (here short)
+     * empty-reply wait elapses -- bounded by emptyReplyWait, not the full timeout.
      */
-    private fun assertIntentFailureIsTerminal(eventName: String) = runBlocking {
+    private fun assertIntentMissSurfacesWithoutFallback(eventName: String) = runBlocking {
         startHub()
         val client = ThalovantClient(identity(), protocol = HubProtocol.WSS, replySettleMs = 0)
         client.connect(5000)
         try {
             awaitMessage() // hello
-            val elapsed: Long
             val reply = async(Dispatchers.Default) {
-                // A 60s empty-reply wait: if the failure branch does not fire, ask()
-                // blocks here and the test times out instead of returning promptly.
-                runCatching { client.ask("what is up?", requestId = "req-1", emptyReplyWaitMs = 60_000) }
+                runCatching { client.ask("what is up?", requestId = "req-1", emptyReplyWaitMs = 200) }
             }
             val envelope = ThalovantJson.parseToJsonElement(awaitMessage()).jsonObject
             val context = ThalovantJson.parseToJsonElement(
@@ -289,19 +286,42 @@ class TransportTest {
             ).jsonObject["payload"]?.jsonObject?.get("context")?.jsonObject
             assertNotNull(context)
 
-            sendBus(
-                eventName,
-                buildJsonObject { put("utterance", "Sorry, I did not understand.") },
-                context,
-            )
+            sendBus(eventName, buildJsonObject { put("utterance", "Sorry, I did not understand.") }, context)
 
-            val result: Result<ThalovantReply>
-            elapsed = measureTimeMillis { result = reply.await() }
-            // Terminal: ask() ends far inside the 60s empty-wait window.
-            assertTrue(elapsed < 10_000, "ask() waited out the empty-reply wait ($elapsed ms) instead of failing fast")
+            val result = reply.await()
             val error = result.exceptionOrNull()
-            assertIs<ThalovantRuntimeException>(error)
+            assertIs<ThalovantRuntimeException>(error, "an unrecovered intent miss must surface as a failure")
             assertTrue("Sorry, I did not understand." in error.message.orEmpty())
+        } finally {
+            client.close()
+        }
+    }
+
+    @Test
+    fun `intent miss is recovered by a fallback reply`() = runBlocking {
+        startHub()
+        val client = ThalovantClient(identity(), protocol = HubProtocol.WSS, replySettleMs = 0)
+        client.connect(5000)
+        try {
+            awaitMessage() // hello
+            val reply = async(Dispatchers.Default) {
+                runCatching { client.ask("what is up?", requestId = "req-1", emptyReplyWaitMs = 5000) }
+            }
+            val envelope = ThalovantJson.parseToJsonElement(awaitMessage()).jsonObject
+            val context = ThalovantJson.parseToJsonElement(
+                HiveMindCrypto.decryptFromJson(CRYPTO_KEY, envelope),
+            ).jsonObject["payload"]?.jsonObject?.get("context")?.jsonObject
+            assertNotNull(context)
+
+            // Intent miss, then a fallback skill answers.
+            sendBus("ovos.intent.unmatched", buildJsonObject { put("utterance", "no match") }, context)
+            sendBus("speak", buildJsonObject { put("utterance", "Here is a fallback answer.") }, context)
+            sendBus("ovos.utterance.handled", buildJsonObject { }, context)
+
+            val result = reply.await()
+            val value = result.getOrThrow()
+            assertTrue(value.ok, "a fallback reply recovers the turn")
+            assertEquals("Here is a fallback answer.", value.text)
         } finally {
             client.close()
         }

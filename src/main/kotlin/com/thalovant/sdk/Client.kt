@@ -124,6 +124,9 @@ public class ThalovantClient(
         val fragments = mutableListOf<String>()
         val events = mutableListOf<ThalovantEvent>()
         var failureEvent: ThalovantEvent? = null
+        // An intent miss is a soft failure: it ends phase 1 but leaves failureEvent
+        // unset so the empty-reply wait still runs and a fallback reply can win.
+        var softFailureEvent: ThalovantEvent? = null
         val handled = CompletableDeferred<Unit>()
         val firstReply = CompletableDeferred<Unit>()
         val whitespace = Regex("\\s+")
@@ -144,8 +147,17 @@ public class ThalovantClient(
                     synchronized(lock) { events.add(event) }
                     handled.complete(Unit)
                 }
-                ThalovantEvents.INTENT_FAILURE, ThalovantEvents.INTENT_UNMATCHED,
+                ThalovantEvents.INTENT_FAILURE, ThalovantEvents.INTENT_UNMATCHED -> {
+                    // Soft failure: end phase 1, but keep failureEvent null so the
+                    // empty-reply wait still runs and a fallback reply can take over.
+                    synchronized(lock) {
+                        softFailureEvent = event
+                        events.add(event)
+                    }
+                    handled.complete(Unit)
+                }
                 ThalovantEvents.POLICY_DENIED, ThalovantEvents.QUERY_TIMEOUT -> {
+                    // Hard failure: terminal, no fallback wait.
                     synchronized(lock) {
                         failureEvent = event
                         events.add(event)
@@ -174,7 +186,9 @@ public class ThalovantClient(
                 delay(effectiveSettle)
             }
             synchronized(lock) {
-                val failure = failureEvent
+                // A soft intent-miss becomes the surfaced failure only if no reply
+                // (not even a fallback) arrived; a reply means a fallback recovered.
+                val failure = failureEvent ?: if (fragments.isEmpty()) softFailureEvent else null
                 if (failure == null && fragments.isEmpty()) {
                     throw ThalovantTimeoutException(
                         "Hub handled the utterance but did not emit a speak reply within ${effectiveEmptyWait}ms.",
