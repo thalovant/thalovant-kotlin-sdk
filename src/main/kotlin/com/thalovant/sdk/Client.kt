@@ -52,8 +52,15 @@ public class ThalovantClient(
         handler: (ThalovantEvent) -> Unit,
     ): ThalovantSubscription = transport.addBusListener { event ->
         if (event.name != eventName) return@addBusListener
-        if (sessionId != null && event.sessionId != null && !sessionIdsMatch(sessionId, event.sessionId!!)) return@addBusListener
-        if (requestId != null && event.requestId != null && event.requestId != requestId) return@addBusListener
+        // The request id decides when both sides carry one: a hub does not echo a
+        // client-declared session id, it substitutes its own (observed live on
+        // 2026-09-03), so comparing session ids rejected replies the request id
+        // had already identified as ours and ask() timed out.
+        if (requestId != null && event.requestId != null) {
+            if (event.requestId != requestId) return@addBusListener
+        } else if (sessionId != null && event.sessionId != null && event.sessionId != sessionId) {
+            return@addBusListener
+        }
         handler(event)
     }
 

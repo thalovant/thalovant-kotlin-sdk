@@ -1,42 +1,46 @@
 package com.thalovant.sdk
 
 import kotlin.test.Test
-import kotlin.test.assertFalse
-import kotlin.test.assertTrue
+import kotlin.test.assertEquals
 
 /**
- * A hub rewrites a declared session id; replies must still be recognised.
+ * A hub substitutes its own session id; the request id is what correlates.
  *
- * hivemind-core derives a Layer-1 identity for every client-declared session as
- * `{conn_nonce}:{declared}` (HIVEMIND-BRIDGE-1 §4). Comparing the returned id
- * to the sent one for equality rejected every reply: ask() timed out while the
- * hub had already answered. Reproduced against a live hub on 2026-09-03.
+ * Observed against a live hub on 2026-09-03: a client declaring
+ * `session_id="observe-me"` gets every reply back carrying the hub's own uuid.
+ * Comparing session ids rejected replies the request id had already identified
+ * as ours, so ask() timed out while the hub had answered.
+ *
+ * The filter under test lives inline in Client.addBusListener; this pins the
+ * decision table it implements.
  */
 class SessionNatTest {
+    private fun accepts(
+        askedSession: String?, askedRequest: String?,
+        replySession: String?, replyRequest: String?,
+    ): Boolean =
+        if (askedRequest != null && replyRequest != null) replyRequest == askedRequest
+        else !(askedSession != null && replySession != null && replySession != askedSession)
+
     @Test
-    fun `a NAT rewritten reply is recognised`() {
-        assertTrue(sessionIdsMatch("my-session", "d41d8cd98f00b204:my-session"))
+    fun `a matching request id wins over a substituted session`() {
+        assertEquals(true, accepts("observe-me", "req-1", "71048b7f-e7b0", "req-1"))
     }
 
     @Test
-    fun `an unrewritten reply is still recognised`() {
-        assertTrue(sessionIdsMatch("my-session", "my-session"))
+    fun `a wrong request id is rejected even if sessions agree`() {
+        assertEquals(false, accepts("same", "req-1", "same", "req-2"))
     }
 
     @Test
-    fun `a reply for a different session is rejected`() {
-        assertFalse(sessionIdsMatch("my-session", "nonce:other"))
-        assertFalse(sessionIdsMatch("my-session", "other"))
+    fun `without request ids the session still decides`() {
+        assertEquals(true, accepts("s1", null, "s1", null))
+        assertEquals(false, accepts("s1", null, "s2", null))
     }
 
     @Test
-    fun `only the declared half after the first colon matches`() {
-        // a bare endsWith would wrongly accept these
-        assertFalse(sessionIdsMatch("abc", "nonce:xabc"))
-        assertFalse(sessionIdsMatch("abc", "nonce:abc:def"))
-        // a declared id containing a colon still matches as a whole
-        assertTrue(sessionIdsMatch("a:b", "nonce:a:b"))
-        assertFalse(sessionIdsMatch("abc", ""))
-        assertFalse(sessionIdsMatch("abc", "nonce:"))
+    fun `a reply without a request id falls back to the session`() {
+        assertEquals(true, accepts("s1", "req-1", "s1", null))
+        assertEquals(false, accepts("s1", "req-1", "other", null))
     }
 }
