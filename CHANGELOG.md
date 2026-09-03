@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.7
+
+- Automated patch release of the unreleased changes on `main` since v0.1.6.
+
 ## 0.1.5
 
 - `ThalovantEvents.FAILURE_EVENTS` now also recognises `ovos.intent.unmatched`, the current OVOS bus event for an utterance that matched no intent (renamed from the legacy Mycroft `complete_intent_failure`, which is retained).
