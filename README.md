@@ -19,7 +19,7 @@ Full docs: <https://docs.thalovant.com/developers/sdks/kotlin/>
 
 ```kotlin
 dependencies {
-    implementation("com.thalovant:thalovant-sdk:0.1.4")
+    implementation("com.thalovant:thalovant-sdk:0.1.6")
 }
 ```
 
