@@ -52,7 +52,7 @@ public class ThalovantClient(
         handler: (ThalovantEvent) -> Unit,
     ): ThalovantSubscription = transport.addBusListener { event ->
         if (event.name != eventName) return@addBusListener
-        if (sessionId != null && event.sessionId != null && event.sessionId != sessionId) return@addBusListener
+        if (sessionId != null && event.sessionId != null && !sessionIdsMatch(sessionId, event.sessionId!!)) return@addBusListener
         if (requestId != null && event.requestId != null && event.requestId != requestId) return@addBusListener
         handler(event)
     }
