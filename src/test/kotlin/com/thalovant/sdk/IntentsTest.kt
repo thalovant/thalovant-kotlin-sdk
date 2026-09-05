@@ -677,14 +677,13 @@ class IntentsTest {
         val connected = client(hub).also { it.connect() }
         val wanted = (0 until 69).map { IntentKey(WEATHER, intentName(it), "en-us") }
 
-        val described = connected.describeMany(wanted, timeoutMs = 5000)
-        assertEquals(69, described.size)
-        // Two subscriptions per window (the reply and the refusals): three windows.
+        assertEquals(69, connected.describeMany(wanted, timeoutMs = 5000).size)
+        // Two subscriptions per window (the replies and the refusals): three windows.
         assertEquals(6, hub.subscriptions.get(), "69 describes go out in three windows of at most 32")
-        assertEquals(2, FakeHubTransport(registrations = manyIntents(69)).let { plain ->
-            runBlocking { client(plain).describeMany(wanted, timeoutMs = 5000, batch = 0) }
-            plain.subscriptions.get()
-        }, "batch = 0 sends them all at once")
+
+        val unbounded = FakeHubTransport(registrations = manyIntents(69))
+        assertEquals(69, client(unbounded).describeMany(wanted, timeoutMs = 5000, batch = 0).size)
+        assertEquals(2, unbounded.subscriptions.get(), "batch = 0 sends them all at once")
 
         val whole = client(FakeHubTransport(registrations = manyIntents(69))).intents(listOf("en-us"))
         assertEquals(69, whole.intents.size)
