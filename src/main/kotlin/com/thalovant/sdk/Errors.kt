@@ -37,8 +37,11 @@ public class ThalovantPolicyDeniedException(
         /** Builds the exception from a `hive.policy.denied` bus event. */
         public fun fromEvent(event: ThalovantEvent): ThalovantPolicyDeniedException {
             val inner = event.data["data"].asObjectOrNull()
+            // Only strings: a number or a null in the list is not a message
+            // type, and stringifying one would put "3" or "null" in front of
+            // an operator reading which types to allow.
             val allowed = (inner?.get("allowed") as? JsonArray)
-                ?.mapNotNull { (it as? JsonPrimitive)?.content }
+                ?.mapNotNull { (it as? JsonPrimitive)?.takeIf { entry -> entry.isString }?.content }
                 ?: emptyList()
             return ThalovantPolicyDeniedException(
                 deniedType = event.data.optionalString("denied_type") ?: "",

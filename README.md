@@ -346,15 +346,20 @@ ones with a slot, shorter first), and `engine` says which matcher owns it
 (`padatious` for template intents, `adapt` for keyword ones). `asJson()` on
 the inventory, a skill, or an intent gives a JSON-ready view.
 
-The hub's connection must be allowed to publish `ovos.intent.list` and
-`ovos.intent.describe` — connections the control plane provisions for SDK
-clients are, by default. A hub that refuses throws
-`ThalovantPolicyDeniedException` naming the type at once (no timeout), or with
-the default `IntentInventoryOptions(fallback = true)` lists intent names only
-from the engines' own manifests and marks the result
-`source = HubIntentSource.ENGINE_MANIFESTS` with `denied` naming the refused
-query. `IntentInventoryOptions(describe = false)` skips the sentences, and
-`timeoutMs` bounds each query.
+The hub's connection must be allowed to publish the types the call uses.
+`IntentInventoryOptions(describe = false)` lists names and engines and needs
+`ovos.intent.list` alone; the default `describe = true` fetches the sentences
+too and needs `ovos.intent.describe` as well. Connections the control plane
+provisions for SDK clients allow both, and the two engine-manifest types, by
+default.
+
+A hub that refuses a type throws `ThalovantPolicyDeniedException` naming it at
+once (no timeout), or — with the default `IntentInventoryOptions(fallback =
+true)` — lists intent names only from the engines' own manifests and marks the
+result `source = HubIntentSource.ENGINE_MANIFESTS` with `denied` naming the
+refused query. A hub that answers the listing with `ok: false` throws
+`ThalovantRuntimeException` carrying its error text, rather than reporting a
+device that can do nothing. `timeoutMs` bounds each query.
 
 The describes go out in windows of at most `DESCRIBE_BATCH` (32) requests,
 each window with its own deadline, so a hub with many intents is never sent a

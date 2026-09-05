@@ -310,6 +310,14 @@ internal suspend fun ThalovantClient.listIntentRegistrations(
         lang = lang,
         timeoutMs = options.timeoutMs,
     )
+    if (!enabledValue(event.data["ok"], true)) {
+        // A refused listing is not an empty hub. Describe answers `ok: false`
+        // for an intent it does not know, which is a real answer; a listing
+        // that fails has told us nothing, and reporting it as no intents would
+        // show a person a device that can do nothing.
+        val detail = event.data.optionalString("error") ?: "the hub refused the listing"
+        throw ThalovantRuntimeException("${ThalovantEvents.INTENT_LIST} failed: $detail")
+    }
     val rows = event.data["intents"] as? JsonArray ?: return emptyList()
     return rows.mapNotNull { row -> row.asObjectOrNull()?.let(IntentRegistration::from) }
 }
@@ -328,6 +336,8 @@ internal suspend fun ThalovantClient.describeIntentRegistrations(
         lang = lang,
         timeoutMs = options.timeoutMs,
     )
+    // Unlike the listing, `ok: false` here is a real answer: the hub does not
+    // know that registration, so it has no definitions to give.
     if (!enabledValue(event.data["ok"], true)) return emptyList()
     return definitionsOf(event.data)
 }

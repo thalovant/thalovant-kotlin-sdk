@@ -12,6 +12,7 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
@@ -759,5 +760,96 @@ class IntentsTest {
             connected.describeMany((0 until 69).map { IntentKey(WEATHER, intentName(it), "en-us") }, 300)
         }
         assertEquals(ThalovantEvents.INTENT_DESCRIBE, error.deniedType)
+    }
+
+    @Test
+    fun `a refused listing is an error not an empty hub`() = runBlocking {
+        // `ok: false` on a listing means the query failed. Reporting it as no
+        // intents would show a person a device that can do nothing.
+        class Refuses : FakeHubTransport() {
+            override suspend fun emitBus(eventType: String, data: JsonObject, context: JsonObject) {
+                if (eventType != ThalovantEvents.INTENT_LIST) {
+                    super.emitBus(eventType, data, context)
+                    return
+                }
+                emitted.add(Emitted(eventType, data, context))
+                deliver(
+                    ThalovantEvents.INTENT_LIST_RESPONSE,
+                    buildJsonObject {
+                        put("ok", false)
+                        put("error", "manifest unavailable")
+                    },
+                    context,
+                )
+            }
+        }
+
+        val error = assertFailsWith<ThalovantRuntimeException> { client(Refuses()).intents(listOf("en-us")) }
+        assertEquals("ovos.intent.list failed: manifest unavailable", error.message)
+        // A listing that fails without saying why still says the query failed.
+        val bare = assertFailsWith<ThalovantRuntimeException> {
+            client(
+                object : FakeHubTransport() {
+                    override suspend fun emitBus(eventType: String, data: JsonObject, context: JsonObject) {
+                        if (eventType != ThalovantEvents.INTENT_LIST) {
+                            super.emitBus(eventType, data, context)
+                            return
+                        }
+                        emitted.add(Emitted(eventType, data, context))
+                        deliver(
+                            ThalovantEvents.INTENT_LIST_RESPONSE,
+                            buildJsonObject { put("ok", false) },
+                            context,
+                        )
+                    }
+                },
+            ).listIntents("en-us")
+        }
+        assertEquals("ovos.intent.list failed: the hub refused the listing", bare.message)
+    }
+
+    @Test
+    fun `a describe that does not know the intent is not an error`() = runBlocking {
+        // The other half of the rule: describe answering `ok: false` for an
+        // intent it does not know is a real answer, and leaves it without
+        // sentences instead of failing the call.
+        val hub = FakeHubTransport()
+        assertEquals(emptyList(), client(hub).describeIntent(SHADOW, "custos.incidents", "fr-fr"))
+        val inventory = client(hub).intents(listOf("en-us", "fr-fr"))
+        assertEquals(emptyList(), inventory.intents.first { it.skillId == SHADOW }.phrasesFor("fr-fr"))
+        assertTrue(inventory.hasPhrases)
+    }
+
+    @Test
+    fun `only string entries survive in the allowed list`() {
+        // A number or a null in `allowed` is not a message type; stringifying
+        // one would put "3" or "null" in front of an operator reading which
+        // types to allow.
+        val error = ThalovantPolicyDeniedException.fromEvent(
+            ThalovantEvent(
+                ThalovantEvents.POLICY_DENIED,
+                buildJsonObject {
+                    put("denied_type", "ovos.intent.list")
+                    put("code", "acl_disallowed_type")
+                    put(
+                        "data",
+                        buildJsonObject {
+                            put(
+                                "allowed",
+                                JsonArray(
+                                    listOf(
+                                        JsonPrimitive("speak"),
+                                        JsonPrimitive(3),
+                                        JsonNull,
+                                        JsonPrimitive("recognizer_loop:utterance"),
+                                    ),
+                                ),
+                            )
+                        },
+                    )
+                },
+            ),
+        )
+        assertEquals(listOf("speak", "recognizer_loop:utterance"), error.allowed)
     }
 }
