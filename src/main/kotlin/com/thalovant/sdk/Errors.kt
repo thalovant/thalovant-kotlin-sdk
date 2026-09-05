@@ -1,5 +1,8 @@
 package com.thalovant.sdk
 
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonPrimitive
+
 /** Base class for every exception thrown by the Thalovant SDK. */
 public open class ThalovantException(message: String, cause: Throwable? = null) : RuntimeException(message, cause)
 
@@ -13,7 +16,48 @@ public class ThalovantConnectionException(message: String, cause: Throwable? = n
 public class ThalovantTimeoutException(message: String) : ThalovantException(message)
 
 /** The hub reported a runtime failure while handling a request. */
-public class ThalovantRuntimeException(message: String) : ThalovantException(message)
+public open class ThalovantRuntimeException(message: String) : ThalovantException(message)
+
+/**
+ * The hub refused a message type this connection may not publish.
+ *
+ * The hub answers `hive.policy.denied` at once, naming the type ([deniedType])
+ * and the types it does allow ([allowed]); throwing here saves the caller a
+ * timeout and tells the operator exactly what to add to the connection's
+ * allow-list. [code] is the hub's reason code (`acl_disallowed_type`) and
+ * [reason] its human-readable text.
+ */
+public class ThalovantPolicyDeniedException(
+    public val deniedType: String,
+    public val code: String = "",
+    public val reason: String = "",
+    public val allowed: List<String> = emptyList(),
+) : ThalovantRuntimeException(policyDeniedMessage(deniedType, code, reason)) {
+    public companion object {
+        /** Builds the exception from a `hive.policy.denied` bus event. */
+        public fun fromEvent(event: ThalovantEvent): ThalovantPolicyDeniedException {
+            val inner = event.data["data"].asObjectOrNull()
+            // Only strings: a number or a null in the list is not a message
+            // type, and stringifying one would put "3" or "null" in front of
+            // an operator reading which types to allow.
+            val allowed = (inner?.get("allowed") as? JsonArray)
+                ?.mapNotNull { (it as? JsonPrimitive)?.takeIf { entry -> entry.isString }?.content }
+                ?: emptyList()
+            return ThalovantPolicyDeniedException(
+                deniedType = event.data.optionalString("denied_type") ?: "",
+                code = event.data.optionalString("code") ?: "",
+                reason = event.data.optionalString("reason") ?: "",
+                allowed = allowed,
+            )
+        }
+    }
+}
+
+private fun policyDeniedMessage(deniedType: String, code: String, reason: String): String {
+    val detail = reason.ifEmpty { code.ifEmpty { "refused by the hub's policy" } }
+    return "The hub refused '$deniedType': $detail. Allow this connection to publish " +
+        "'$deniedType' in the dashboard's connection settings."
+}
 
 /**
  * Control-plane API failures. [statusCode] and [body] are set when the API

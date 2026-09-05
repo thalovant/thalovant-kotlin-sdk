@@ -22,6 +22,33 @@ public object ThalovantEvents {
     public const val POLICY_DENIED: String = "hive.policy.denied"
     public const val QUERY_TIMEOUT: String = "hive.query.timeout"
 
+    // The hub runtime's intent manifest (OVOS-INTENT-4 section 10) and the
+    // engines' own manifests, read by [ThalovantClient.intents].
+
+    /** Query: the intent manifest for one language, `{"lang"}` (+ `include_definitions`). */
+    public const val INTENT_LIST: String = "ovos.intent.list"
+
+    /** Reply to [INTENT_LIST]: `{ok, intents: [{skill_id, intent_name, lang, method, enabled, session_id}]}`. */
+    public const val INTENT_LIST_RESPONSE: String = "ovos.intent.list.response"
+
+    /** Query: the registrations behind one intent, `{"skill_id", "intent_name", "lang"}`. */
+    public const val INTENT_DESCRIBE: String = "ovos.intent.describe"
+
+    /** Reply to [INTENT_DESCRIBE]: `{ok, definitions: [{method, definition}]}` or `{ok: false, error}`. */
+    public const val INTENT_DESCRIBE_RESPONSE: String = "ovos.intent.describe.response"
+
+    /** Query: the Adapt engine's manifest, intent names only. */
+    public const val ADAPT_MANIFEST_GET: String = "intent.service.adapt.manifest.get"
+
+    /** Reply to [ADAPT_MANIFEST_GET]: `{intents: ["<skill_id>:<intent_name>"]}`. */
+    public const val ADAPT_MANIFEST: String = "intent.service.adapt.manifest"
+
+    /** Query: the Padatious engine's manifest, intent names only. */
+    public const val PADATIOUS_MANIFEST_GET: String = "intent.service.padatious.manifest.get"
+
+    /** Reply to [PADATIOUS_MANIFEST_GET]: `{intents: ["<skill_id>:<intent_name>"]}`. */
+    public const val PADATIOUS_MANIFEST: String = "intent.service.padatious.manifest"
+
     public val FAILURE_EVENTS: Set<String> =
         setOf(INTENT_UNMATCHED, INTENT_FAILURE, POLICY_DENIED, QUERY_TIMEOUT)
 }
