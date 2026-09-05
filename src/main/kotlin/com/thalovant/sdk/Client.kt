@@ -220,6 +220,43 @@ public class ThalovantClient(
         }
     }
 
+    /**
+     * Everything the hub can be asked, per language, grouped by skill.
+     *
+     * Read from the runtime's intent manifest over this session, so no
+     * control-plane credential is involved. Each intent carries the sentences
+     * a person says to reach it, as the skill wrote them, `{slot}` placeholders
+     * included. An empty [languages] means `en-us`.
+     *
+     * Throws [ThalovantPolicyDeniedException] when the hub refuses the query
+     * and [IntentInventoryOptions.fallback] is off; with it on (the default), a
+     * hub allowed for only the engines' manifests yields intent names with
+     * [HubIntentInventory.source] set to [HubIntentSource.ENGINE_MANIFESTS].
+     * Throws [ThalovantTimeoutException] when the hub does not answer within
+     * [IntentInventoryOptions.timeoutMs].
+     */
+    public suspend fun intents(
+        languages: List<String> = listOf(DEFAULT_INTENT_LANG),
+        options: IntentInventoryOptions = IntentInventoryOptions(),
+    ): HubIntentInventory = intentInventory(languages.ifEmpty { listOf(DEFAULT_INTENT_LANG) }, options)
+
+    /** The hub's intent manifest for one language, one row per registration (`ovos.intent.list`). */
+    public suspend fun listIntents(
+        lang: String = DEFAULT_INTENT_LANG,
+        options: ListIntentsOptions = ListIntentsOptions(),
+    ): List<IntentRegistration> = listIntentRegistrations(lang, options)
+
+    /**
+     * The registrations behind one intent in one language, sentences included
+     * (`ovos.intent.describe`). Empty when the hub does not know the registration.
+     */
+    public suspend fun describeIntent(
+        skillId: String,
+        intentName: String,
+        lang: String = DEFAULT_INTENT_LANG,
+        options: DescribeIntentOptions = DescribeIntentOptions(),
+    ): List<IntentDefinition> = describeIntentRegistrations(skillId, intentName, lang, options)
+
     public companion object {
         public fun fromIdentityFile(path: Path, protocol: HubProtocol? = null): ThalovantClient =
             ThalovantClient(ThalovantIdentity.fromFile(path), protocol = protocol)

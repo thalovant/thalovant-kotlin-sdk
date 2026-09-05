@@ -19,7 +19,7 @@ Full docs: <https://docs.thalovant.com/developers/sdks/kotlin/>
 
 ```kotlin
 dependencies {
-    implementation("com.thalovant:thalovant-sdk:0.1.7")
+    implementation("com.thalovant:thalovant-sdk:0.1.8")
 }
 ```
 
@@ -314,6 +314,63 @@ val items = api.listMemoryItems(
 println(items["data"])
 ```
 
+## What Can I Ask?
+
+A connected client can ask its hub what it can be asked, over its own session,
+with no control-plane token:
+
+```kotlin
+import com.thalovant.sdk.IntentInventoryOptions
+import com.thalovant.sdk.ThalovantClient
+import kotlinx.coroutines.runBlocking
+
+fun main() = runBlocking {
+    val client = ThalovantClient.fromIdentityFile("_identity.json")
+    try {
+        val inventory = client.intents(listOf("en-us", "fr-fr"))
+        for (skill in inventory.skills) {
+            for (intent in skill.intents) {
+                println("${intent.id} ${intent.examples("fr-fr")}")
+            }
+        }
+    } finally {
+        client.close()
+    }
+}
+```
+
+Each intent carries the sentences a person says to reach it, per language, as
+the skill wrote them (`{location}` marks a slot): `phrasesFor(lang)` is the
+whole list, `examples(lang, limit)` a few worth showing (whole sentences before
+ones with a slot, shorter first), and `engine` says which matcher owns it
+(`padatious` for template intents, `adapt` for keyword ones). `asJson()` on
+the inventory, a skill, or an intent gives a JSON-ready view.
+
+The hub's connection must be allowed to publish `ovos.intent.list` and
+`ovos.intent.describe` — connections the control plane provisions for SDK
+clients are, by default. A hub that refuses throws
+`ThalovantPolicyDeniedException` naming the type at once (no timeout), or with
+the default `IntentInventoryOptions(fallback = true)` lists intent names only
+from the engines' own manifests and marks the result
+`source = HubIntentSource.ENGINE_MANIFESTS` with `denied` naming the refused
+query. `IntentInventoryOptions(describe = false)` skips the sentences, and
+`timeoutMs` bounds each query.
+
+The describes go out in windows of at most `DESCRIBE_BATCH` (32) requests,
+each window with its own deadline, so a hub with many intents is never sent a
+burst larger than a bounded reply queue can hold. A describe that never
+answers leaves its intent without sentences rather than failing the call, and
+a whole window that answers nothing simply contributes nothing — only a hub
+that answers no window at all raises `ThalovantTimeoutException`.
+
+The two underlying queries are exposed too:
+
+```kotlin
+val rows = client.listIntents("fr-fr")                          // IntentRegistration per registration
+val definitions = client.describeIntent(rows[0].skillId, rows[0].intentName, "fr-fr")
+println(definitions.firstOrNull()?.samples)
+```
+
 ## Use An Existing Identity
 
 Raw identity files (for example the `initial_identify` payload downloaded from
@@ -385,7 +442,12 @@ subscription.close()
 - `Unsupported protocol`: the hub does not expose WSS, or the identity was
   created before WSS was enabled. `https` and `mqtt` runtimes are not part of
   0.1.3.
-- A request times out: pass a larger `timeoutMs` to `ask(...)`.
+- A request times out: pass a larger `timeoutMs` to `ask(...)`, or a larger
+  `IntentInventoryOptions(timeoutMs = ...)` to `intents(...)`.
+- `ThalovantPolicyDeniedException`: the hub refused a bus message type this
+  connection may not publish (`deniedType`, with the `allowed` list). Allow
+  the type in the dashboard's connection settings; for `intents(...)` the
+  default fallback answers names only instead of throwing.
 - `HTTP 429` with `"code": "token_rate_limited"`: the API token exceeded its
   plan's per-minute request rate (60 requests per minute on the free plan).
   The response carries a `Retry-After` header and a matching
@@ -438,6 +500,9 @@ Per-plan limits are listed in the dashboard and at
 - `ThalovantClient(identity)` / `ThalovantClient.fromIdentityFile(path)`
 - `client.connect(timeoutMs)`
 - `client.ask(text, timeoutMs, lang, sessionId, requestId, context)`
+- `client.intents(languages, IntentInventoryOptions(timeoutMs, describe, fallback))` returning a `HubIntentInventory`
+- `client.listIntents(lang, ListIntentsOptions(timeoutMs, includeDefinitions))` returning `IntentRegistration` rows
+- `client.describeIntent(skillId, intentName, lang, DescribeIntentOptions(timeoutMs))` returning `IntentDefinition`s
 - `client.sendUtterance(text, lang, sessionId, requestId, context)`
 - `client.emit(eventType, data, context)`
 - `client.on(eventName, sessionId, requestId, handler)`
