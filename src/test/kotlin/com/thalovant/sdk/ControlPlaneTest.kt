@@ -10,6 +10,7 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.launch
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.boolean
 import kotlinx.serialization.json.jsonArray
@@ -47,6 +48,23 @@ class ControlPlaneTest {
 
     private fun bodyJson(request: RecordedRequest): JsonObject =
         ThalovantJson.parseToJsonElement(request.body.readUtf8()).jsonObject
+
+    @Test
+    fun `cancelling an HTTP request promptly cancels the underlying call`() = runBlocking {
+        server.enqueue(MockResponse().setSocketPolicy(okhttp3.mockwebserver.SocketPolicy.NO_RESPONSE))
+        val dispatcher = okhttp3.Dispatcher()
+        val sdk = ThalovantControlPlane(server.url("/api").toString(), httpClient = okhttp3.OkHttpClient.Builder().dispatcher(dispatcher).build())
+        val request = launch { sdk.listPublicHubs() }
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            assertNotNull(server.takeRequest(2, java.util.concurrent.TimeUnit.SECONDS))
+        }
+        request.cancel()
+        kotlinx.coroutines.withTimeout(2000) {
+            request.join()
+            while (dispatcher.runningCallsCount() != 0) kotlinx.coroutines.delay(10)
+        }
+        assertTrue(request.isCancelled)
+    }
 
     @Test
     fun `uses public API default and normalizes v1 roots`() {
@@ -102,6 +120,24 @@ class ControlPlaneTest {
         assertEquals(401, error.statusCode)
         assertEquals("""{"code":"mfa_required"}""", error.body)
         assertTrue("HTTP 401" in error.message.orEmpty())
+    }
+
+    @Test
+    fun `reflected credentials never enter API exception messages`() = runBlocking {
+        val secret = "PRIVATE-API-CREDENTIAL"
+        val bodies = listOf(
+            secret,
+            "{\"detail\":\"$secret\"}",
+            "{\"password\":\"$secret\",\"apiKey\":\"$secret\"}",
+            "{\"detail\":[{\"msg\":\"Invalid input\",\"input\":{\"password\":\"$secret\"}}]}",
+        )
+        for (body in bodies) {
+            enqueueJson(422, body)
+            val error = assertFailsWith<ThalovantApiException> { api().login("ada@example.com", secret) }
+            assertEquals(body, error.body)
+            assertFalse(secret in error.message.orEmpty())
+            assertTrue("HTTP 422" in error.message.orEmpty())
+        }
     }
 
     @Test

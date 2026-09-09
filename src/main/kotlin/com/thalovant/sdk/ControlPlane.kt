@@ -6,6 +6,11 @@ import java.util.UUID
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.suspendCancellableCoroutine
+import java.io.IOException
+import okhttp3.Call
+import okhttp3.Callback
+import okhttp3.Response
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonArray
@@ -941,23 +946,27 @@ public class ThalovantControlPlane(
         }
         val requestBody = body?.toString()?.toRequestBody("application/json".toMediaType())
         builder.method(method, requestBody)
-        return withContext(Dispatchers.IO) {
-            httpClient.newCall(builder.build()).execute().use { response ->
-                val text = response.body?.string().orEmpty()
-                if (!response.isSuccessful) {
-                    throw ThalovantApiException(
-                        apiErrorMessage(response.code, text),
-                        statusCode = response.code,
-                        body = text,
-                    )
+        return suspendCancellableCoroutine { continuation ->
+            val call = httpClient.newCall(builder.build())
+            continuation.invokeOnCancellation { call.cancel() }
+            call.enqueue(object : Callback {
+                override fun onFailure(call: Call, e: IOException) {
+                    continuation.resumeWith(Result.failure(e))
                 }
-                if (text.isBlank()) {
-                    EMPTY_JSON_OBJECT
-                } else {
-                    ThalovantJson.parseToJsonElement(text).asObjectOrNull()
-                        ?: throw ThalovantApiException("Thalovant API returned an unexpected response shape.")
+                override fun onResponse(call: Call, response: Response) {
+                    continuation.resumeWith(runCatching {
+                        response.use {
+                            val text = response.body?.string().orEmpty()
+                            if (!response.isSuccessful) throw ThalovantApiException(
+                                apiErrorMessage(response.code, text), statusCode = response.code, body = text,
+                            )
+                            if (text.isBlank()) EMPTY_JSON_OBJECT
+                            else ThalovantJson.parseToJsonElement(text).asObjectOrNull()
+                                ?: throw ThalovantApiException("Thalovant API returned an unexpected response shape.")
+                        }
+                    })
                 }
-            }
+            })
         }
     }
 
@@ -975,13 +984,21 @@ private val API_ERROR_WHITESPACE: Regex = Regex("\\s+")
  * Builds the human-facing message for a failed API request. The full response
  * body stays on [ThalovantApiException.body] for programmatic inspection (the
  * device flow parses its `error` code from it), but the message keeps only the
- * status and a short, single-line, bounded slice of the server detail. This
- * keeps a raw body — which for `POST /v1/clients`, `POST /v1/auth/token`, and
- * `POST /v1/auth/device/token` can echo the credentials that were sent — from
- * being interpolated wholesale into logs and stack traces.
+ * status and a bounded, known JSON error field. Raw bodies and validation
+ * inputs can reflect submitted credentials, so they never become the message.
  */
 private fun apiErrorMessage(statusCode: Int, body: String): String {
-    val detail = body.replace(API_ERROR_WHITESPACE, " ").trim().take(API_ERROR_DETAIL_MAX_LENGTH)
+    val envelope = runCatching { ThalovantJson.parseToJsonElement(body) as? JsonObject }.getOrNull()
+    fun text(value: JsonElement?): String? = (value as? JsonPrimitive)
+        ?.takeIf { it.isString }?.content?.takeIf { it.isNotBlank() }
+    val rawDetail = envelope?.get("detail")
+    val summary = (rawDetail as? JsonObject)?.let { text(it["message"]) ?: text(it["code"]) }
+        ?: (rawDetail as? JsonArray)?.mapNotNull { (it as? JsonObject)?.let { row -> text(row["msg"]) } }
+            ?.takeIf { it.isNotEmpty() }?.joinToString("; ")
+        ?: listOf("message", "error_description", "error", "title", "code")
+            .firstNotNullOfOrNull { envelope?.get(it)?.let(::text) }
+        ?: ""
+    val detail = summary.replace(API_ERROR_WHITESPACE, " ").trim().take(API_ERROR_DETAIL_MAX_LENGTH)
     return if (detail.isEmpty()) {
         "Thalovant API request failed with HTTP $statusCode."
     } else {

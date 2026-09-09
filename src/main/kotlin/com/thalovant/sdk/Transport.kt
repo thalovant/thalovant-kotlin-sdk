@@ -5,10 +5,9 @@ import java.util.UUID
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.CompletableDeferred
-import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
@@ -31,6 +30,13 @@ public class ThalovantSubscription internal constructor(private val closeFn: () 
 public interface HiveMindRuntimeTransport {
     public val connected: Boolean
     public val handshakeComplete: Boolean
+    public val connectionInfo: ThalovantConnectionInfo get() = ThalovantConnectionInfo(
+        phase = if (handshakeComplete && connected) "ready" else if (connected) "handshake" else "idle",
+    )
+    public fun addHiveMessageListener(listener: (JsonObject) -> Unit): ThalovantSubscription =
+        throw ThalovantRuntimeException("This transport does not support HiveMind query frames.")
+    public suspend fun sendHiveFrame(message: JsonObject): Unit =
+        throw ThalovantRuntimeException("This transport does not support HiveMind query frames.")
     public suspend fun connect(timeoutMs: Long = 6000)
     public suspend fun disconnect()
     public suspend fun emitBus(eventType: String, data: JsonObject, context: JsonObject)
@@ -46,6 +52,19 @@ public class HiveMindWssTransport(
 ) : HiveMindRuntimeTransport {
     private val client: OkHttpClient = httpClient ?: defaultClient
     private val listeners = CopyOnWriteArrayList<(ThalovantEvent) -> Unit>()
+    private val hiveListeners = CopyOnWriteArrayList<(JsonObject) -> Unit>()
+    private var connectStartedNs: Long? = null
+    private var connectDurationMs: Double? = null
+    private var phase = "idle"
+    override val connectionInfo: ThalovantConnectionInfo get() = synchronized(sendLock) {
+        ThalovantConnectionInfo(phase, connectDurationMs, if (lastError != null) "HiveMind WSS connection failed." else null)
+    }
+    override fun addHiveMessageListener(listener: (JsonObject) -> Unit): ThalovantSubscription {
+        hiveListeners.add(listener)
+        return ThalovantSubscription { hiveListeners.remove(listener) }
+    }
+    override suspend fun sendHiveFrame(message: JsonObject) { sendHiveMessage(message) }
+
     private var socket: WebSocket? = null
     private var serverHello: JsonObject? = null
     private var noiseHandshake: NoiseHandshake? = null
@@ -94,10 +113,17 @@ public class HiveMindWssTransport(
         }
 
     override suspend fun connect(timeoutMs: Long) {
-        connectMutex.withLock { connectOnce(timeoutMs) }
+        require(timeoutMs > 0) { "timeoutMs must be positive." }
+        val ready = withTimeoutOrNull(timeoutMs) {
+            connectMutex.withLock { connectOnce() }
+            true
+        }
+        // withTimeoutOrNull catches only this call's timeout; an enclosing
+        // coroutine deadline or cancellation remains a cancellation.
+        if (ready == null) throw ThalovantConnectionException("HiveMind WSS handshake timed out.")
     }
 
-    private suspend fun connectOnce(timeoutMs: Long) {
+    private suspend fun connectOnce() {
         if (connected && handshakeComplete) {
             return
         }
@@ -106,6 +132,9 @@ public class HiveMindWssTransport(
             generation++
             resetSession()
             lastError = null
+            phase = "connecting"
+            connectStartedNs = System.nanoTime()
+            connectDurationMs = null
             opened = CompletableDeferred()
             handshake = CompletableDeferred()
             generation
@@ -119,17 +148,19 @@ public class HiveMindWssTransport(
             client.newWebSocket(request, SocketListener(attempt)).also { socket = it }
         }
         try {
-            withTimeout(timeoutMs) {
-                opened.await()
-                handshake.await()
-            }
-        } catch (error: TimeoutCancellationException) {
-            webSocket.cancel()
-            synchronized(sendLock) { if (attempt == generation) resetSession() }
-            throw ThalovantConnectionException("HiveMind WSS handshake timed out.")
+            opened.await()
+            handshake.await()
         } catch (error: Throwable) {
+            synchronized(sendLock) {
+                if (attempt == generation) {
+                    generation++
+                    socket = null
+                    resetSession()
+                    phase = "error"
+                    lastError = error
+                }
+            }
             webSocket.cancel()
-            synchronized(sendLock) { if (attempt == generation) resetSession() }
             throw error
         }
     }
@@ -140,6 +171,7 @@ public class HiveMindWssTransport(
             socket = null
             generation++
             resetSession()
+            phase = "closed"
             val error = ThalovantConnectionException("HiveMind WSS disconnected.")
             opened.completeExceptionally(error)
             handshake.completeExceptionally(error)
@@ -186,7 +218,8 @@ public class HiveMindWssTransport(
         check(socket?.send(frame.toString()) == true) { "Noise handshake send failed." }
     }
 
-    private fun handleRawMessage(raw: String, authenticated: Boolean = false) {
+    private fun handleRawMessage(raw: String, authenticated: Boolean = false): List<() -> Unit> {
+        val deliveries = mutableListOf<() -> Unit>()
         check(authenticated || noiseSession == null) { "Plaintext frame received after Noise negotiation." }
         val parsed = ThalovantJson.parseToJsonElement(raw).asObjectOrNull()
             ?: throw ThalovantConnectionException("Invalid HiveMind JSON frame.")
@@ -205,14 +238,16 @@ public class HiveMindWssTransport(
             "bus" -> {
                 check(authenticated && handshakeComplete) { "Application frame received before Noise authentication." }
                 val event = ThalovantEvent(
-                    name = payload.optionalString("type") ?: return,
+                    name = payload.optionalString("type") ?: return emptyList(),
                     data = payload["data"].asObjectOrNull() ?: EMPTY_JSON_OBJECT,
                     context = payload["context"].asObjectOrNull() ?: EMPTY_JSON_OBJECT,
                 )
-                for (listener in listeners) listener(event)
+                for (listener in listeners.toList()) deliveries.add { listener(event) }
             }
             else -> check(authenticated) { "Unexpected plaintext application frame." }
         }
+        if (authenticated && handshakeComplete) for (listener in hiveListeners.toList()) deliveries.add { listener(parsed) }
+        return deliveries
     }
 
     private fun handleHandshake(payload: JsonObject) {
@@ -246,6 +281,8 @@ public class HiveMindWssTransport(
             noiseHandshake = null
             sendHiveMessage(helloMessage())
             handshakeComplete = true
+            phase = "ready"
+            connectDurationMs = connectStartedNs?.let { (System.nanoTime() - it) / 1_000_000.0 }
             handshake.complete(Unit)
         }
     }
@@ -261,6 +298,7 @@ public class HiveMindWssTransport(
 
     private fun failHandshake(error: Throwable) {
         lastError = error
+        phase = "error"
         resetSession()
         socket?.cancel()
         opened.completeExceptionally(error)
@@ -268,29 +306,38 @@ public class HiveMindWssTransport(
     }
 
     private inner class SocketListener(private val currentGeneration: Long) : WebSocketListener() {
-        private fun receive(action: () -> Unit) = synchronized(sendLock) {
-            if (currentGeneration != generation) return@synchronized
-            try { action() } catch (error: Throwable) { failHandshake(error) }
+        private fun receive(action: () -> List<() -> Unit>) {
+            val deliveries = synchronized(sendLock) {
+                if (currentGeneration != generation) return@synchronized emptyList()
+                try { action() } catch (error: Throwable) { failHandshake(error); emptyList() }
+            }
+            // Application callbacks cannot hold the cipher/send lock or turn
+            // an authenticated session into a transport failure.
+            for (deliver in deliveries) runCatching { deliver() }
         }
         override fun onOpen(webSocket: WebSocket, response: Response) = receive {
             socket = webSocket
             connected = true
+            phase = "handshake"
             opened.complete(Unit)
+            emptyList()
         }
         override fun onMessage(webSocket: WebSocket, text: String) = receive { handleRawMessage(text) }
         override fun onMessage(webSocket: WebSocket, bytes: ByteString) = receive {
             val session = noiseSession ?: error("Binary frame received before Noise authentication.")
-            val frame = session.decrypt(bytes.toByteArray()) ?: return@receive
+            val frame = session.decrypt(bytes.toByteArray()) ?: return@receive emptyList()
             check(frame.second) { "Binary HiveMind payloads were not negotiated." }
             handleRawMessage(frame.first.toString(Charsets.UTF_8), authenticated = true)
         }
         override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) = receive {
             failHandshake(ThalovantConnectionException("HiveMind WSS connect failed: ${t.message}", t))
+            emptyList()
         }
         override fun onClosing(webSocket: WebSocket, code: Int, reason: String) { webSocket.close(code, reason) }
         override fun onClosed(webSocket: WebSocket, code: Int, reason: String) = receive {
             if (!handshakeComplete) failHandshake(ThalovantConnectionException("HiveMind WSS closed before Noise handshake completed ($code)."))
-            else resetSession()
+            else { resetSession(); phase = "closed" }
+            emptyList()
         }
     }
 

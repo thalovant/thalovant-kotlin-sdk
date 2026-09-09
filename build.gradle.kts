@@ -11,7 +11,7 @@ plugins {
 }
 
 group = "com.thalovant"
-version = "0.2.0"
+version = "0.3.0"
 
 repositories {
     mavenCentral()
@@ -34,7 +34,10 @@ kotlin {
 }
 
 tasks.test {
-    useJUnitPlatform()
+    useJUnitPlatform { excludeTags("interop") }
+    javaLauncher.set(javaToolchains.launcherFor {
+        languageVersion.set(JavaLanguageVersion.of(providers.gradleProperty("testJavaVersion").orElse("17").get()))
+    })
     doFirst { systemProperty("noise.test.classpath", sourceSets["test"].runtimeClasspath.asPath) }
     testLogging {
         events("passed", "failed", "skipped")
@@ -103,4 +106,15 @@ if (!signingKey.isNullOrBlank()) {
     signing {
         useInMemoryPgpKeys(signingKey, System.getenv("SIGNING_PASSWORD"))
     }
+}
+
+
+// Explicit loopback integration, separate from network-free unit tests.
+tasks.register<Test>("interopTest") {
+    testClassesDirs = sourceSets["test"].output.classesDirs
+    classpath = sourceSets["test"].runtimeClasspath
+    useJUnitPlatform { includeTags("interop") }
+    systemProperty("interop.endpoint", providers.gradleProperty("interopEndpoint").orElse("").get())
+    outputs.upToDateWhen { false }
+    testLogging { events("passed", "failed") }
 }

@@ -49,6 +49,10 @@ public object ThalovantEvents {
     /** Reply to [PADATIOUS_MANIFEST_GET]: `{intents: ["<skill_id>:<intent_name>"]}`. */
     public const val PADATIOUS_MANIFEST: String = "intent.service.padatious.manifest"
 
+    /** Query and reply for skills that handle utterances outside the intent manifest. */
+    public const val FALLBACK_LIST: String = "ovos.skills.fallback.list"
+    public const val FALLBACK_LIST_RESPONSE: String = "ovos.skills.fallback.list.response"
+
     public val FAILURE_EVENTS: Set<String> =
         setOf(INTENT_UNMATCHED, INTENT_FAILURE, POLICY_DENIED, QUERY_TIMEOUT)
 }
@@ -149,4 +153,3 @@ private fun optionalStringRaw(element: kotlinx.serialization.json.JsonElement?):
     val primitive = element as? JsonPrimitive ?: return null
     return primitive.content
 }
-

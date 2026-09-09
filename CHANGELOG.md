@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.3.0
+
+- Add scoped conversations, direct HiveMind query/cascade replies, bounded event
+  streams and waits, action/code input helpers, and local connection/health diagnostics.
+- Fall back to engine intent names when the detailed listing is silent as well
+  as denied. Discover fallback handlers with a bounded optional probe and expose
+  known/unknown discovery plus conservative language answerability.
+- Keep query collection open after soft intent misses, recover on later speech,
+  and retain partial speech when a policy denial or query timeout terminates it.
+- Ignore foreign correlated denials and describe replies; retain content-based
+  describe matching only when a reply carries no request id.
+- Include queued connect admission in each caller's deadline without cancelling
+  another caller's socket. Cancel the underlying HTTP call when its coroutine is
+  cancelled; prevent raw reflected response bodies entering API error messages.
+- Dispatch authenticated callbacks outside the send lock and isolate callback
+  failures from the Noise session.
+- Add JVM 17/21 CI and an independent pinned Node XX-to-KK loopback peer covering
+  exactly two connections, six encrypted exchanges and two scoped queries.
+
 ## 0.2.0
 
 - Implement HiveMind v3 Noise WSS with XXpsk2/KKpsk0, both offered cipher suites, Argon2id PSK derivation and persisted client/server identities using Bouncy Castle 1.85.
