@@ -1,5 +1,7 @@
 package com.thalovant.sdk
 
+import kotlinx.coroutines.ensureActive
+
 import java.util.Base64
 import java.util.UUID
 import java.util.concurrent.CopyOnWriteArrayList
@@ -63,7 +65,10 @@ public class HiveMindWssTransport(
         hiveListeners.add(listener)
         return ThalovantSubscription { hiveListeners.remove(listener) }
     }
-    override suspend fun sendHiveFrame(message: JsonObject) { sendHiveMessage(message) }
+    override suspend fun sendHiveFrame(message: JsonObject) {
+        val caller = kotlinx.coroutines.currentCoroutineContext()
+        sendHiveMessageChecked(message, true) { caller.ensureActive() }
+    }
 
     private var socket: WebSocket? = null
     private var serverHello: JsonObject? = null
@@ -185,7 +190,7 @@ public class HiveMindWssTransport(
     }
 
     override suspend fun emitBus(eventType: String, data: JsonObject, context: JsonObject) {
-        sendHiveMessage(
+        sendHiveFrame(
             hiveMessage(
                 "bus",
                 buildJsonObject {
@@ -198,9 +203,12 @@ public class HiveMindWssTransport(
     }
 
     /** Sends encrypted v3 JSON. Plaintext is reserved for the internal handshake. */
-    public fun sendHiveMessage(message: JsonObject, encrypt: Boolean = true) {
+    public fun sendHiveMessage(message: JsonObject, encrypt: Boolean = true) { sendHiveMessageChecked(message, encrypt) {} }
+
+    private fun sendHiveMessageChecked(message: JsonObject, encrypt: Boolean, checkCancellation: () -> Unit) {
         require(encrypt) { "Plaintext application messages are forbidden by HiveMind v3." }
         synchronized(sendLock) {
+            checkCancellation()
             val session = noiseSession ?: throw ThalovantConnectionException("Noise handshake is not complete.")
             val webSocket = socket ?: throw ThalovantConnectionException("HiveMind WSS transport is not connected.")
             for (frame in session.encrypt(message.toString().toByteArray())) {

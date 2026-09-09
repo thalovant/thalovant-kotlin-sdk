@@ -19,7 +19,7 @@ Full docs: <https://docs.thalovant.com/developers/sdks/kotlin/>
 
 ```kotlin
 dependencies {
-    implementation("com.thalovant:thalovant-sdk:0.3.1")
+    implementation("com.thalovant:thalovant-sdk:0.3.2")
 }
 ```
 
@@ -413,6 +413,20 @@ Identity fields match the API `ClientIdentifyResource` schema: `access_key`,
 `password`, `crypto_key`, `site_id`, `default_port`, `default_master`, plus
 optional `data_plane_endpoints`, `protocols`, and `mqtt` broker credentials
 (`endpoint`, `username`, `password`, `topic_prefix`, `tls`).
+
+## Ask deadlines and correlation
+
+Ask uses one total timeout across connection, authentication, send, and replies.
+The first nonempty speech starts a fixed settling window (250ms by default).
+The first handled or soft-miss event without speech starts a fixed empty-reply
+window (5s by default); subsequent speech switches to settling. Both windows
+are clipped to the original deadline, and an empty window does not add settling.
+Hard policy denial or query timeout freezes collection immediately: prior speech
+is returned as a failed partial reply; otherwise the call raises a runtime error.
+Caller cancellation removes owned subscriptions and preserves a different caller's
+connection attempt. Ask requires a matching request ID and returns the first
+nonblank correlated runtime session ID, falling back to the requested session.
+Query replies use the same session selection from accepted query events.
 
 ## Control-Plane HTTP Security
 

@@ -4,6 +4,7 @@ import java.util.concurrent.CopyOnWriteArrayList
 import kotlin.test.*
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.toList
+import kotlinx.coroutines.flow.collect
 import kotlinx.serialization.json.*
 
 private class RuntimeFake : HiveMindRuntimeTransport {
@@ -14,7 +15,10 @@ private class RuntimeFake : HiveMindRuntimeTransport {
     val emitted = mutableListOf<ThalovantEvent>()
     val sent = mutableListOf<JsonObject>()
     var queryAnswer: ((JsonObject) -> Unit)? = null
-    override suspend fun connect(timeoutMs: Long) { connected = true }
+    var connectAction: (suspend () -> Unit)? = null
+    var emitAction: (suspend () -> Unit)? = null
+    var busAnswer: ((JsonObject) -> Unit)? = null
+    override suspend fun connect(timeoutMs: Long) { connectAction?.invoke(); connected = true }
     override suspend fun disconnect() { connected = false }
     override fun addBusListener(listener: (ThalovantEvent) -> Unit): ThalovantSubscription {
         bus.add(listener); return ThalovantSubscription { bus.remove(listener) }
@@ -22,12 +26,12 @@ private class RuntimeFake : HiveMindRuntimeTransport {
     override fun addHiveMessageListener(listener: (JsonObject) -> Unit): ThalovantSubscription {
         frames.add(listener); return ThalovantSubscription { frames.remove(listener) }
     }
-    override suspend fun emitBus(eventType: String, data: JsonObject, context: JsonObject) { emitted.add(ThalovantEvent(eventType, data, context)) }
+    override suspend fun emitBus(eventType: String, data: JsonObject, context: JsonObject) { emitted.add(ThalovantEvent(eventType, data, context)); emitAction?.invoke(); busAnswer?.invoke(context) }
     override suspend fun sendHiveFrame(message: JsonObject) { sent.add(message); queryAnswer?.invoke(message) }
     fun deliver(event: ThalovantEvent) { bus.forEach { it(event) } }
-    fun reply(id: String, name: String, text: String = "", cascade: Boolean = false) {
+    fun reply(id: String, name: String, text: String = "", cascade: Boolean = false, session: String? = null) {
         val payload = hiveMessage("bus", buildJsonObject {
-            put("type", name); put("data", buildJsonObject { put("utterance", text) }); put("context", EMPTY_JSON_OBJECT)
+            put("type", name); put("data", buildJsonObject { put("utterance", text) }); put("context", contextWithCorrelation(EMPTY_JSON_OBJECT, sessionId = session))
         })
         val frame = hiveMessage(if (cascade) "cascade" else "query", payload, buildJsonObject { put("query_id", id) })
         frames.forEach { it(frame) }
@@ -38,6 +42,102 @@ class RuntimeTest {
     private fun client(fake: RuntimeFake) = ThalovantClient(ThalovantIdentity(ThalovantJson.parseToJsonElement(
         """{"access_key":"access","password":"password","crypto_key":"0123456789abcdef","site_id":"site","default_master":"wss://hub.example"}"""
     ).jsonObject), transport = fake, replySettleMs = 0, emptyReplyWaitMs = 0)
+
+    @Test fun `ask budget includes connect send empty wait and settle`() = runBlocking {
+        for (phase in listOf("connect", "send", "empty", "settle", "no_speech")) {
+            val fake = RuntimeFake(); val sdk = client(fake)
+            if (phase == "connect") fake.connectAction = { awaitCancellation() }
+            if (phase == "send") fake.emitAction = { awaitCancellation() }
+            fake.busAnswer = { context -> fake.deliver(ThalovantEvent(
+                if (phase in listOf("empty", "no_speech")) ThalovantEvents.UTTERANCE_HANDLED else ThalovantEvents.SPEAK,
+                buildJsonObject { put("utterance", "answer") }, context)) }
+            withTimeout(1000) {
+                if (phase == "settle") assertEquals("answer", sdk.ask("test", timeoutMs = 250, replySettleMs = 60000).text)
+                else if (phase == "no_speech") assertFailsWith<ThalovantTimeoutException> { sdk.ask("test", timeoutMs = 60000, emptyReplyWaitMs = 0, replySettleMs = 60000) }
+                else assertFailsWith<ThalovantTimeoutException> { sdk.ask("test", timeoutMs = 250, emptyReplyWaitMs = 60000) }
+            }
+            assertTrue(fake.bus.isEmpty())
+        }
+    }
+
+    @Test fun `ask freezes hard failures and ignores all subsequent speech`() = runBlocking {
+        for (partial in listOf(false, true)) {
+            val fake = RuntimeFake(); val sdk = client(fake)
+            fake.busAnswer = { context ->
+                if (partial) fake.deliver(ThalovantEvent("speak", buildJsonObject { put("utterance", "partial") }, context))
+                fake.deliver(ThalovantEvent(ThalovantEvents.POLICY_DENIED, context = context))
+                fake.deliver(ThalovantEvent("speak", buildJsonObject { put("utterance", "ignored") }, context))
+            }
+            withTimeout(1000) {
+                if (partial) {
+                    val reply = sdk.ask("test", timeoutMs = 500, replySettleMs = 60000)
+                    assertEquals("partial", reply.text); assertFalse(reply.ok); assertEquals(2, reply.events.size)
+                } else assertFailsWith<ThalovantRuntimeException> { sdk.ask("test", timeoutMs = 500, replySettleMs = 60000) }
+            }
+            assertTrue(fake.bus.isEmpty())
+        }
+    }
+
+    @Test fun `ask returns speech or hard failure while an admitted send retires`() = runBlocking {
+        for (hard in listOf(false, true)) {
+            val fake = RuntimeFake(); val sdk = client(fake)
+            val entered = CompletableDeferred<Unit>(); val release = CompletableDeferred<Unit>(); val retired = CompletableDeferred<Unit>()
+            fake.emitAction = {
+                val context = fake.emitted.last().context
+                fake.deliver(ThalovantEvent("speak", buildJsonObject { put("utterance", "answer") }, context))
+                if (hard) {
+                    fake.deliver(ThalovantEvent(ThalovantEvents.POLICY_DENIED, context = context))
+                    fake.deliver(ThalovantEvent("speak", buildJsonObject { put("utterance", "ignored") }, context))
+                }
+                entered.complete(Unit)
+                try { awaitCancellation() }
+                finally { withContext(NonCancellable) { release.await(); retired.complete(Unit) } }
+            }
+            val request = async { sdk.ask("test", timeoutMs = if (hard) 60000 else 250, replySettleMs = 60000) }
+            try {
+                withTimeout(1000) { entered.await() }
+                val reply = withTimeout(1000) { request.await() }
+                assertEquals("answer", reply.text); assertEquals(!hard, reply.ok)
+                assertFalse(retired.isCompleted); assertTrue(fake.bus.isEmpty())
+            } finally { release.complete(Unit); request.cancel() }
+            withTimeout(1000) { retired.await() }
+        }
+    }
+
+    @Test fun `cancelled send checks cancellation after waiting for the transport lock`() = runBlocking {
+        val transport = HiveMindWssTransport(ThalovantIdentity(ThalovantJson.parseToJsonElement(
+            """{"access_key":"fixture","password":"fixture","site_id":"fixture","default_master":"wss://hub.invalid"}"""
+        ).jsonObject))
+        val field = HiveMindWssTransport::class.java.getDeclaredField("sendLock").apply { isAccessible = true }
+        val lock = field.get(transport)
+        val held = java.util.concurrent.CountDownLatch(1); val release = java.util.concurrent.CountDownLatch(1)
+        val owner = Thread { synchronized(lock) { held.countDown(); release.await() } }.apply { start() }
+        assertTrue(held.await(1, java.util.concurrent.TimeUnit.SECONDS))
+        val entered = CompletableDeferred<Unit>(); val failure = CompletableDeferred<Throwable>()
+        val pending = launch(Dispatchers.IO) {
+            entered.complete(Unit)
+            try { transport.sendHiveFrame(hiveMessage("bus", EMPTY_JSON_OBJECT)) }
+            catch (error: Throwable) { failure.complete(error) }
+        }
+        try { entered.await(); pending.cancel() }
+        finally { release.countDown(); owner.join(1000) }
+        // Cancellation wins before even inspecting the absent Noise session or writing a frame.
+        assertIs<CancellationException>(withTimeout(1000) { failure.await() })
+        pending.join()
+    }
+
+    @Test fun `ask returns the first correlated runtime session replacement`() = runBlocking {
+        val fake = RuntimeFake(); val sdk = client(fake)
+        fake.busAnswer = { context ->
+            val id = context["request_id"]!!.jsonPrimitive.content
+            fake.deliver(ThalovantEvent("speak", buildJsonObject { put("utterance", "ignored") }, contextWithCorrelation(EMPTY_JSON_OBJECT, "foreign", requestId = "other")))
+            fake.deliver(ThalovantEvent(ThalovantEvents.UTTERANCE_HANDLED, context = contextWithCorrelation(EMPTY_JSON_OBJECT, "runtime-first", requestId = id)))
+            fake.deliver(ThalovantEvent("speak", buildJsonObject { put("utterance", "answer") }, contextWithCorrelation(EMPTY_JSON_OBJECT, "runtime-later", requestId = id)))
+        }
+        val reply = sdk.ask("test", sessionId = "requested", requestId = "r")
+        assertEquals("runtime-first", reply.sessionId); assertEquals("r", reply.requestId); assertEquals("answer", reply.text)
+        assertEquals(listOf("runtime-first", "runtime-later"), reply.events.map { it.sessionId })
+    }
 
     @Test fun `query rejects unrelated ids and aggregates nested cascade replies`() = runBlocking {
         val fake = RuntimeFake(); val sdk = client(fake)
@@ -56,6 +156,19 @@ class RuntimeTest {
         assertEquals("query", request["msg_type"]!!.jsonPrimitive.content)
         assertEquals("r", request["payload"]!!.jsonObject["payload"]!!.jsonObject["context"]!!.jsonObject["request_id"]!!.jsonPrimitive.content)
         assertTrue(fake.frames.isEmpty())
+    }
+
+    @Test fun `query returns the first accepted runtime session replacement`() = runBlocking {
+        val fake = RuntimeFake(); val sdk = client(fake)
+        fake.queryAnswer = {
+            fake.reply("foreign", "speak", "ignored", session = "foreign")
+            fake.reply("q", ThalovantEvents.UTTERANCE_HANDLED, session = "runtime-first")
+            fake.reply("q", "speak", "answer", session = "runtime-later")
+            fake.reply("q", "hive.query.complete", session = "runtime-final")
+        }
+        val reply = sdk.query("test", sessionId = "requested", requestId = "r", queryId = "q")
+        assertEquals("runtime-first", reply.sessionId); assertEquals("r", reply.requestId)
+        assertEquals("answer", reply.text); assertEquals(3, reply.events.size)
     }
 
     @Test fun `query soft misses allow later speech while hard failures retain partial speech`() = runBlocking {
@@ -116,6 +229,19 @@ class RuntimeTest {
         cancelled.cancelAndJoin(); assertTrue(fake.bus.isEmpty())
         val lost = async(start = CoroutineStart.UNDISPATCHED) { runCatching { sdk.listen("never").toList() }.exceptionOrNull() }
         fake.disconnect(); assertIs<ThalovantConnectionException>(withTimeout(1000) { lost.await() })
+        assertTrue(fake.bus.isEmpty())
+    }
+
+    @Test fun `stream overflow is explicit and closes its subscription`() = runBlocking {
+        val fake = RuntimeFake(); val sdk = client(fake)
+        val entered = CompletableDeferred<Unit>(); val resume = CompletableDeferred<Unit>()
+        val consuming = async(start = CoroutineStart.UNDISPATCHED) {
+            runCatching { sdk.listen("speak").collect { entered.complete(Unit); resume.await() } }.exceptionOrNull()
+        }
+        fake.deliver(ThalovantEvent("speak")); entered.await()
+        repeat(65) { fake.deliver(ThalovantEvent("speak")) }
+        resume.complete(Unit)
+        assertIs<ThalovantRuntimeException>(withTimeout(1000) { consuming.await() })
         assertTrue(fake.bus.isEmpty())
     }
 

@@ -1,6 +1,7 @@
 package com.thalovant.sdk
 
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
@@ -153,6 +154,7 @@ public suspend fun ThalovantClient.query(
     val events = mutableListOf<ThalovantEvent>()
     val fragments = mutableListOf<String>()
     var failure: ThalovantEvent? = null
+    var responseSessionId: String? = null
     val whitespace = Regex("\\s+")
     val subscription = transport.addHiveMessageListener { message ->
         if (message.optionalString("msg_type") !in listOf("query", "cascade")) return@addHiveMessageListener
@@ -162,6 +164,7 @@ public suspend fun ThalovantClient.query(
         synchronized(lock) {
             if (done.isCompleted) return@synchronized
             events.add(event)
+            if (responseSessionId == null) responseSessionId = event.sessionId?.takeIf { it.isNotBlank() }
             when {
                 event.name == "hive.query.complete" -> done.complete(Unit)
                 event.name in listOf(ThalovantEvents.SPEAK, ThalovantEvents.OVOS_UTTERANCE_SPEAK) -> {
@@ -192,7 +195,7 @@ public suspend fun ThalovantClient.query(
             }
             val terminalFailure = failure?.takeIf { it.name in listOf(ThalovantEvents.POLICY_DENIED, ThalovantEvents.QUERY_TIMEOUT) }
             return ThalovantReply(fragments.joinToString(" "), fragments.toList(), terminalFailure == null, terminalFailure == null,
-                session, request, events.toList(), terminalFailure)
+                responseSessionId ?: session, request, events.toList(), terminalFailure)
         }
     } finally { subscription.close() }
 }
@@ -260,3 +263,9 @@ public class ThalovantConversation internal constructor(
 
 public fun ThalovantClient.conversation(sessionId: String = newSessionId(), lang: String = "en-us", context: JsonObject = EMPTY_JSON_OBJECT): ThalovantConversation =
     ThalovantConversation(this, sessionId, lang, context)
+
+/** Caller waits are bounded separately; this worker keeps physical transport ownership until it finishes. */
+internal suspend fun launchRuntimeIo(onFailure: (Exception) -> Unit, block: suspend () -> Unit): kotlinx.coroutines.Job =
+    kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.currentCoroutineContext().minusKey(kotlinx.coroutines.Job) + kotlinx.coroutines.Dispatchers.IO).launch {
+        try { block() } catch (error: Exception) { onFailure(error) }
+    }
