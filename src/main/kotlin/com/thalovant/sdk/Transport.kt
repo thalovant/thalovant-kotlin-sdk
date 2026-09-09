@@ -6,6 +6,8 @@ import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonNull
@@ -49,6 +51,7 @@ public class HiveMindWssTransport(
     private var noiseHandshake: NoiseHandshake? = null
     private var noiseSession: NoiseSession? = null
     private val sendLock = Any()
+    private val connectMutex = Mutex()
     private var generation = 0L
     private var cachedPsk: Pair<String, ByteArray>? = null
 
@@ -91,6 +94,10 @@ public class HiveMindWssTransport(
         }
 
     override suspend fun connect(timeoutMs: Long) {
+        connectMutex.withLock { connectOnce(timeoutMs) }
+    }
+
+    private suspend fun connectOnce(timeoutMs: Long) {
         if (connected && handshakeComplete) {
             return
         }

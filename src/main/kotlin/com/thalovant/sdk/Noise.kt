@@ -41,7 +41,12 @@ internal object Noise {
         } finally { passwordBytes.fill(0); parameters.clear() }
     }
     fun canonical(value: JsonElement): String = when (value) {
-        is JsonObject -> value.keys.sorted().joinToString(",", "{", "}") { JsonPrimitive(it).toString() + ":" + canonical(value.getValue(it)) }
+        is JsonObject -> value.keys.sortedWith { left, right ->
+            val a = left.codePoints().toArray(); val b = right.codePoints().toArray()
+            var result = 0
+            for (i in 0 until minOf(a.size, b.size)) { result = a[i].compareTo(b[i]); if (result != 0) break }
+            if (result == 0) a.size.compareTo(b.size) else result
+        }.joinToString(",", "{", "}") { JsonPrimitive(it).toString() + ":" + canonical(value.getValue(it)) }
         is JsonArray -> value.joinToString(",", "[", "]") { canonical(it) }
         else -> value.toString()
     }

@@ -38,6 +38,10 @@ class NoiseTest {
             assertFails { session.decrypt(Noise.unhex(exchange.getValue("transport_r").jsonArray[0].jsonPrimitive.content)) }
         }
     }
+    @Test fun `canonical JSON uses Python Unicode codepoint order and lowercase control escapes`() {
+        val value = buildJsonObject { put("\uE000", "café\u001f"); put("\uD800\uDC00", "\uD83D\uDE00") }
+        assertEquals("{\"\uE000\":\"café\\u001f\",\"\uD800\uDC00\":\"\uD83D\uDE00\"}", Noise.canonical(value))
+    }
     @Test fun `Argon2id matches upstream UTF8 and parameter vectors`() {
         assertEquals(fixture.text("psk"), Noise.hex(Noise.derivePsk(fixture.text("password"), fixture.text("node_id"))))
         assertEquals("988418601dbad183fbd6116e7981e9ab8ffe93be3f3f45c27eb0b70c325f9cd8", Noise.hex(Noise.derivePsk("passé-wörd", "hub-ümläut")))
