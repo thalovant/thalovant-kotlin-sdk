@@ -11,6 +11,7 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.async
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
@@ -70,6 +71,10 @@ internal open class FakeHubTransport(
     private val definitionsInList: Boolean = false,
     private val echoRequestId: Boolean = true,
     private val repeats: Int = 2,
+    private val foreignFirst: Boolean = false,
+    private val fallbackDelayMs: Long = 0,
+    private val connectDelayMs: Long = 0,
+    private val fallbackPayload: JsonObject = buildJsonObject { put("fallbacks", JsonArray(emptyList())) },
 ) : HiveMindRuntimeTransport {
     @Volatile
     final override var connected: Boolean = false
@@ -84,6 +89,7 @@ internal open class FakeHubTransport(
     val subscriptions: AtomicInteger = AtomicInteger()
 
     override suspend fun connect(timeoutMs: Long) {
+        if (connectDelayMs > 0) kotlinx.coroutines.delay(connectDelayMs)
         connected = true
     }
 
@@ -115,6 +121,18 @@ internal open class FakeHubTransport(
 
     override suspend fun emitBus(eventType: String, data: JsonObject, context: JsonObject) {
         emitted.add(Emitted(eventType, data, context))
+        if (eventType == ThalovantEvents.FALLBACK_LIST && fallbackDelayMs > 0) kotlinx.coroutines.delay(fallbackDelayMs)
+        if (foreignFirst) {
+            val foreign = buildJsonObject { put("request_id", "foreign-request") }
+            denyOf(eventType, foreign)
+            if (eventType == ThalovantEvents.INTENT_DESCRIBE) deliver(
+                ThalovantEvents.INTENT_DESCRIBE_RESPONSE,
+                buildJsonObject { put("definitions", JsonArray(listOf(buildJsonObject {
+                    put("method", "template"); put("definition", definition(
+                        data["skill_id"]!!.jsonPrimitive.content to data["intent_name"]!!.jsonPrimitive.content,
+                        data["lang"]!!.jsonPrimitive.content, listOf("foreign phrase")))
+                }))) }, foreign)
+        }
         if (eventType in refuse) {
             denyOf(eventType, context)
             return
@@ -122,6 +140,7 @@ internal open class FakeHubTransport(
         if (eventType in silent) return
         val lang = data["lang"]?.jsonPrimitive?.content ?: ""
         when (eventType) {
+            ThalovantEvents.FALLBACK_LIST -> deliver(ThalovantEvents.FALLBACK_LIST_RESPONSE, fallbackPayload, context)
             ThalovantEvents.INTENT_LIST -> {
                 val rows = registrations[lang].orEmpty().map { (key, samples) ->
                     buildJsonObject {
@@ -379,12 +398,84 @@ class IntentsTest {
     }
 
     @Test
-    fun `a silent hub times out on the listing`() = runBlocking {
+    fun `a silent listing falls back without implying an explicit policy denial`() = runBlocking {
         val hub = FakeHubTransport(silent = setOf(ThalovantEvents.INTENT_LIST))
-        val error = assertFailsWith<ThalovantTimeoutException> {
-            client(hub).intents(listOf("en-us"), IntentInventoryOptions(timeoutMs = 200))
+        val result = client(hub).intents(listOf("en-us"), IntentInventoryOptions(timeoutMs = 30))
+        assertEquals(HubIntentSource.ENGINE_MANIFESTS, result.source)
+        assertEquals(listOf(ThalovantEvents.INTENT_LIST), result.denied)
+        assertFalse(result.hasPhrases)
+        assertTrue(result.fallbacksKnown)
+        assertFalse(result.mayAnswer("fr-fr"))
+    }
+
+    @Test
+    fun `silent listing strict mode and silent engines retain timeout errors`() = runBlocking {
+        for ((silent, fallback, expected) in listOf(
+            Triple(setOf(ThalovantEvents.INTENT_LIST), false, ThalovantEvents.INTENT_LIST),
+            Triple(setOf(ThalovantEvents.INTENT_LIST, ThalovantEvents.ADAPT_MANIFEST_GET), true, ThalovantEvents.ADAPT_MANIFEST_GET),
+        )) {
+            val error = assertFailsWith<ThalovantTimeoutException> {
+                client(FakeHubTransport(silent = silent)).intents(listOf("en-us"), IntentInventoryOptions(timeoutMs = 30, fallback = fallback))
+            }
+            assertTrue(expected in error.message.orEmpty())
         }
-        assertTrue("ovos.intent.list" in error.message.orEmpty())
+    }
+
+    @Test
+    fun `fallback discovery distinguishes unknown from known empty`() = runBlocking {
+        for (hub in listOf(
+            FakeHubTransport(refuse = setOf(ThalovantEvents.FALLBACK_LIST)),
+            FakeHubTransport(silent = setOf(ThalovantEvents.FALLBACK_LIST)),
+            FakeHubTransport(fallbackPayload = buildJsonObject { put("fallbacks", "invalid") }),
+            FakeHubTransport(fallbackPayload = buildJsonObject { put("ok", false); put("fallbacks", JsonArray(emptyList())) }),
+        )) {
+            val inventory = client(hub).intents(listOf("fr-fr"), IntentInventoryOptions(timeoutMs = 30))
+            assertFalse(inventory.fallbacksKnown)
+            assertTrue(inventory.mayAnswer("de-de"))
+            assertEquals(JsonPrimitive(false), inventory.asJson()["fallbacks_known"])
+        }
+        val inventory = client(FakeHubTransport()).intents(listOf("fr-fr"))
+        assertTrue(inventory.fallbacksKnown)
+        assertTrue(inventory.mayAnswer("fr-FR"))
+        assertFalse(inventory.mayAnswer("de-de"))
+        assertFalse(inventory.copy(skills = inventory.skills.map { skill ->
+            skill.copy(intents = skill.intents.map { it.copy(enabled = false) })
+        }).mayAnswer("fr-fr"))
+    }
+
+    @Test
+    fun `foreign correlated denials and matching describe content never satisfy our request`() = runBlocking {
+        val inventory = client(FakeHubTransport(foreignFirst = true)).intents(listOf("en-us", "fr-fr"))
+        assertTrue(inventory.hasPhrases)
+        assertTrue(inventory.intents.flatMap { it.phrases.values.flatten() }.none { it == "foreign phrase" })
+        assertTrue(inventory.fallbacksKnown)
+    }
+
+    @Test
+    fun `fallback probe budget includes sending and preserves caller cancellation`() = runBlocking {
+        val sdk = client(FakeHubTransport(fallbackDelayMs = 5000))
+        val started = System.nanoTime()
+        assertNull(sdk.listFallbacks(30))
+        assertTrue((System.nanoTime() - started) / 1_000_000 < 1000)
+        assertNull(client(FakeHubTransport(connectDelayMs = 5000)).listFallbacks(30))
+        val job = async(start = kotlinx.coroutines.CoroutineStart.UNDISPATCHED) { sdk.listFallbacks(5000) }
+        job.cancel()
+        assertFailsWith<kotlinx.coroutines.CancellationException> { job.await() }
+    }
+
+    @Test
+    fun `fallback discovery parses and sorts handlers and ignores invalid rows`() = runBlocking {
+        val payload = ThalovantJson.parseToJsonElement("""{"fallbacks":[
+            {"skill_id":"b","priority":20}, {"skill_id":"a","priority":20.5},
+            {"skill_id":"default","priority":"10"}, {"skill_id":"huge","priority":1e100},
+            {"skill_id":""}, {"skill_id":123}, false
+        ]}""").jsonObject
+        val sdk = client(FakeHubTransport(fallbackPayload = payload))
+        assertEquals(listOf(HubFallback("default", 0), HubFallback("a", 20), HubFallback("b", 20)), sdk.listFallbacks())
+        val inventory = sdk.intents(listOf("fr-fr"))
+        assertTrue(inventory.fallbacksKnown)
+        assertTrue(inventory.mayAnswer("de-de"))
+        assertEquals(3, inventory.asJson()["fallbacks"]!!.jsonArray.size)
     }
 
     @Test

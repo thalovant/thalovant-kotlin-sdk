@@ -60,13 +60,14 @@ class TransportTest {
         stateDir.toFile().deleteRecursively()
     }
 
-    private fun startHub() {
+    private fun startHub(hold: java.util.concurrent.CountDownLatch? = null) {
         repeat(2) { server.enqueue(
             MockResponse().withWebSocketUpgrade(
                 object : WebSocketListener() {
                     private var exchange: NoiseHandshake? = null
                     override fun onOpen(webSocket: WebSocket, response: Response) {
                         serverSocket.set(webSocket)
+                        check(hold?.await(5, TimeUnit.SECONDS) != false)
                         webSocket.send(hiveMessage("hello", helloPayload).toString())
                         webSocket.send(hiveMessage("shake", offer).toString())
                     }
@@ -120,6 +121,32 @@ class TransportTest {
         assertNotNull(socket)
         val message = hiveMessage("bus", buildJsonObject { put("type", type); put("data", data); put("context", context) })
         for (frame in serverSession.encrypt(message.toString().toByteArray())) socket.send(ByteString.of(*frame))
+    }
+
+    @Test
+    fun `queued connect deadline and cancellation never cancel the active socket`() = runBlocking {
+        val release = java.util.concurrent.CountDownLatch(1)
+        startHub(release)
+        val transport = HiveMindWssTransport(identity(), noiseStore = HiveMindNoiseStore(stateDir))
+        val owner = async(Dispatchers.Default) { transport.connect(5000) }
+        try {
+            kotlinx.coroutines.withTimeout(2000) { while (serverSocket.get() == null) kotlinx.coroutines.delay(5) }
+            val elapsed = measureTimeMillis {
+                assertFailsWith<ThalovantConnectionException> { transport.connect(50) }
+            }
+            assertTrue(elapsed < 1000, "queued deadline must include admission wait")
+            assertFailsWith<kotlinx.coroutines.TimeoutCancellationException> {
+                kotlinx.coroutines.withTimeout(50) { transport.connect(5000) }
+            }
+            val cancelled = async(start = kotlinx.coroutines.CoroutineStart.UNDISPATCHED) { transport.connect(5000) }
+            cancelled.cancel()
+            assertFailsWith<kotlinx.coroutines.CancellationException> { cancelled.await() }
+            assertTrue(!owner.isCompleted)
+            release.countDown()
+            owner.await()
+            assertTrue(transport.connected && transport.handshakeComplete)
+            assertEquals(1, server.requestCount)
+        } finally { release.countDown(); transport.disconnect(); owner.cancel() }
     }
 
     @Test

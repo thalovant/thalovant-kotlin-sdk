@@ -19,7 +19,7 @@ Full docs: <https://docs.thalovant.com/developers/sdks/kotlin/>
 
 ```kotlin
 dependencies {
-    implementation("com.thalovant:thalovant-sdk:0.2.0")
+    implementation("com.thalovant:thalovant-sdk:0.3.0")
 }
 ```
 
@@ -377,6 +377,20 @@ val definitions = client.describeIntent(rows[0].skillId, rows[0].intentName, "fr
 println(definitions.firstOrNull()?.samples)
 ```
 
+A silent `ovos.intent.list` now uses the same default engine-manifest fallback
+as an explicit policy denial. `fallback = false` keeps strict listing timeout
+behavior. The `denied` list retains `ovos.intent.list` as the query that triggered
+fallback; that marker alone is not proof of a policy denial. Engine-query
+failures still reach the caller.
+
+`listFallbacks()` discovers `ovos.skills.fallback.list` handlers. Every inventory
+also makes an optional probe, capped at 1.5 seconds including connection,
+sending and waiting. `fallbacksKnown = false` means discovery was denied,
+silent or explicitly failed; a known empty handler list is different.
+`inventory.mayAnswer(lang)` remains true when an enabled intent has phrases,
+any fallback handler exists, or fallback discovery is unknown. Missing phrases
+alone do not establish that the hub cannot answer a language.
+
 ## Use An Existing Identity
 
 Raw identity files (for example the `initial_identify` payload downloaded from
@@ -451,6 +465,36 @@ println(identity.endpointFor(HubProtocol.HTTPS))
 println(identity.endpointFor(HubProtocol.MQTT))
 println(identity.mqtt?.endpoint)
 ```
+
+## Runtime helpers
+
+Import `com.thalovant.sdk.*` to use the runtime extension helpers:
+
+```kotlin
+val conversation = client.conversation(lang = "fr-fr")
+val reply = conversation.query("bonjour")
+conversation.sendAction("show-details", title = "Details")
+conversation.sendCode("001-09", label = "Ticket")
+val health = client.healthcheck()
+println(health.ok)
+```
+
+`conversation()` keeps one session and merges nested context without changing
+caller input. Each request gets a fresh request id. `query()` uses HiveMind
+query/cascade frames and requires a matching query id and completion event;
+it does not automatically replay a request after a disconnect.
+
+`waitForEvent()` accepts session/request filters and a predicate. `listen()`
+returns a cold `Flow`, with optional `timeoutMs` and `maxEvents`. Both remove
+subscriptions on completion or coroutine cancellation and fail promptly after
+transport loss. Streams buffer at most 64 events and report overflow explicitly.
+
+`connectWithInfo()`, `connectionInfo()`, `healthcheck()` and `doctor()` expose
+local authenticated connection status. These checks do not assert that every
+skill or external dependency is healthy. A queued `connect(timeoutMs)` caller's
+deadline includes admission wait; its cancellation does not cancel another
+caller's active connection. Cancelling a control-plane coroutine cancels its
+underlying HTTP call.
 
 ## Events
 

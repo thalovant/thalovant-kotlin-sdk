@@ -22,7 +22,7 @@ public class ThalovantClient(
     userAgent: String = DEFAULT_USER_AGENT,
     noiseStore: HiveMindNoiseStore = HiveMindNoiseStore(),
 ) {
-    private val transport: HiveMindRuntimeTransport =
+    internal val transport: HiveMindRuntimeTransport =
         transport ?: transportForProtocol(identity, protocol ?: defaultRuntimeProtocol(identity), userAgent, noiseStore)
 
     @Volatile
@@ -241,6 +241,9 @@ public class ThalovantClient(
         options: IntentInventoryOptions = IntentInventoryOptions(),
     ): HubIntentInventory = intentInventory(languages.ifEmpty { listOf(DEFAULT_INTENT_LANG) }, options)
 
+    /** Registered fallback handlers; null means discovery was unavailable, empty means none registered. */
+    public suspend fun listFallbacks(timeoutMs: Long = 5000): List<HubFallback>? = discoverFallbacks(timeoutMs)
+
     /** The hub's intent manifest for one language, one row per registration (`ovos.intent.list`). */
     public suspend fun listIntents(
         lang: String = DEFAULT_INTENT_LANG,
@@ -273,7 +276,7 @@ private fun defaultRuntimeProtocol(identity: ThalovantIdentity): HubProtocol {
     }
     throw ThalovantUnsupportedProtocolException(
         "The identity does not include a usable WSS endpoint. " +
-            "thalovant-kotlin-sdk 0.1.0 supports only the WSS data plane.",
+            "thalovant-kotlin-sdk supports only the WSS data plane.",
     )
 }
 
@@ -292,9 +295,9 @@ private fun transportForProtocol(
         HiveMindWssTransport(identity, userAgent, noiseStore = noiseStore)
     }
     HubProtocol.HTTPS -> throw ThalovantUnsupportedProtocolException(
-        "The HTTPS long-poll transport is not supported by thalovant-kotlin-sdk 0.1.0. Use wss.",
+        "The HTTPS long-poll transport is not supported by thalovant-kotlin-sdk. Use wss.",
     )
     HubProtocol.MQTT -> throw ThalovantUnsupportedProtocolException(
-        "The MQTT transport is not supported by thalovant-kotlin-sdk 0.1.0. Use wss.",
+        "The MQTT transport is not supported by thalovant-kotlin-sdk. Use wss.",
     )
 }

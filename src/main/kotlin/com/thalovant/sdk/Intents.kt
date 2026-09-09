@@ -227,12 +227,21 @@ public data class HubSkillIntents(
     }
 }
 
+/** A registered fallback handler, ordered by priority then skill id. */
+public data class HubFallback(public val skillId: String, public val priority: Long = 0) {
+    public fun asJson(): JsonObject = buildJsonObject {
+        put("skill_id", skillId)
+        put("priority", priority)
+    }
+}
+
 /**
  * Everything a hub can be asked, grouped by skill.
  *
  * [source] says how it was read: [HubIntentSource.INTENT_MANIFEST] carries
  * sentences per language; [HubIntentSource.ENGINE_MANIFESTS] is the names-only
- * fallback, and [denied] then names the query the hub refused.
+ * fallback, and [denied] then names the query that triggered fallback. A
+ * silent listing uses the same marker; it is not proof of a policy denial.
  */
 public data class HubIntentInventory(
     /** The languages asked for, in order. */
@@ -240,6 +249,8 @@ public data class HubIntentInventory(
     public val skills: List<HubSkillIntents>,
     public val source: HubIntentSource = HubIntentSource.INTENT_MANIFEST,
     public val denied: List<String> = emptyList(),
+    public val fallbacks: List<HubFallback> = emptyList(),
+    public val fallbacksKnown: Boolean = false,
 ) {
     /** Every intent of every skill, in skill order. */
     public val intents: List<HubIntent> get() = skills.flatMap { it.intents }
@@ -247,11 +258,17 @@ public data class HubIntentInventory(
     /** Whether any intent carries at least one sentence. */
     public val hasPhrases: Boolean get() = intents.any { intent -> intent.phrases.values.any { it.isNotEmpty() } }
 
+    /** Missing manifest phrases cannot rule out a fallback skill answering this language. */
+    public fun mayAnswer(lang: String): Boolean =
+        intents.any { it.enabled && it.phrasesFor(lang).isNotEmpty() } || fallbacks.isNotEmpty() || !fallbacksKnown
+
     public fun asJson(): JsonObject = buildJsonObject {
         put("languages", jsonStrings(languages))
         put("source", source.wireName)
         put("denied", jsonStrings(denied))
         put("skills", JsonArray(skills.map { it.asJson() }))
+        put("fallbacks", JsonArray(fallbacks.map { it.asJson() }))
+        put("fallbacks_known", fallbacksKnown)
     }
 }
 
@@ -278,7 +295,7 @@ internal suspend fun ThalovantClient.requestReply(
     val requestId = newRequestId()
     val answer = CompletableDeferred<ThalovantEvent>()
     connect()
-    val denials = on(ThalovantEvents.POLICY_DENIED) { event ->
+    val denials = on(ThalovantEvents.POLICY_DENIED, requestId = requestId) { event ->
         if (deniedTypeOf(event) == queryType) {
             answer.completeExceptionally(ThalovantPolicyDeniedException.fromEvent(event))
         }
@@ -389,12 +406,13 @@ private suspend fun ThalovantClient.describeWindow(
     val done = CompletableDeferred<Unit>()
     connect()
     val denials = on(ThalovantEvents.POLICY_DENIED) { event ->
-        if (deniedTypeOf(event) == ThalovantEvents.INTENT_DESCRIBE) {
+        if ((event.requestId == null || byRequest.containsKey(event.requestId)) && deniedTypeOf(event) == ThalovantEvents.INTENT_DESCRIBE) {
             done.completeExceptionally(ThalovantPolicyDeniedException.fromEvent(event))
         }
     }
     val replies = on(ThalovantEvents.INTENT_DESCRIBE_RESPONSE) { event ->
         val definitions = definitionsOf(event.data)
+        if (event.requestId != null && !byRequest.containsKey(event.requestId)) return@on
         val key = event.requestId?.let { byRequest[it] }
             ?: definitions.firstOrNull()?.let { first ->
                 // No request id came back: the definition names what it describes.
@@ -467,7 +485,7 @@ internal suspend fun ThalovantClient.intentNames(lang: String, timeoutMs: Long):
  *
  * Asks the intent manifest per language and, unless the runtime attached
  * definitions to the listing, describes every registration at once. When the
- * hub refuses `ovos.intent.list` and [IntentInventoryOptions.fallback] is on,
+ * hub refuses or does not answer `ovos.intent.list` and [IntentInventoryOptions.fallback] is on,
  * the engines' manifests give the names and the result says so.
  */
 internal suspend fun ThalovantClient.intentInventory(
@@ -493,7 +511,10 @@ internal suspend fun ThalovantClient.intentInventory(
         }
     } catch (denied: ThalovantPolicyDeniedException) {
         if (!options.fallback || denied.deniedType != ThalovantEvents.INTENT_LIST) throw denied
-        return inventoryFromNames(intentNames(asked[0], options.timeoutMs), asked.toList(), denied.deniedType)
+        return withFallbacks(inventoryFromNames(intentNames(asked[0], options.timeoutMs), asked.toList(), denied.deniedType), options.timeoutMs)
+    } catch (timeout: ThalovantTimeoutException) {
+        if (!options.fallback) throw timeout
+        return withFallbacks(inventoryFromNames(intentNames(asked[0], options.timeoutMs), asked.toList(), ThalovantEvents.INTENT_LIST), options.timeoutMs)
     }
 
     val wanted = listed.flatMap { (lang, entries) ->
@@ -538,11 +559,41 @@ internal suspend fun ThalovantClient.intentInventory(
         )
     }
     val skills = bySkill.map { (skillId, intents) -> HubSkillIntents(skillId, intents.sortedBy { it.name }) }
-    return HubIntentInventory(
+    return withFallbacks(HubIntentInventory(
         languages = asked.toList(),
         skills = skills,
         source = HubIntentSource.INTENT_MANIFEST,
-    )
+    ), options.timeoutMs)
+}
+
+/** Null means unknown; an empty list is an authoritative answer that no handlers were registered. */
+internal suspend fun ThalovantClient.discoverFallbacks(timeoutMs: Long): List<HubFallback>? {
+    require(timeoutMs > 0) { "timeoutMs must be positive." }
+    val event = try {
+        withTimeoutOrNull(timeoutMs) {
+            requestReply(ThalovantEvents.FALLBACK_LIST, ThalovantEvents.FALLBACK_LIST_RESPONSE,
+                EMPTY_JSON_OBJECT, lang = null, timeoutMs = timeoutMs)
+        } ?: return null
+    } catch (_: ThalovantPolicyDeniedException) { return null }
+      catch (_: ThalovantTimeoutException) { return null }
+    if (!enabledValue(event.data["ok"], true)) return null
+    val rows = event.data["fallbacks"] as? JsonArray ?: return null
+    return rows.mapNotNull { item ->
+        val row = item as? JsonObject ?: return@mapNotNull null
+        val skill = (row["skill_id"] as? JsonPrimitive)?.takeIf { it.isString }?.content
+            ?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
+        val raw = (row["priority"] as? JsonPrimitive)?.takeUnless { it.isString }?.content
+        val priority = raw?.toLongOrNull() ?: raw?.toDoubleOrNull()?.let {
+            if (!it.isFinite() || it < Long.MIN_VALUE.toDouble() || it >= Long.MAX_VALUE.toDouble()) return@mapNotNull null
+            it.toLong()
+        } ?: 0L
+        HubFallback(skill, priority)
+    }.sortedWith(compareBy(HubFallback::priority, HubFallback::skillId))
+}
+
+private suspend fun ThalovantClient.withFallbacks(found: HubIntentInventory, timeoutMs: Long): HubIntentInventory {
+    val handlers = discoverFallbacks(minOf(timeoutMs, 1500L))
+    return found.copy(fallbacks = handlers.orEmpty(), fallbacksKnown = handlers != null)
 }
 
 private fun inventoryFromNames(
