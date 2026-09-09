@@ -416,6 +416,10 @@ optional `data_plane_endpoints`, `protocols`, and `mqtt` broker credentials
 
 ## Control-Plane HTTP Security
 
+Device login opens only HTTP(S) verification URLs without userinfo. Other
+schemes, executable names, command options, and control characters never reach
+the operating system browser launcher.
+
 Control-plane requests never follow redirects automatically. Credentials and
 request bodies require HTTPS, except explicit `localhost`, `127.0.0.1`, and
 `[::1]` HTTP development endpoints. Anonymous body-free reads may use HTTP.

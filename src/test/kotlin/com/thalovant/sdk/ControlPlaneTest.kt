@@ -113,6 +113,17 @@ class ControlPlaneTest {
     }
 
     @Test
+    fun `device browser opener never launches arbitrary schemes options or userinfo`() = runBlocking {
+        var launches = 0
+        for (input in listOf("file:///tmp/program", "javascript:alert(1)", "calc.exe", "--help", "https://user:PRIVATE-CREDENTIAL@example.test", "https://@example.test", "https://example.test/\n--help")) {
+            openBrowserBestEffort(input) { launches++ }
+        }
+        assertEquals(0, launches)
+        openBrowserBestEffort("https://example.test/verify?code=a&next=b") { launches++; assertEquals("https", it.scheme) }
+        assertEquals(1, launches)
+    }
+
+    @Test
     fun `login redirects never replay credentials even with a redirect enabled client`() = runBlocking {
         val destination = MockWebServer(); destination.start()
         try {

@@ -2,6 +2,9 @@
 
 ## 0.3.1
 
+- Restrict device-login browser launches to HTTP(S) URLs without userinfo or
+  control characters, passing the URL as one argument outside Windows URL handling.
+
 - Reject automatic control-plane redirects so 307/308 responses cannot replay
   login credentials to another endpoint.
 - Require HTTPS for authorization and request bodies except explicit loopback

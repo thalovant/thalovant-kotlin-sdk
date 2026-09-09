@@ -1049,7 +1049,11 @@ private fun deviceFlowError(exception: ThalovantApiException): String? {
  * `java.awt` does not exist on Android, and headless JVMs report the browse
  * action as unsupported; both paths simply do nothing. Never throws.
  */
-private suspend fun openBrowserBestEffort(uri: String) {
+internal suspend fun openBrowserBestEffort(uri: String, launch: ((java.net.URI) -> Unit)? = null) {
+    val target = runCatching { java.net.URI(uri) }.getOrNull() ?: return
+    if (uri.any { it.isISOControl() } || target.scheme?.lowercase() !in setOf("http", "https") ||
+        target.host.isNullOrEmpty() || target.rawUserInfo != null) return
+    if (launch != null) { runCatching { launch(target) }; return }
     withContext(Dispatchers.IO) {
         try {
             val desktopClass = Class.forName("java.awt.Desktop")
@@ -1065,7 +1069,7 @@ private suspend fun openBrowserBestEffort(uri: String) {
             val browseSupported =
                 desktopClass.getMethod("isSupported", actionClass).invoke(desktop, browseAction) as? Boolean ?: false
             if (browseSupported) {
-                desktopClass.getMethod("browse", java.net.URI::class.java).invoke(desktop, java.net.URI(uri))
+                desktopClass.getMethod("browse", java.net.URI::class.java).invoke(desktop, target)
             }
         } catch (_: Throwable) {
             // Browser availability is best-effort; the prompt already carries the URI and code.
