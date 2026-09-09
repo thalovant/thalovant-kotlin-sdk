@@ -315,10 +315,20 @@ public class ThalovantControlPlane(
     apiUrl: String = DEFAULT_CONTROL_API_URL,
     public var accessToken: String? = null,
     public val userAgent: String = DEFAULT_USER_AGENT,
-    private val httpClient: OkHttpClient = defaultHttpClient,
+    httpClient: OkHttpClient = defaultHttpClient,
 ) {
     /** Normalized API root; a trailing `/v1` is stripped and a trailing slash added. */
     public val apiUrl: String = normalizeControlApiUrl(apiUrl)
+    private val httpClient = httpClient.newBuilder().followRedirects(false).followSslRedirects(false)
+        .addNetworkInterceptor { chain ->
+            val request = chain.request()
+            val secretHeaders = listOf("Authorization", "Proxy-Authorization", "Cookie")
+            if (!request.url.isHttps && request.url.host !in setOf("localhost", "127.0.0.1", "::1") &&
+                (request.body != null || secretHeaders.any { request.header(it) != null })) {
+                throw java.io.IOException("Credential-bearing Thalovant API requests require HTTPS.")
+            }
+            chain.proceed(request)
+        }.build()
 
     /**
      * Exchanges credentials for an access token via `POST /v1/auth/token` and
@@ -378,9 +388,15 @@ public class ThalovantControlPlane(
 
         val deviceCode = grant.optionalString("device_code")
         val userCode = grant.optionalString("user_code")
-        val verificationUri = grant.optionalString("verification_uri")
+        val verificationUri = (grant["verification_uri"] as? JsonPrimitive)?.takeIf { it.isString }?.content
         if (deviceCode == null || userCode == null || verificationUri == null) {
             throw ThalovantApiException("Thalovant API device authorization response was incomplete.")
+        }
+        val completeValue = grant["verification_uri_complete"]
+        val completeUri = (completeValue as? JsonPrimitive)?.takeIf { it.isString }?.content
+        if (deviceVerificationUri(verificationUri) == null ||
+            (completeValue != null && completeValue != kotlinx.serialization.json.JsonNull && (completeUri == null || deviceVerificationUri(completeUri) == null))) {
+            throw ThalovantApiException("Thalovant API device authorization returned an invalid verification URI.")
         }
         val intervalSeconds = optionalString(grant["interval"])?.toLongOrNull()
         val intervalMillis = if (intervalSeconds != null && intervalSeconds >= 0) {
@@ -928,12 +944,26 @@ public class ThalovantControlPlane(
         auth: Boolean = true,
         query: Map<String, String> = emptyMap(),
     ): JsonObject {
-        val urlBuilder = (apiUrl + path.trimStart('/')).toHttpUrl().newBuilder()
+        val urlBuilder = try { (apiUrl + path.trimStart('/')).toHttpUrl().newBuilder() }
+            catch (_: IllegalArgumentException) { throw ThalovantApiException("Invalid Thalovant API URL.") }
         for ((key, value) in query) {
             urlBuilder.addQueryParameter(key, value)
         }
+        val url = urlBuilder.build()
+        if (url.username.isNotEmpty() || url.password.isNotEmpty() || Regex("^[a-zA-Z][a-zA-Z0-9+.-]*://[^/?#]*@").containsMatchIn(apiUrl)) {
+            throw ThalovantApiException("Thalovant API URLs must not contain userinfo credentials.")
+        }
+        val carriesCredentials = auth || body != null || headers.keys.any { key ->
+            listOf("Authorization", "Proxy-Authorization", "Cookie").any { key.equals(it, ignoreCase = true) }
+        } || httpClient.authenticator !== okhttp3.Authenticator.NONE || httpClient.proxyAuthenticator !== okhttp3.Authenticator.NONE ||
+            httpClient.cookieJar.loadForRequest(url).isNotEmpty()
+        val explicitLoopback = Regex("^http://(?:localhost|127\\.0\\.0\\.1|\\[::1\\])(?::[0-9]+)?(?:/|$)", RegexOption.IGNORE_CASE)
+            .containsMatchIn(apiUrl)
+        if (carriesCredentials && !url.isHttps && !explicitLoopback) {
+            throw ThalovantApiException("Credential-bearing Thalovant API requests require HTTPS except explicit loopback development endpoints.")
+        }
         val builder = Request.Builder()
-            .url(urlBuilder.build())
+            .url(url)
             .header("Accept", "application/json")
             .header("User-Agent", userAgent)
         for ((key, value) in headers) {
@@ -1025,7 +1055,16 @@ private fun deviceFlowError(exception: ThalovantApiException): String? {
  * `java.awt` does not exist on Android, and headless JVMs report the browse
  * action as unsupported; both paths simply do nothing. Never throws.
  */
-private suspend fun openBrowserBestEffort(uri: String) {
+internal fun deviceVerificationUri(uri: String): java.net.URI? {
+    val target = runCatching { java.net.URI(uri) }.getOrNull() ?: return null
+    if (uri.any { it.isISOControl() || it.isWhitespace() } || target.scheme?.lowercase() !in setOf("http", "https") ||
+        target.host.isNullOrEmpty() || target.rawUserInfo != null) return null
+    return target
+}
+
+internal suspend fun openBrowserBestEffort(uri: String, launch: ((java.net.URI) -> Unit)? = null) {
+    val target = deviceVerificationUri(uri) ?: return
+    if (launch != null) { runCatching { launch(target) }; return }
     withContext(Dispatchers.IO) {
         try {
             val desktopClass = Class.forName("java.awt.Desktop")
@@ -1041,7 +1080,7 @@ private suspend fun openBrowserBestEffort(uri: String) {
             val browseSupported =
                 desktopClass.getMethod("isSupported", actionClass).invoke(desktop, browseAction) as? Boolean ?: false
             if (browseSupported) {
-                desktopClass.getMethod("browse", java.net.URI::class.java).invoke(desktop, java.net.URI(uri))
+                desktopClass.getMethod("browse", java.net.URI::class.java).invoke(desktop, target)
             }
         } catch (_: Throwable) {
             // Browser availability is best-effort; the prompt already carries the URI and code.

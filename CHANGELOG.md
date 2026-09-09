@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.3.1
+
+- Validate both device authorization URLs before displaying a prompt, invoking
+  a browser callback, or polling. Accept only HTTP(S) URLs with a host and no
+  userinfo, raw whitespace, or control characters; launch with a single URL argument.
+
+- Reject automatic control-plane redirects so 307/308 responses cannot replay
+  login credentials to another endpoint.
+- Require HTTPS for authorization and request bodies except explicit loopback
+  development hosts, and reject URL userinfo without disclosing its contents.
+- Enforce redirect policy for injected HTTP transports and add real loopback
+  redirect regressions plus validation before I/O.
+
 ## 0.3.0
 
 - Add scoped conversations, direct HiveMind query/cascade replies, bounded event

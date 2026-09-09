@@ -19,7 +19,7 @@ Full docs: <https://docs.thalovant.com/developers/sdks/kotlin/>
 
 ```kotlin
 dependencies {
-    implementation("com.thalovant:thalovant-sdk:0.3.0")
+    implementation("com.thalovant:thalovant-sdk:0.3.1")
 }
 ```
 
@@ -413,6 +413,22 @@ Identity fields match the API `ClientIdentifyResource` schema: `access_key`,
 `password`, `crypto_key`, `site_id`, `default_port`, `default_master`, plus
 optional `data_plane_endpoints`, `protocols`, and `mqtt` broker credentials
 (`endpoint`, `username`, `password`, `topic_prefix`, `tls`).
+
+## Control-Plane HTTP Security
+
+Device login validates both verification URLs before displaying a prompt,
+invoking a browser callback, or polling. Each URL must use HTTP(S), include a
+host, and contain no userinfo, raw whitespace, or control characters. Invalid
+grants fail with a generic API error; their URLs are not displayed or launched.
+
+Control-plane requests never follow redirects automatically. Credentials and
+request bodies require HTTPS, except explicit `localhost`, `127.0.0.1`, and
+`[::1]` HTTP development endpoints. Anonymous body-free reads may use HTTP.
+URLs containing userinfo are rejected before I/O. Configure the intended API
+endpoint directly instead of relying on a redirect.
+
+The SDK clones supplied OkHttp settings with redirects disabled. Custom
+interceptors and authenticators remain trusted application code.
 
 ## Protocols
 
