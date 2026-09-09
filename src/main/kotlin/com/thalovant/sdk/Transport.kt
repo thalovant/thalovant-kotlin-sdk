@@ -101,18 +101,23 @@ public class HiveMindWssTransport(
         if (connected && handshakeComplete) {
             return
         }
-        socket?.cancel()
-        generation++
-        resetSession()
-        lastError = null
-        opened = CompletableDeferred()
-        handshake = CompletableDeferred()
+        val attempt = synchronized(sendLock) {
+            socket?.cancel()
+            generation++
+            resetSession()
+            lastError = null
+            opened = CompletableDeferred()
+            handshake = CompletableDeferred()
+            generation
+        }
         val request = Request.Builder()
             .url(endpoint)
             .header("User-Agent", userAgent)
             .build()
-        val webSocket = client.newWebSocket(request, SocketListener(generation))
-        socket = webSocket
+        val webSocket = synchronized(sendLock) {
+            check(attempt == generation) { "HiveMind connection was cancelled." }
+            client.newWebSocket(request, SocketListener(attempt)).also { socket = it }
+        }
         try {
             withTimeout(timeoutMs) {
                 opened.await()
@@ -120,21 +125,26 @@ public class HiveMindWssTransport(
             }
         } catch (error: TimeoutCancellationException) {
             webSocket.cancel()
-            resetSession()
+            synchronized(sendLock) { if (attempt == generation) resetSession() }
             throw ThalovantConnectionException("HiveMind WSS handshake timed out.")
         } catch (error: Throwable) {
             webSocket.cancel()
-            resetSession()
+            synchronized(sendLock) { if (attempt == generation) resetSession() }
             throw error
         }
     }
 
     override suspend fun disconnect() {
-        val current = socket
-        socket = null
-        generation++
-        resetSession()
-        current?.close(1000, null)
+        synchronized(sendLock) {
+            val current = socket
+            socket = null
+            generation++
+            resetSession()
+            val error = ThalovantConnectionException("HiveMind WSS disconnected.")
+            opened.completeExceptionally(error)
+            handshake.completeExceptionally(error)
+            current?.close(1000, null)
+        }
     }
 
     override fun addBusListener(listener: (ThalovantEvent) -> Unit): ThalovantSubscription {
@@ -258,43 +268,27 @@ public class HiveMindWssTransport(
     }
 
     private inner class SocketListener(private val currentGeneration: Long) : WebSocketListener() {
-        override fun onOpen(webSocket: WebSocket, response: Response) {
-            if (currentGeneration != generation) { webSocket.cancel(); return }
+        private fun receive(action: () -> Unit) = synchronized(sendLock) {
+            if (currentGeneration != generation) return@synchronized
+            try { action() } catch (error: Throwable) { failHandshake(error) }
+        }
+        override fun onOpen(webSocket: WebSocket, response: Response) = receive {
             socket = webSocket
             connected = true
             opened.complete(Unit)
         }
-
-        override fun onMessage(webSocket: WebSocket, text: String) {
-            if (currentGeneration != generation) return
-            try {
-                handleRawMessage(text)
-            } catch (error: Throwable) {
-                failHandshake(error)
-            }
+        override fun onMessage(webSocket: WebSocket, text: String) = receive { handleRawMessage(text) }
+        override fun onMessage(webSocket: WebSocket, bytes: ByteString) = receive {
+            val session = noiseSession ?: error("Binary frame received before Noise authentication.")
+            val frame = session.decrypt(bytes.toByteArray()) ?: return@receive
+            check(frame.second) { "Binary HiveMind payloads were not negotiated." }
+            handleRawMessage(frame.first.toString(Charsets.UTF_8), authenticated = true)
         }
-
-        override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
-            if (currentGeneration != generation) return
-            try {
-                val session = noiseSession ?: error("Binary frame received before Noise authentication.")
-                val frame = session.decrypt(bytes.toByteArray()) ?: return
-                check(frame.second) { "Binary HiveMind payloads were not negotiated." }
-                handleRawMessage(frame.first.toString(Charsets.UTF_8), authenticated = true)
-            } catch (error: Throwable) { failHandshake(error) }
-        }
-
-        override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-            if (currentGeneration != generation) return
+        override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) = receive {
             failHandshake(ThalovantConnectionException("HiveMind WSS connect failed: ${t.message}", t))
         }
-
-        override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
-            webSocket.close(code, reason)
-        }
-
-        override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
-            if (currentGeneration != generation) return
+        override fun onClosing(webSocket: WebSocket, code: Int, reason: String) { webSocket.close(code, reason) }
+        override fun onClosed(webSocket: WebSocket, code: Int, reason: String) = receive {
             if (!handshakeComplete) failHandshake(ThalovantConnectionException("HiveMind WSS closed before Noise handshake completed ($code)."))
             else resetSession()
         }
