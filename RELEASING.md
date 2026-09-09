@@ -51,6 +51,22 @@ together in a release. `DEFAULT_USER_AGENT` is derived from `SDK_VERSION`
 A publish can also be run manually: **Actions → Publish Maven Package → Run
 workflow** with the immutable `release_tag` (for example `v0.1.0`).
 
+## Diagnose a visibility timeout
+
+Use **Actions → Maven Publication Status → Run workflow** on `main` with the
+existing version. This reads the matching deployment through Sonatype's
+documented listing and status endpoints using the existing `maven-central`
+environment credential. It reports deployment IDs, states, timestamps and
+sanitized validation errors. It cannot upload, publish, or delete a deployment,
+and it does not require the signing key.
+
+The pinned publisher can finish uploading before Sonatype validates the bundle.
+A successful upload followed by a public Maven `404` therefore does not prove
+publication succeeded or failed. Preserve the existing deployment while checking
+its state. Retry the publish workflow only after the exact version's POM is
+public on `repo1.maven.org`, so its existing-version guard skips the upload.
+Diagnose validation failures before deciding on any further release action.
+
 ## Rollback
 
 Published Maven Central artifacts are immutable: they cannot be deleted,
