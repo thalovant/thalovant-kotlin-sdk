@@ -35,6 +35,7 @@ kotlin {
 
 tasks.test {
     useJUnitPlatform()
+    doFirst { systemProperty("noise.test.classpath", sourceSets["test"].runtimeClasspath.asPath) }
     testLogging {
         events("passed", "failed", "skipped")
     }

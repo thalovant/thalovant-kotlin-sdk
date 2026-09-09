@@ -423,7 +423,8 @@ exchange and sending the encrypted client HELLO.
 
 The default Noise state directory is `~/.config/thalovant-kotlin/noise`. Keep its
 client private key and server pins across restarts; on POSIX the SDK enforces
-0700 directories and 0600 files. Android applications should supply an
+0700 directories and 0600 files. Atomic key publication requires filesystem
+hard-link support; unsupported filesystems fail closed. Android applications should supply an
 app-private path explicitly:
 
 ```kotlin

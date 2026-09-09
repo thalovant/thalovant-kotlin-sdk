@@ -48,10 +48,20 @@ public class HiveMindNoiseStore(public val directory: Path = defaultDirectory())
         } catch (_: UnsupportedOperationException) { /* caller provides an app-private directory on Windows */ }
     }
     private fun writeNew(file: Path, value: String) {
-        val options = setOf(StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE)
-        val channel = try { Files.newByteChannel(file, options, PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rw-------"))) }
-            catch (_: UnsupportedOperationException) { Files.newByteChannel(file, options) }
-        channel.use { it.write(java.nio.ByteBuffer.wrap(value.toByteArray())) }
+        val temporary = try {
+            Files.createTempFile(directory, ".noise-", ".tmp", PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rw-------")))
+        } catch (_: UnsupportedOperationException) { Files.createTempFile(directory, ".noise-", ".tmp") }
+        try {
+            java.nio.channels.FileChannel.open(temporary, StandardOpenOption.WRITE).use { channel ->
+                val bytes = java.nio.ByteBuffer.wrap(value.toByteArray())
+                while (bytes.hasRemaining()) channel.write(bytes)
+                channel.force(true)
+            }
+            // Hard-link publication is atomic and never replaces an existing key.
+            // Other processes can see only the complete, durable winner. A filesystem
+            // lacking hard links fails closed rather than publishing partial state.
+            Files.createLink(file, temporary)
+        } finally { Files.deleteIfExists(temporary) }
     }
     private fun readKey(file: Path): ByteArray {
         require(Files.isRegularFile(file, NOFOLLOW_LINKS)) { "Noise state must be a regular file, not a symbolic link." }

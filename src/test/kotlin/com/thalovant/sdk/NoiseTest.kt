@@ -78,6 +78,25 @@ class NoiseTest {
         val malformed = NoiseSession(NoiseCipher(Noise.suites[0], key), NoiseCipher(Noise.suites[0], key))
         assertFails { malformed.decrypt(cipher.crypt(byteArrayOf(4, 1))) }
     }
+    @Test fun `independent JVMs publish one complete static key without replacing the winner`() {
+        val dir = Files.createTempDirectory("kotlin-noise-process")
+        try {
+            val javaExecutable = java.nio.file.Path.of(System.getProperty("java.home"), "bin", "java").toString()
+            val children = (1..6).map {
+                ProcessBuilder(javaExecutable, "-cp", System.getProperty("noise.test.classpath"),
+                    "com.thalovant.sdk.NoiseStoreProcess", dir.toString()).redirectErrorStream(true).start()
+            }
+            val results = children.map { process ->
+                assertTrue(process.waitFor(20, java.util.concurrent.TimeUnit.SECONDS), "key publication child timed out")
+                val output = process.inputStream.bufferedReader().readText().trim()
+                assertEquals(0, process.exitValue(), output)
+                assertEquals(64, output.length, output)
+                output
+            }
+            assertEquals(1, results.toSet().size)
+            assertEquals(results.first(), Noise.hex(HiveMindNoiseStore(dir).staticKey()))
+        } finally { dir.toFile().deleteRecursively() }
+    }
     @Test fun `persistent key and pins survive new store instances and reject rotation`() {
         val dir = Files.createTempDirectory("kotlin-noise-store")
         try {
@@ -91,5 +110,14 @@ class NoiseTest {
             Files.writeString(dir.resolve("noise-static.key"), "bad")
             assertFails { first.staticKey() }
         } finally { dir.toFile().deleteRecursively() }
+    }
+}
+
+internal object NoiseStoreProcess {
+    @JvmStatic fun main(args: Array<String>) {
+        val store = HiveMindNoiseStore(java.nio.file.Path.of(args[0]))
+        val key = store.staticKey()
+        repeat(20) { check(key.contentEquals(store.staticKey())) }
+        println(Noise.hex(key))
     }
 }
