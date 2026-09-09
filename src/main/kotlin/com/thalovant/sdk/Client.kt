@@ -10,7 +10,7 @@ import kotlinx.serialization.json.JsonObject
 /**
  * Data-plane client for talking to a Thalovant hub with a client identity.
  *
- * 0.1.0 supports the WSS transport only; requesting `https` or `mqtt` throws
+ * Supports the HiveMind v3 Noise WSS transport only; requesting `https` or `mqtt` throws
  * [ThalovantUnsupportedProtocolException].
  */
 public class ThalovantClient(
@@ -20,15 +20,16 @@ public class ThalovantClient(
     private val replySettleMs: Long = 250,
     private val emptyReplyWaitMs: Long = 5000,
     userAgent: String = DEFAULT_USER_AGENT,
+    noiseStore: HiveMindNoiseStore = HiveMindNoiseStore(),
 ) {
     private val transport: HiveMindRuntimeTransport =
-        transport ?: transportForProtocol(identity, protocol ?: defaultRuntimeProtocol(identity), userAgent)
+        transport ?: transportForProtocol(identity, protocol ?: defaultRuntimeProtocol(identity), userAgent, noiseStore)
 
     @Volatile
     private var connected = false
 
     public suspend fun connect(timeoutMs: Long = 6000) {
-        if (connected) {
+        if (connected && transport.connected && transport.handshakeComplete) {
             return
         }
         transport.connect(timeoutMs)
@@ -280,6 +281,7 @@ private fun transportForProtocol(
     identity: ThalovantIdentity,
     protocol: HubProtocol,
     userAgent: String,
+    noiseStore: HiveMindNoiseStore,
 ): HiveMindRuntimeTransport = when (protocol) {
     HubProtocol.WSS -> {
         if (identity.endpointFor(HubProtocol.WSS) == null) {
@@ -287,7 +289,7 @@ private fun transportForProtocol(
                 "WSS is enabled, but the identity does not include a WSS endpoint.",
             )
         }
-        HiveMindWssTransport(identity, userAgent)
+        HiveMindWssTransport(identity, userAgent, noiseStore = noiseStore)
     }
     HubProtocol.HTTPS -> throw ThalovantUnsupportedProtocolException(
         "The HTTPS long-poll transport is not supported by thalovant-kotlin-sdk 0.1.0. Use wss.",

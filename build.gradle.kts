@@ -11,13 +11,14 @@ plugins {
 }
 
 group = "com.thalovant"
-version = "0.1.8"
+version = "0.2.0"
 
 repositories {
     mavenCentral()
 }
 
 dependencies {
+    implementation("org.bouncycastle:bcprov-jdk18on:1.85")
     api("com.squareup.okhttp3:okhttp:4.12.0")
     api("org.jetbrains.kotlinx:kotlinx-serialization-json:1.9.0")
     api("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.2")
