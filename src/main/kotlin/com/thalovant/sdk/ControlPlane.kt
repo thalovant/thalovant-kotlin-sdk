@@ -388,9 +388,15 @@ public class ThalovantControlPlane(
 
         val deviceCode = grant.optionalString("device_code")
         val userCode = grant.optionalString("user_code")
-        val verificationUri = grant.optionalString("verification_uri")
+        val verificationUri = (grant["verification_uri"] as? JsonPrimitive)?.takeIf { it.isString }?.content
         if (deviceCode == null || userCode == null || verificationUri == null) {
             throw ThalovantApiException("Thalovant API device authorization response was incomplete.")
+        }
+        val completeValue = grant["verification_uri_complete"]
+        val completeUri = (completeValue as? JsonPrimitive)?.takeIf { it.isString }?.content
+        if (deviceVerificationUri(verificationUri) == null ||
+            (completeValue != null && completeValue != kotlinx.serialization.json.JsonNull && (completeUri == null || deviceVerificationUri(completeUri) == null))) {
+            throw ThalovantApiException("Thalovant API device authorization returned an invalid verification URI.")
         }
         val intervalSeconds = optionalString(grant["interval"])?.toLongOrNull()
         val intervalMillis = if (intervalSeconds != null && intervalSeconds >= 0) {
@@ -1049,10 +1055,15 @@ private fun deviceFlowError(exception: ThalovantApiException): String? {
  * `java.awt` does not exist on Android, and headless JVMs report the browse
  * action as unsupported; both paths simply do nothing. Never throws.
  */
+internal fun deviceVerificationUri(uri: String): java.net.URI? {
+    val target = runCatching { java.net.URI(uri) }.getOrNull() ?: return null
+    if (uri.any { it.isISOControl() || it.isWhitespace() } || target.scheme?.lowercase() !in setOf("http", "https") ||
+        target.host.isNullOrEmpty() || target.rawUserInfo != null) return null
+    return target
+}
+
 internal suspend fun openBrowserBestEffort(uri: String, launch: ((java.net.URI) -> Unit)? = null) {
-    val target = runCatching { java.net.URI(uri) }.getOrNull() ?: return
-    if (uri.any { it.isISOControl() } || target.scheme?.lowercase() !in setOf("http", "https") ||
-        target.host.isNullOrEmpty() || target.rawUserInfo != null) return
+    val target = deviceVerificationUri(uri) ?: return
     if (launch != null) { runCatching { launch(target) }; return }
     withContext(Dispatchers.IO) {
         try {

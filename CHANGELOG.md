@@ -2,8 +2,9 @@
 
 ## 0.3.1
 
-- Restrict device-login browser launches to HTTP(S) URLs without userinfo or
-  control characters, passing the URL as one argument outside Windows URL handling.
+- Validate both device authorization URLs before displaying a prompt, invoking
+  a browser callback, or polling. Accept only HTTP(S) URLs with a host and no
+  userinfo, raw whitespace, or control characters; launch with a single URL argument.
 
 - Reject automatic control-plane redirects so 307/308 responses cannot replay
   login credentials to another endpoint.

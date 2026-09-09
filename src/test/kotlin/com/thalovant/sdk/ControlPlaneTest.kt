@@ -719,6 +719,29 @@ class ControlPlaneTest {
     }
 
     @Test
+    fun `device grant URLs are checked before prompt browser and polling`() = runBlocking {
+        val invalid = listOf("file:///tmp/program", "javascript:alert(1)", "calc.exe", "--help",
+            "https://user:PRIVATE-CREDENTIAL@example.test", "https://@example.test",
+            "https://example.test/\n--help", " https://example.test", "https://example.test/a b", "https:///missing-host")
+        var requests = 0
+        for (field in listOf("verification_uri", "verification_uri_complete")) {
+            for (value in invalid.map { kotlinx.serialization.json.JsonPrimitive(it) } + kotlinx.serialization.json.JsonPrimitive(42)) {
+                val grant = ThalovantJson.parseToJsonElement(DEVICE_GRANT).jsonObject.toMutableMap()
+                grant[field] = value
+                enqueueJson(200, JsonObject(grant).toString())
+                var prompts = 0
+                val error = assertFailsWith<ThalovantApiException> {
+                    api().loginWithBrowser(DeviceLoginOptions(openBrowser = false, prompt = { prompts++ }))
+                }
+                assertFalse("PRIVATE-CREDENTIAL" in (error.message ?: ""))
+                assertEquals(0, prompts)
+                assertEquals(++requests, server.requestCount)
+                assertEquals("/api/v1/auth/device/authorize", server.takeRequest().path)
+            }
+        }
+    }
+
+    @Test
     fun `loginWithBrowser polls until the token is issued and stores it`() = runBlocking {
         enqueueJson(200, DEVICE_GRANT)
         enqueueJson(400, """{"error":"authorization_pending"}""")

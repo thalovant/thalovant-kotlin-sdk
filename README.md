@@ -416,9 +416,10 @@ optional `data_plane_endpoints`, `protocols`, and `mqtt` broker credentials
 
 ## Control-Plane HTTP Security
 
-Device login opens only HTTP(S) verification URLs without userinfo. Other
-schemes, executable names, command options, and control characters never reach
-the operating system browser launcher.
+Device login validates both verification URLs before displaying a prompt,
+invoking a browser callback, or polling. Each URL must use HTTP(S), include a
+host, and contain no userinfo, raw whitespace, or control characters. Invalid
+grants fail with a generic API error; their URLs are not displayed or launched.
 
 Control-plane requests never follow redirects automatically. Credentials and
 request bodies require HTTPS, except explicit `localhost`, `127.0.0.1`, and
