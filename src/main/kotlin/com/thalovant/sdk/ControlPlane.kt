@@ -315,10 +315,20 @@ public class ThalovantControlPlane(
     apiUrl: String = DEFAULT_CONTROL_API_URL,
     public var accessToken: String? = null,
     public val userAgent: String = DEFAULT_USER_AGENT,
-    private val httpClient: OkHttpClient = defaultHttpClient,
+    httpClient: OkHttpClient = defaultHttpClient,
 ) {
     /** Normalized API root; a trailing `/v1` is stripped and a trailing slash added. */
     public val apiUrl: String = normalizeControlApiUrl(apiUrl)
+    private val httpClient = httpClient.newBuilder().followRedirects(false).followSslRedirects(false)
+        .addNetworkInterceptor { chain ->
+            val request = chain.request()
+            val secretHeaders = listOf("Authorization", "Proxy-Authorization", "Cookie")
+            if (!request.url.isHttps && request.url.host !in setOf("localhost", "127.0.0.1", "::1") &&
+                (request.body != null || secretHeaders.any { request.header(it) != null })) {
+                throw java.io.IOException("Credential-bearing Thalovant API requests require HTTPS.")
+            }
+            chain.proceed(request)
+        }.build()
 
     /**
      * Exchanges credentials for an access token via `POST /v1/auth/token` and
@@ -928,12 +938,26 @@ public class ThalovantControlPlane(
         auth: Boolean = true,
         query: Map<String, String> = emptyMap(),
     ): JsonObject {
-        val urlBuilder = (apiUrl + path.trimStart('/')).toHttpUrl().newBuilder()
+        val urlBuilder = try { (apiUrl + path.trimStart('/')).toHttpUrl().newBuilder() }
+            catch (_: IllegalArgumentException) { throw ThalovantApiException("Invalid Thalovant API URL.") }
         for ((key, value) in query) {
             urlBuilder.addQueryParameter(key, value)
         }
+        val url = urlBuilder.build()
+        if (url.username.isNotEmpty() || url.password.isNotEmpty() || Regex("^[a-zA-Z][a-zA-Z0-9+.-]*://[^/?#]*@").containsMatchIn(apiUrl)) {
+            throw ThalovantApiException("Thalovant API URLs must not contain userinfo credentials.")
+        }
+        val carriesCredentials = auth || body != null || headers.keys.any { key ->
+            listOf("Authorization", "Proxy-Authorization", "Cookie").any { key.equals(it, ignoreCase = true) }
+        } || httpClient.authenticator !== okhttp3.Authenticator.NONE || httpClient.proxyAuthenticator !== okhttp3.Authenticator.NONE ||
+            httpClient.cookieJar.loadForRequest(url).isNotEmpty()
+        val explicitLoopback = Regex("^http://(?:localhost|127\\.0\\.0\\.1|\\[::1\\])(?::[0-9]+)?(?:/|$)", RegexOption.IGNORE_CASE)
+            .containsMatchIn(apiUrl)
+        if (carriesCredentials && !url.isHttps && !explicitLoopback) {
+            throw ThalovantApiException("Credential-bearing Thalovant API requests require HTTPS except explicit loopback development endpoints.")
+        }
         val builder = Request.Builder()
-            .url(urlBuilder.build())
+            .url(url)
             .header("Accept", "application/json")
             .header("User-Agent", userAgent)
         for ((key, value) in headers) {

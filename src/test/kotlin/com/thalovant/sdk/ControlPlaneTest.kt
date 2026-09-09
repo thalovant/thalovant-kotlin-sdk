@@ -16,6 +16,7 @@ import kotlinx.serialization.json.boolean
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import okhttp3.ResponseBody.Companion.toResponseBody
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
 import okhttp3.mockwebserver.RecordedRequest
@@ -109,6 +110,67 @@ class ControlPlaneTest {
         assertFalse("otp_code" in thirdBody)
 
         assertEquals("token", api.accessToken)
+    }
+
+    @Test
+    fun `login redirects never replay credentials even with a redirect enabled client`() = runBlocking {
+        val destination = MockWebServer(); destination.start()
+        try {
+            val injected = okhttp3.OkHttpClient.Builder().followRedirects(true).followSslRedirects(true).build()
+            for (status in listOf(307, 308)) {
+                server.enqueue(MockResponse().setResponseCode(status).setHeader("Location", destination.url("/capture")))
+                val client = ThalovantControlPlane(server.url("/api").toString(), httpClient = injected)
+                val error = assertFailsWith<ThalovantApiException> { client.login("fixture@example.test", "PRIVATE-CREDENTIAL") }
+                assertEquals(status, error.statusCode)
+                assertFalse("PRIVATE-CREDENTIAL" in error.message.orEmpty())
+                assertTrue(server.takeRequest().body.readUtf8().contains("PRIVATE-CREDENTIAL"))
+                assertEquals(0, destination.requestCount)
+            }
+            assertTrue(injected.followRedirects && injected.followSslRedirects)
+        } finally { destination.shutdown() }
+    }
+
+    @Test
+    fun `injected cookie and authentication state require HTTPS for public reads`() = runBlocking {
+        val calls = java.util.concurrent.atomic.AtomicInteger()
+        val cookieJar = object : okhttp3.CookieJar {
+            override fun saveFromResponse(url: okhttp3.HttpUrl, cookies: List<okhttp3.Cookie>) { }
+            override fun loadForRequest(url: okhttp3.HttpUrl) = listOf(okhttp3.Cookie.Builder().name("session").value("PRIVATE-CREDENTIAL").domain("api.example.test").build())
+        }
+        for (transport in listOf(
+            okhttp3.OkHttpClient.Builder().cookieJar(cookieJar).build(),
+            okhttp3.OkHttpClient.Builder().authenticator { _, _ -> null }.build(),
+        )) {
+            val client = transport.newBuilder().addInterceptor { calls.incrementAndGet(); error("Unexpected request") }.build()
+            val error = assertFailsWith<ThalovantApiException> { ThalovantControlPlane("http://api.example.test", httpClient = client).listPublicHubs() }
+            assertFalse("PRIVATE-CREDENTIAL" in error.message.orEmpty())
+        }
+        assertEquals(0, calls.get())
+    }
+
+    @Test
+    fun `credential HTTP and URL userinfo fail before any network call`() = runBlocking {
+        val calls = java.util.concurrent.atomic.AtomicInteger()
+        val transport = okhttp3.OkHttpClient.Builder().addInterceptor {
+            calls.incrementAndGet(); error("Unexpected network call")
+        }.build()
+        for (endpoint in listOf("http://api.example.test", "http://localhost.example.test", "http://127.1", "https://user:PRIVATE-CREDENTIAL@api.example.test")) {
+            val client = ThalovantControlPlane(endpoint, accessToken = "PRIVATE-CREDENTIAL", httpClient = transport)
+            val login = assertFailsWith<ThalovantApiException> { client.login("fixture@example.test", "PRIVATE-CREDENTIAL") }
+            assertFalse("PRIVATE-CREDENTIAL" in login.message.orEmpty())
+            val token = assertFailsWith<ThalovantApiException> { client.listHubs() }
+            assertFalse("PRIVATE-CREDENTIAL" in token.message.orEmpty())
+        }
+        assertEquals(0, calls.get())
+        for (host in listOf("localhost", "127.0.0.1", "[::1]")) {
+            val response = okhttp3.OkHttpClient.Builder().addInterceptor { chain ->
+                calls.incrementAndGet()
+                okhttp3.Response.Builder().request(chain.request()).protocol(okhttp3.Protocol.HTTP_1_1).code(200).message("OK")
+                    .body("{\"access_token\":\"fixture\"}".toResponseBody()).build()
+            }.build()
+            ThalovantControlPlane("http://$host:1234", httpClient = response).login("fixture@example.test", "fixture")
+        }
+        assertEquals(3, calls.get())
     }
 
     @Test

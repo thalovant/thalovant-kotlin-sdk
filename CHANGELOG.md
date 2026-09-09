@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.1
+
+- Reject automatic control-plane redirects so 307/308 responses cannot replay
+  login credentials to another endpoint.
+- Require HTTPS for authorization and request bodies except explicit loopback
+  development hosts, and reject URL userinfo without disclosing its contents.
+- Enforce redirect policy for injected HTTP transports and add real loopback
+  redirect regressions plus validation before I/O.
+
 ## 0.3.0
 
 - Add scoped conversations, direct HiveMind query/cascade replies, bounded event
