@@ -133,6 +133,7 @@ public class ThalovantClient(
         val events = mutableListOf<ThalovantEvent>()
         var failureEvent: ThalovantEvent? = null
         var softFailureEvent: ThalovantEvent? = null
+        var operationFailure: Exception? = null
         var responseSessionId: String? = null
         var firstSpeechAt: Long? = null
         var emptyStartedAt: Long? = null
@@ -145,7 +146,7 @@ public class ThalovantClient(
         val subscription = transport.addBusListener { event ->
             if (event.requestId != effectiveRequestId) return@addBusListener
             synchronized(lock) {
-                if (failureEvent != null) return@addBusListener
+                if (failureEvent != null || operationFailure != null) return@addBusListener
                 when (event.name) {
                     ThalovantEvents.SPEAK, ThalovantEvents.OVOS_UTTERANCE_SPEAK -> {
                         val normalized = event.text.trim().replace(whitespace, " ")
@@ -175,7 +176,15 @@ public class ThalovantClient(
         // The I/O worker retains transport ownership while cancellation retires an admitted write.
         val operation = launchRuntimeIo(onFailure = { error ->
             synchronized(lock) {
-                if (fragments.isEmpty() && failureEvent == null && softFailureEvent == null) handled.completeExceptionally(error)
+                val phaseBudget = when {
+                    firstSpeechAt != null -> phaseRemaining(effectiveSettle, firstSpeechAt)
+                    emptyStartedAt != null -> phaseRemaining(effectiveEmptyWait, emptyStartedAt)
+                    else -> remaining()
+                }
+                if (error !is kotlinx.coroutines.CancellationException && failureEvent == null && operationFailure == null && phaseBudget > 0) {
+                    operationFailure = error
+                    handled.complete(Unit); firstReply.complete(Unit); terminal.complete(Unit)
+                }
             }
         }) {
             val connectBudget = remaining()
@@ -186,17 +195,18 @@ public class ThalovantClient(
         }
         try {
             val progressed = withTimeoutOrNull(remaining()) { select { handled.onAwait {}; firstReply.onAwait {} } }
-            if (progressed == null && synchronized(lock) { fragments.isEmpty() && failureEvent == null && softFailureEvent == null })
+            if (progressed == null && synchronized(lock) { fragments.isEmpty() && failureEvent == null && softFailureEvent == null && operationFailure == null })
                 throw ThalovantTimeoutException("Hub did not finish handling the utterance within ${timeoutMs}ms.")
-            if (synchronized(lock) { failureEvent == null && fragments.isEmpty() }) {
+            if (synchronized(lock) { failureEvent == null && operationFailure == null && fragments.isEmpty() }) {
                 withTimeoutOrNull(synchronized(lock) { phaseRemaining(effectiveEmptyWait, emptyStartedAt) }) { firstReply.await() }
             }
             // Settling is optional and shares the original budget. Hard failure wakes it immediately.
-            if (synchronized(lock) { failureEvent == null && fragments.isNotEmpty() }) {
+            if (synchronized(lock) { failureEvent == null && operationFailure == null && fragments.isNotEmpty() }) {
                 withTimeoutOrNull(synchronized(lock) { phaseRemaining(effectiveSettle, firstSpeechAt) }) { terminal.await() }
             }
             kotlinx.coroutines.currentCoroutineContext().ensureActive()
             synchronized(lock) {
+                operationFailure?.let { throw it }
                 val failure = failureEvent ?: if (fragments.isEmpty()) softFailureEvent else null
                 if (failure == null && fragments.isEmpty()) throw ThalovantTimeoutException("Hub handled the utterance without a speak reply within the request budget.")
                 if (failure != null && fragments.isEmpty()) throw ThalovantRuntimeException(failure.text.ifEmpty { "Hub reported ${failure.name}." })

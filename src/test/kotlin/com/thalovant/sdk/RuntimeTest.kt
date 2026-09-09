@@ -15,6 +15,7 @@ private class RuntimeFake : HiveMindRuntimeTransport {
     val emitted = mutableListOf<ThalovantEvent>()
     val sent = mutableListOf<JsonObject>()
     var queryAnswer: ((JsonObject) -> Unit)? = null
+    var queryAction: (suspend () -> Unit)? = null
     var connectAction: (suspend () -> Unit)? = null
     var emitAction: (suspend () -> Unit)? = null
     var busAnswer: ((JsonObject) -> Unit)? = null
@@ -27,7 +28,7 @@ private class RuntimeFake : HiveMindRuntimeTransport {
         frames.add(listener); return ThalovantSubscription { frames.remove(listener) }
     }
     override suspend fun emitBus(eventType: String, data: JsonObject, context: JsonObject) { emitted.add(ThalovantEvent(eventType, data, context)); emitAction?.invoke(); busAnswer?.invoke(context) }
-    override suspend fun sendHiveFrame(message: JsonObject) { sent.add(message); queryAnswer?.invoke(message) }
+    override suspend fun sendHiveFrame(message: JsonObject) { sent.add(message); queryAction?.invoke(); queryAnswer?.invoke(message) }
     fun deliver(event: ThalovantEvent) { bus.forEach { it(event) } }
     fun reply(id: String, name: String, text: String = "", cascade: Boolean = false, session: String? = null) {
         val payload = hiveMessage("bus", buildJsonObject {
@@ -124,6 +125,71 @@ class RuntimeTest {
         // Cancellation wins before even inspecting the absent Noise session or writing a frame.
         assertIs<CancellationException>(withTimeout(1000) { failure.await() })
         pending.join()
+    }
+
+    @Test fun `ask propagates write failures during reply phases but preserves a hard terminal reply`() = runBlocking {
+        for (first in listOf(ThalovantEvents.SPEAK, ThalovantEvents.UTTERANCE_HANDLED, ThalovantEvents.INTENT_UNMATCHED)) {
+            val fake = RuntimeFake(); val sdk = client(fake)
+            fake.emitAction = {
+                val context = fake.emitted.last().context
+                fake.deliver(ThalovantEvent(first, buildJsonObject { put("utterance", "answer") }, context))
+                yield()
+                throw ThalovantConnectionException("Fixture write failed.")
+            }
+            withTimeout(1000) {
+                assertFailsWith<ThalovantConnectionException> { sdk.ask("test", timeoutMs = 60000, replySettleMs = 60000, emptyReplyWaitMs = 60000) }
+            }
+            assertTrue(fake.bus.isEmpty())
+        }
+        val fake = RuntimeFake(); val sdk = client(fake)
+        fake.emitAction = {
+            val context = fake.emitted.last().context
+            fake.deliver(ThalovantEvent("speak", buildJsonObject { put("utterance", "partial") }, context))
+            fake.deliver(ThalovantEvent(ThalovantEvents.POLICY_DENIED, context = context))
+            throw ThalovantConnectionException("Late fixture write failure.")
+        }
+        val reply = withTimeout(1000) { sdk.ask("test", replySettleMs = 60000) }
+        assertFalse(reply.ok); assertEquals("partial", reply.text)
+    }
+
+    @Test fun `query returns terminal replies or expires while an admitted send retires`() = runBlocking {
+        for (ending in listOf("complete", "hard", "timeout")) {
+            val fake = RuntimeFake(); val sdk = client(fake)
+            val entered = CompletableDeferred<Unit>(); val release = CompletableDeferred<Unit>(); val retired = CompletableDeferred<Unit>()
+            fake.queryAction = {
+                fake.reply("q", "speak", "answer")
+                if (ending == "complete") fake.reply("q", "hive.query.complete")
+                if (ending == "hard") fake.reply("q", ThalovantEvents.POLICY_DENIED)
+                entered.complete(Unit)
+                try { awaitCancellation() }
+                finally { withContext(NonCancellable) { release.await(); retired.complete(Unit) } }
+            }
+            val request = async { runCatching { sdk.query("test", timeoutMs = if (ending == "timeout") 250 else 60000, queryId = "q") } }
+            try {
+                withTimeout(1000) { entered.await() }
+                if (ending == "timeout") withTimeout(1000) { assertFailsWith<ThalovantTimeoutException> { request.await().getOrThrow() } }
+                else {
+                    val reply = withTimeout(1000) { request.await().getOrThrow() }
+                    assertEquals("answer", reply.text); assertEquals(ending == "complete", reply.ok)
+                }
+                assertFalse(retired.isCompleted); assertTrue(fake.frames.isEmpty())
+            } finally { release.complete(Unit); request.cancel() }
+            withTimeout(1000) { retired.await() }
+        }
+    }
+
+    @Test fun `query write failure wins before completion but cannot replace a terminal reply`() = runBlocking {
+        for (terminal in listOf(false, true)) {
+            val fake = RuntimeFake(); val sdk = client(fake)
+            fake.queryAction = {
+                fake.reply("q", "speak", "answer")
+                if (terminal) fake.reply("q", "hive.query.complete")
+                throw ThalovantConnectionException("Fixture query write failure.")
+            }
+            if (terminal) assertEquals("answer", sdk.query("test", queryId = "q").text)
+            else assertFailsWith<ThalovantConnectionException> { sdk.query("test", queryId = "q") }
+            assertTrue(fake.frames.isEmpty())
+        }
     }
 
     @Test fun `ask returns the first correlated runtime session replacement`() = runBlocking {
