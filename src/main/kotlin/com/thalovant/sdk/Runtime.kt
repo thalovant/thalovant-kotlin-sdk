@@ -1,6 +1,9 @@
 package com.thalovant.sdk
 
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.selects.select
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
@@ -144,6 +147,10 @@ public suspend fun ThalovantClient.query(
     val prompt = text.trim()
     require(prompt.isNotEmpty()) { "query() requires a non-empty prompt." }
     require(timeoutMs > 0) { "timeoutMs must be positive." }
+    kotlinx.coroutines.currentCoroutineContext().ensureActive()
+    val started = System.nanoTime()
+    fun remaining(): Long = (timeoutMs - (System.nanoTime() - started) / 1_000_000).coerceAtLeast(0)
+    val ready = CompletableDeferred<Unit>()
     val request = requestId ?: newRequestId()
     val query = queryId ?: request
     val session = sessionId ?: newSessionId()
@@ -153,6 +160,7 @@ public suspend fun ThalovantClient.query(
     val events = mutableListOf<ThalovantEvent>()
     val fragments = mutableListOf<String>()
     var failure: ThalovantEvent? = null
+    var responseSessionId: String? = null
     val whitespace = Regex("\\s+")
     val subscription = transport.addHiveMessageListener { message ->
         if (message.optionalString("msg_type") !in listOf("query", "cascade")) return@addHiveMessageListener
@@ -162,6 +170,7 @@ public suspend fun ThalovantClient.query(
         synchronized(lock) {
             if (done.isCompleted) return@synchronized
             events.add(event)
+            if (responseSessionId == null) responseSessionId = event.sessionId?.takeIf { it.isNotBlank() }
             when {
                 event.name == "hive.query.complete" -> done.complete(Unit)
                 event.name in listOf(ThalovantEvents.SPEAK, ThalovantEvents.OVOS_UTTERANCE_SPEAK) -> {
@@ -175,16 +184,26 @@ public suspend fun ThalovantClient.query(
             }
         }
     }
+    val operation = launchRuntimeIo(onFailure = { error ->
+        synchronized(lock) { if (!done.isCompleted) done.completeExceptionally(error) }
+    }) {
+        val connectBudget = remaining()
+        if (connectBudget <= 0) throw ThalovantTimeoutException("Query budget expired before connecting.")
+        connect(connectBudget)
+        kotlinx.coroutines.currentCoroutineContext().ensureActive()
+        ready.complete(Unit)
+        val bus = hiveMessage("bus", buildJsonObject {
+            put("type", ThalovantEvents.RECOGNIZER_LOOP_UTTERANCE)
+            put("data", utterancePayload(prompt, lang)); put("context", fullContext)
+        })
+        transport.sendHiveFrame(hiveMessage("query", bus, buildJsonObject { put("query_id", query) }))
+    }
     try {
-        withTimeoutOrNull(timeoutMs) {
-            connect(timeoutMs)
-            val bus = hiveMessage("bus", buildJsonObject {
-                put("type", ThalovantEvents.RECOGNIZER_LOOP_UTTERANCE)
-                put("data", utterancePayload(prompt, lang)); put("context", fullContext)
-            })
-            transport.sendHiveFrame(hiveMessage("query", bus, buildJsonObject { put("query_id", query) }))
+        withTimeoutOrNull(remaining()) {
+            select { ready.onAwait {}; done.onAwait {} }
             awaitRuntime(done)
         } ?: throw ThalovantTimeoutException("Hub did not complete the query within ${timeoutMs}ms.")
+        kotlinx.coroutines.currentCoroutineContext().ensureActive()
         synchronized(lock) {
             if (fragments.isEmpty()) {
                 if (failure != null) throw ThalovantRuntimeException("Hub reported ${failure!!.name}.")
@@ -192,9 +211,9 @@ public suspend fun ThalovantClient.query(
             }
             val terminalFailure = failure?.takeIf { it.name in listOf(ThalovantEvents.POLICY_DENIED, ThalovantEvents.QUERY_TIMEOUT) }
             return ThalovantReply(fragments.joinToString(" "), fragments.toList(), terminalFailure == null, terminalFailure == null,
-                session, request, events.toList(), terminalFailure)
+                responseSessionId ?: session, request, events.toList(), terminalFailure)
         }
-    } finally { subscription.close() }
+    } finally { operation.cancel(); subscription.close() }
 }
 
 /** Recursion is bounded for untrusted nested cascade envelopes. */
@@ -260,3 +279,11 @@ public class ThalovantConversation internal constructor(
 
 public fun ThalovantClient.conversation(sessionId: String = newSessionId(), lang: String = "en-us", context: JsonObject = EMPTY_JSON_OBJECT): ThalovantConversation =
     ThalovantConversation(this, sessionId, lang, context)
+
+/** Caller waits are bounded separately; this worker keeps physical transport ownership until it finishes. */
+internal suspend fun launchRuntimeIo(onFailure: (Exception) -> Unit, block: suspend () -> Unit): kotlinx.coroutines.Job =
+    kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.currentCoroutineContext().minusKey(kotlinx.coroutines.Job) + kotlinx.coroutines.Dispatchers.IO).launch {
+        try { block() }
+        catch (error: kotlinx.coroutines.CancellationException) { throw error }
+        catch (error: Exception) { onFailure(error) }
+    }
