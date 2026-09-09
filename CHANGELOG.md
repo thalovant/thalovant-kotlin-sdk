@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.0
+
+- Implement HiveMind v3 Noise WSS with XXpsk2/KKpsk0, both offered cipher suites, Argon2id PSK derivation and persisted client/server identities using Bouncy Castle 1.85.
+- Reject legacy downgrade, plaintext application frames, invalid pins, replay and malformed chunks; clear ephemeral session state on reconnect and failure.
+- Add independent Node/noble handshake and transport vectors, upstream Argon2/AEAD vectors, loopback encrypted ask/reply and reconnect tests.
+- Add `HiveMindNoiseStore` and client injection for application-private persistence. WSS no longer accepts legacy crypto-key handshakes; HTTP/MQTT runtime support remains explicitly unavailable.
+
 ## 0.1.8
 
 - Add the intent inventory: `ThalovantClient.intents(languages, options)` reads the hub runtime's intent manifest (OVOS-INTENT-4 §10) over the client's own session and returns a `HubIntentInventory` — every intent each skill registered, per language, with the sentences a person says to reach it as the skill's locale files wrote them, `{slot}` placeholders included. No control-plane credential is involved. `listIntents(lang, options)` and `describeIntent(skillId, intentName, lang, options)` expose the two underlying queries (`ovos.intent.list` / `ovos.intent.describe`) as `IntentRegistration` rows and `IntentDefinition`s; all three are `suspend` functions like `ask()`. The model types are `HubIntentInventory` (`languages`, `skills`, `intents`, `source`, `denied`, `hasPhrases`, `asJson()`), `HubSkillIntents`, and `HubIntent` (`id`, `engine`, `phrases`, `phrasesFor(lang)`, `examples(lang, limit)`), with `IntentInventoryOptions` / `ListIntentsOptions` / `DescribeIntentOptions` carrying the deadline and switches.

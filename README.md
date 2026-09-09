@@ -19,13 +19,14 @@ Full docs: <https://docs.thalovant.com/developers/sdks/kotlin/>
 
 ```kotlin
 dependencies {
-    implementation("com.thalovant:thalovant-sdk:0.1.8")
+    implementation("com.thalovant:thalovant-sdk:0.2.0")
 }
 ```
 
 JVM 17 or newer (or Android with `minSdk` supporting Java 17 bytecode via
 desugaring/AGP defaults) is required. The SDK uses OkHttp for HTTP and
-WebSocket, kotlinx-serialization for JSON, and kotlinx-coroutines for async.
+WebSocket, kotlinx-serialization for JSON, kotlinx-coroutines for async, and
+Bouncy Castle 1.85 for Noise cryptographic primitives.
 
 ## Quick Start
 
@@ -407,9 +408,37 @@ Hubs may expose one or more public data-plane protocols:
 - `https`: request/response HTTP protocol exposed as HTTPS.
 - `mqtt`: broker-mediated MQTT over TLS. Requires per-client broker credentials.
 
-This release (0.1.3) connects over **WSS only**. Requesting `https` or `mqtt`
+This release connects over **WSS only**. Requesting `https` or `mqtt`
 throws `ThalovantUnsupportedProtocolException`. Endpoint selection still honors
 the shared preference order `wss, https, mqtt`.
+
+WSS requires HiveMind v3 Noise: first contact uses `XXpsk2`, and a hub with a
+persisted static-key pin can use `KKpsk0`. The SDK negotiates
+`25519_ChaChaPoly_SHA256` or `25519_AESGCM_SHA256`, derives the PSK from the
+identity password and hub node ID using Argon2id, and binds the complete server
+HELLO and offer into the handshake transcript. Legacy `crypto_key` envelopes
+remain available as standalone helpers; the WSS runtime rejects downgrade and
+plaintext application traffic. `connect()` completes after authenticated key
+exchange and sending the encrypted client HELLO.
+
+The default Noise state directory is `~/.config/thalovant-kotlin/noise`. Keep its
+client private key and server pins across restarts; on POSIX the SDK enforces
+0700 directories and 0600 files. Atomic key publication requires filesystem
+hard-link support; unsupported filesystems fail closed. Android applications should supply an
+app-private path explicitly:
+
+```kotlin
+import com.thalovant.sdk.HiveMindNoiseStore
+import java.nio.file.Path
+
+val client = ThalovantClient(identity, noiseStore = HiveMindNoiseStore(Path.of(appPrivateDirectory, "noise")))
+```
+
+A changed server key fails authentication, including during XX handshakes;
+pins are never automatically forgotten after a failure. Verify an intentional
+server key rotation before replacing the corresponding saved pin. Reconnects
+reuse the static identity and pins but create fresh ephemeral keys and cipher
+counters. HTTPS and MQTT runtime implementations remain unsupported.
 
 Inspect what an identity supports:
 
@@ -446,7 +475,7 @@ subscription.close()
   control-plane API to provision private resources.
 - `Unsupported protocol`: the hub does not expose WSS, or the identity was
   created before WSS was enabled. `https` and `mqtt` runtimes are not part of
-  0.1.3.
+  this release.
 - A request times out: pass a larger `timeoutMs` to `ask(...)`, or a larger
   `IntentInventoryOptions(timeoutMs = ...)` to `intents(...)`.
 - `ThalovantPolicyDeniedException`: the hub refused a bus message type this

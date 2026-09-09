@@ -24,6 +24,8 @@ import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
+import java.nio.file.Files
+import okio.ByteString
 import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
@@ -36,10 +38,17 @@ class TransportTest {
     private lateinit var server: MockWebServer
     private val received = LinkedBlockingQueue<String>()
     private val serverSocket = AtomicReference<WebSocket>()
+    private lateinit var stateDir: java.nio.file.Path
+    private lateinit var serverSession: NoiseSession
+    private val serverKey = ByteArray(32) { (it + 1).toByte() }
+    private val helloPayload = buildJsonObject { put("node_id", "kotlin-test-hub"); put("pubkey", "test"); put("peer", "peer") }
+    private val offer = ThalovantJson.parseToJsonElement("""{"max_protocol_version":3,"binarize":true,"encodings":["JSON-HEX"],"ciphers":["AES-GCM"],"noise":{"patterns":["XXpsk2"],"suites":["25519_ChaChaPoly_SHA256","25519_AESGCM_SHA256"]}}""").jsonObject
+    private val psk by lazy { Noise.derivePsk("secret", "kotlin-test-hub") }
 
     @BeforeTest
     fun setUp() {
         server = MockWebServer()
+        stateDir = Files.createTempDirectory("kotlin-noise-test")
         received.clear()
         serverSocket.set(null)
     }
@@ -48,21 +57,37 @@ class TransportTest {
     fun tearDown() {
         serverSocket.get()?.close(1000, null)
         server.shutdown()
+        stateDir.toFile().deleteRecursively()
     }
 
     private fun startHub() {
-        server.enqueue(
+        repeat(2) { server.enqueue(
             MockResponse().withWebSocketUpgrade(
                 object : WebSocketListener() {
+                    private var exchange: NoiseHandshake? = null
                     override fun onOpen(webSocket: WebSocket, response: Response) {
                         serverSocket.set(webSocket)
-                        webSocket.send(
-                            """{"msg_type":"handshake","payload":{"preshared_key":true},"metadata":{}}""",
-                        )
+                        webSocket.send(hiveMessage("hello", helloPayload).toString())
+                        webSocket.send(hiveMessage("shake", offer).toString())
                     }
 
                     override fun onMessage(webSocket: WebSocket, text: String) {
-                        received.add(text)
+                        val params = ThalovantJson.parseToJsonElement(text).jsonObject["payload"]!!.jsonObject["noise"]!!.jsonObject
+                        if (exchange == null) {
+                            val pattern = params["pattern"]!!.jsonPrimitive.content
+                            val suite = params["suite"]!!.jsonPrimitive.content
+                            exchange = NoiseHandshake(pattern, suite, psk, Noise.prologue(helloPayload, offer, "Noise_${pattern}_$suite"), serverKey, initiator = false)
+                        }
+                        val state = exchange!!
+                        state.read(Noise.unhex(params["msg"]!!.jsonPrimitive.content))
+                        if (!state.finished) webSocket.send(hiveMessage("shake", buildJsonObject { put("noise", buildJsonObject { put("msg", Noise.hex(state.write())) }) }).toString())
+                        if (state.finished) serverSession = state.session()
+                    }
+
+                    override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
+                        val decoded = serverSession.decrypt(bytes.toByteArray()) ?: return
+                        check(decoded.second)
+                        received.add(decoded.first.toString(Charsets.UTF_8))
                     }
 
                     override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
@@ -70,7 +95,7 @@ class TransportTest {
                     }
                 },
             ),
-        )
+        ) }
         server.start()
     }
 
@@ -93,22 +118,14 @@ class TransportTest {
     private fun sendBus(type: String, data: JsonObject, context: JsonObject) {
         val socket = serverSocket.get()
         assertNotNull(socket)
-        socket.send(
-            hiveMessage(
-                "bus",
-                buildJsonObject {
-                    put("type", type)
-                    put("data", data)
-                    put("context", context)
-                },
-            ).toString(),
-        )
+        val message = hiveMessage("bus", buildJsonObject { put("type", type); put("data", data); put("context", context) })
+        for (frame in serverSession.encrypt(message.toString().toByteArray())) socket.send(ByteString.of(*frame))
     }
 
     @Test
-    fun `connect performs the preshared-key handshake with an unencrypted hello`() = runBlocking {
+    fun `connect performs Noise authentication and sends an encrypted hello`() = runBlocking {
         startHub()
-        val client = ThalovantClient(identity(), protocol = HubProtocol.WSS, replySettleMs = 10)
+        val client = ThalovantClient(identity(), noiseStore = HiveMindNoiseStore(stateDir), protocol = HubProtocol.WSS, replySettleMs = 10)
         client.connect(5000)
         try {
             val hello = ThalovantJson.parseToJsonElement(awaitMessage()).jsonObject
@@ -140,7 +157,7 @@ class TransportTest {
     @Test
     fun `ask sends an encrypted recognizer utterance and aggregates speak replies`(): Unit = runBlocking {
         startHub()
-        val client = ThalovantClient(identity(), protocol = HubProtocol.WSS, replySettleMs = 250)
+        val client = ThalovantClient(identity(), noiseStore = HiveMindNoiseStore(stateDir), protocol = HubProtocol.WSS, replySettleMs = 250)
         client.connect(5000)
         try {
             awaitMessage() // hello
@@ -149,12 +166,8 @@ class TransportTest {
                 runCatching { client.ask("what time is it?", sessionId = "sess-1", requestId = "req-1") }
             }
 
-            // Post-handshake traffic is an AES-128-GCM {ciphertext,tag,nonce} envelope.
-            val envelope = ThalovantJson.parseToJsonElement(awaitMessage()).jsonObject
-            assertTrue("ciphertext" in envelope, "expected the bus message to be encrypted")
-            val bus = ThalovantJson.parseToJsonElement(
-                HiveMindCrypto.decryptFromJson(CRYPTO_KEY, envelope),
-            ).jsonObject
+            // awaitMessage decrypts the peer's authenticated binary Noise frame.
+            val bus = ThalovantJson.parseToJsonElement(awaitMessage()).jsonObject
             assertEquals("bus", bus["msg_type"]?.jsonPrimitive?.content)
             val payload = bus["payload"]?.jsonObject
             assertNotNull(payload)
@@ -196,7 +209,7 @@ class TransportTest {
     @Test
     fun `ask ignores replies without matching correlation`(): Unit = runBlocking {
         startHub()
-        val client = ThalovantClient(identity(), protocol = HubProtocol.WSS, replySettleMs = 250)
+        val client = ThalovantClient(identity(), noiseStore = HiveMindNoiseStore(stateDir), protocol = HubProtocol.WSS, replySettleMs = 250)
         client.connect(5000)
         try {
             awaitMessage() // hello
@@ -205,7 +218,7 @@ class TransportTest {
             }
             val envelope = ThalovantJson.parseToJsonElement(awaitMessage()).jsonObject
             val bus = ThalovantJson.parseToJsonElement(
-                HiveMindCrypto.decryptFromJson(CRYPTO_KEY, envelope),
+                envelope.toString(),
             ).jsonObject
             val context = bus["payload"]?.jsonObject?.get("context")?.jsonObject
             assertNotNull(context)
@@ -230,7 +243,7 @@ class TransportTest {
     @Test
     fun `ask surfaces hive failures as runtime errors`(): Unit = runBlocking {
         startHub()
-        val client = ThalovantClient(identity(), protocol = HubProtocol.WSS, replySettleMs = 0)
+        val client = ThalovantClient(identity(), noiseStore = HiveMindNoiseStore(stateDir), protocol = HubProtocol.WSS, replySettleMs = 0)
         client.connect(5000)
         try {
             awaitMessage() // hello
@@ -239,7 +252,7 @@ class TransportTest {
             }
             val envelope = ThalovantJson.parseToJsonElement(awaitMessage()).jsonObject
             val context = ThalovantJson.parseToJsonElement(
-                HiveMindCrypto.decryptFromJson(CRYPTO_KEY, envelope),
+                envelope.toString(),
             ).jsonObject["payload"]?.jsonObject?.get("context")?.jsonObject
             assertNotNull(context)
 
@@ -273,7 +286,7 @@ class TransportTest {
      */
     private fun assertIntentMissSurfacesWithoutFallback(eventName: String) = runBlocking {
         startHub()
-        val client = ThalovantClient(identity(), protocol = HubProtocol.WSS, replySettleMs = 0)
+        val client = ThalovantClient(identity(), noiseStore = HiveMindNoiseStore(stateDir), protocol = HubProtocol.WSS, replySettleMs = 0)
         client.connect(5000)
         try {
             awaitMessage() // hello
@@ -282,7 +295,7 @@ class TransportTest {
             }
             val envelope = ThalovantJson.parseToJsonElement(awaitMessage()).jsonObject
             val context = ThalovantJson.parseToJsonElement(
-                HiveMindCrypto.decryptFromJson(CRYPTO_KEY, envelope),
+                envelope.toString(),
             ).jsonObject["payload"]?.jsonObject?.get("context")?.jsonObject
             assertNotNull(context)
 
@@ -300,7 +313,7 @@ class TransportTest {
     @Test
     fun `intent miss is recovered by a fallback reply`() = runBlocking {
         startHub()
-        val client = ThalovantClient(identity(), protocol = HubProtocol.WSS, replySettleMs = 0)
+        val client = ThalovantClient(identity(), noiseStore = HiveMindNoiseStore(stateDir), protocol = HubProtocol.WSS, replySettleMs = 0)
         client.connect(5000)
         try {
             awaitMessage() // hello
@@ -309,7 +322,7 @@ class TransportTest {
             }
             val envelope = ThalovantJson.parseToJsonElement(awaitMessage()).jsonObject
             val context = ThalovantJson.parseToJsonElement(
-                HiveMindCrypto.decryptFromJson(CRYPTO_KEY, envelope),
+                envelope.toString(),
             ).jsonObject["payload"]?.jsonObject?.get("context")?.jsonObject
             assertNotNull(context)
 
@@ -325,6 +338,39 @@ class TransportTest {
         } finally {
             client.close()
         }
+    }
+
+    @Test
+    fun `same client reconnect clears cipher counters and preserves static identity`() = runBlocking {
+        startHub()
+        val store = HiveMindNoiseStore(stateDir)
+        val client = ThalovantClient(identity(), noiseStore = store)
+        client.connect(5000)
+        awaitMessage()
+        val originalKey = store.staticKey()
+        client.close()
+        client.connect(5000)
+        try {
+            assertEquals("hello", ThalovantJson.parseToJsonElement(awaitMessage()).jsonObject["msg_type"]!!.jsonPrimitive.content)
+            assertTrue(originalKey.contentEquals(store.staticKey()))
+            client.emit("test.reconnect")
+            assertEquals("bus", ThalovantJson.parseToJsonElement(awaitMessage()).jsonObject["msg_type"]!!.jsonPrimitive.content)
+        } finally { client.close() }
+    }
+
+    @Test
+    fun `legacy offers cannot mark transport ready`() = runBlocking {
+        server.enqueue(MockResponse().withWebSocketUpgrade(object : WebSocketListener() {
+            override fun onOpen(webSocket: WebSocket, response: Response) {
+                serverSocket.set(webSocket)
+                webSocket.send("""{"msg_type":"shake","payload":{"preshared_key":true}}""")
+            }
+        }))
+        server.start()
+        val transport = HiveMindWssTransport(identity(), noiseStore = HiveMindNoiseStore(stateDir))
+        assertFailsWith<ThalovantConnectionException> { transport.connect(5000) }
+        assertTrue(!transport.connected && !transport.handshakeComplete)
+        transport.disconnect()
     }
 
     @Test
