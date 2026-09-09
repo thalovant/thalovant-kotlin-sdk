@@ -283,5 +283,7 @@ public fun ThalovantClient.conversation(sessionId: String = newSessionId(), lang
 /** Caller waits are bounded separately; this worker keeps physical transport ownership until it finishes. */
 internal suspend fun launchRuntimeIo(onFailure: (Exception) -> Unit, block: suspend () -> Unit): kotlinx.coroutines.Job =
     kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.currentCoroutineContext().minusKey(kotlinx.coroutines.Job) + kotlinx.coroutines.Dispatchers.IO).launch {
-        try { block() } catch (error: Exception) { onFailure(error) }
+        try { block() }
+        catch (error: kotlinx.coroutines.CancellationException) { throw error }
+        catch (error: Exception) { onFailure(error) }
     }

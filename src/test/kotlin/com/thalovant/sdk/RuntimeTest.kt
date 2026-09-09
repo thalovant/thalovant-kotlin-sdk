@@ -105,6 +105,15 @@ class RuntimeTest {
         }
     }
 
+    @Test fun `runtime IO cancellation does not enter the write failure callback`() = runBlocking {
+        val entered = CompletableDeferred<Unit>()
+        val failures = CopyOnWriteArrayList<Exception>()
+        val operation = launchRuntimeIo({ failures.add(it) }) { entered.complete(Unit); awaitCancellation() }
+        withTimeout(1000) { entered.await() }
+        operation.cancelAndJoin()
+        assertTrue(operation.isCancelled); assertTrue(failures.isEmpty())
+    }
+
     @Test fun `cancelled send checks cancellation after waiting for the transport lock`() = runBlocking {
         val transport = HiveMindWssTransport(ThalovantIdentity(ThalovantJson.parseToJsonElement(
             """{"access_key":"fixture","password":"fixture","site_id":"fixture","default_master":"wss://hub.invalid"}"""
@@ -264,7 +273,10 @@ class RuntimeTest {
         assertFailsWith<ThalovantTimeoutException> { sdk.query("test", timeoutMs = 20) }
         val pending = async(start = CoroutineStart.UNDISPATCHED) { sdk.query("test") }
         pending.cancelAndJoin(); assertTrue(fake.frames.isEmpty())
+        val sent = CompletableDeferred<Unit>()
+        fake.queryAction = { sent.complete(Unit) }
         val lost = async(start = CoroutineStart.UNDISPATCHED) { runCatching { sdk.query("test") }.exceptionOrNull() }
+        withTimeout(1000) { sent.await() }
         fake.disconnect()
         assertIs<ThalovantConnectionException>(withTimeout(1000) { lost.await() })
         assertTrue(fake.frames.isEmpty())
