@@ -1,0 +1,31 @@
+name: Maven Publication Status
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Existing release version to diagnose (for example 0.3.2)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: maven-central
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Validate diagnostic boundaries
+        run: python3 -m unittest discover -s tools -p 'test_maven_publication_status.py'
+      - name: Read existing Sonatype deployment state
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+          MAVEN_CENTRAL_USERNAME: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
+          MAVEN_CENTRAL_PASSWORD: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}
+        run: python3 tools/maven-publication-status.py
