@@ -58,6 +58,24 @@ class RuntimeTest {
         assertTrue(fake.frames.isEmpty())
     }
 
+    @Test fun `query soft misses allow later speech while hard failures retain partial speech`() = runBlocking {
+        for (miss in listOf(ThalovantEvents.INTENT_UNMATCHED, ThalovantEvents.INTENT_FAILURE)) {
+            val fake = RuntimeFake(); val sdk = client(fake)
+            fake.queryAnswer = { fake.reply("q", miss); fake.reply("q", "speak", "answer"); fake.reply("q", "hive.query.complete") }
+            val reply = sdk.query("test", queryId = "q")
+            assertEquals("answer", reply.text); assertTrue(reply.ok); assertNull(reply.failureEvent)
+            assertEquals(listOf(miss, "speak", "hive.query.complete"), reply.events.map { it.name })
+            fake.queryAnswer = { fake.reply("q", miss); fake.reply("q", "hive.query.complete") }
+            assertFailsWith<ThalovantRuntimeException> { sdk.query("test", queryId = "q") }
+        }
+        for (hard in listOf(ThalovantEvents.POLICY_DENIED, ThalovantEvents.QUERY_TIMEOUT)) {
+            val fake = RuntimeFake(); val sdk = client(fake)
+            fake.queryAnswer = { fake.reply("q", "speak", "partial"); fake.reply("q", hard); fake.reply("q", "speak", "ignored") }
+            val reply = sdk.query("test", queryId = "q")
+            assertEquals("partial", reply.text); assertFalse(reply.ok); assertEquals(hard, reply.failureEvent?.name)
+        }
+    }
+
     @Test fun `query failure silence cancellation and disconnect clean subscriptions`() = runBlocking {
         val fake = RuntimeFake(); val sdk = client(fake)
         fake.queryAnswer = { fake.reply("q", ThalovantEvents.POLICY_DENIED) }

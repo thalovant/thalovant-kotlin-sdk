@@ -467,15 +467,16 @@ class IntentsTest {
     fun `fallback discovery parses and sorts handlers and ignores invalid rows`() = runBlocking {
         val payload = ThalovantJson.parseToJsonElement("""{"fallbacks":[
             {"skill_id":"b","priority":20}, {"skill_id":"a","priority":20.5},
-            {"skill_id":"default","priority":"10"}, {"skill_id":"huge","priority":1e100},
+            {"skill_id":"true","priority":true}, {"skill_id":"default","priority":"42"},
+            {"skill_id":"huge","priority":1e100},
             {"skill_id":""}, {"skill_id":123}, false
         ]}""").jsonObject
         val sdk = client(FakeHubTransport(fallbackPayload = payload))
-        assertEquals(listOf(HubFallback("default", 0), HubFallback("a", 20), HubFallback("b", 20)), sdk.listFallbacks())
+        assertEquals(listOf(HubFallback("default", 0), HubFallback("true", 1), HubFallback("a", 20), HubFallback("b", 20)), sdk.listFallbacks())
         val inventory = sdk.intents(listOf("fr-fr"))
         assertTrue(inventory.fallbacksKnown)
         assertTrue(inventory.mayAnswer("de-de"))
-        assertEquals(3, inventory.asJson()["fallbacks"]!!.jsonArray.size)
+        assertEquals(4, inventory.asJson()["fallbacks"]!!.jsonArray.size)
     }
 
     @Test

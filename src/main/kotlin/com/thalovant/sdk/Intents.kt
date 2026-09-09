@@ -582,11 +582,17 @@ internal suspend fun ThalovantClient.discoverFallbacks(timeoutMs: Long): List<Hu
         val row = item as? JsonObject ?: return@mapNotNull null
         val skill = (row["skill_id"] as? JsonPrimitive)?.takeIf { it.isString }?.content
             ?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
-        val raw = (row["priority"] as? JsonPrimitive)?.takeUnless { it.isString }?.content
-        val priority = raw?.toLongOrNull() ?: raw?.toDoubleOrNull()?.let {
-            if (!it.isFinite() || it < Long.MIN_VALUE.toDouble() || it >= Long.MAX_VALUE.toDouble()) return@mapNotNull null
-            it.toLong()
-        } ?: 0L
+        val value = row["priority"] as? JsonPrimitive
+        val raw = value?.content?.trim()
+        val priority = when {
+            value?.isString == true -> 0L
+            raw == "true" -> 1L
+            raw == "false" -> 0L
+            else -> raw?.toLongOrNull() ?: raw?.toDoubleOrNull()?.let {
+                if (!it.isFinite() || it < Long.MIN_VALUE.toDouble() || it >= Long.MAX_VALUE.toDouble()) return@mapNotNull null
+                it.toLong()
+            } ?: 0L
+        }
         HubFallback(skill, priority)
     }.sortedWith(compareBy(HubFallback::priority, HubFallback::skillId))
 }

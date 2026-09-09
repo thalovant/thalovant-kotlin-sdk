@@ -10,7 +10,7 @@ peer_pid=$!
 trap 'status=$?; kill "$peer_pid" 2>/dev/null || true; cat "$peer_log"; rm -f "$peer_log"; exit "$status"' EXIT
 endpoint=""
 for attempt in {1..100}; do
-  endpoint="$(sed -n '1p' "$peer_log")"
+  endpoint="$(sed -n '/^ws:\/\/127\.0\.0\.1:[0-9][0-9]*$/ { p; q; }' "$peer_log")"
   if [[ "$endpoint" == ws://127.0.0.1:* ]]; then break; fi
   if ! kill -0 "$peer_pid" 2>/dev/null; then exit 1; fi
   sleep 0.1

@@ -992,8 +992,7 @@ private fun apiErrorMessage(statusCode: Int, body: String): String {
     fun text(value: JsonElement?): String? = (value as? JsonPrimitive)
         ?.takeIf { it.isString }?.content?.takeIf { it.isNotBlank() }
     val rawDetail = envelope?.get("detail")
-    val summary = text(rawDetail)
-        ?: (rawDetail as? JsonObject)?.let { text(it["message"]) ?: text(it["code"]) }
+    val summary = (rawDetail as? JsonObject)?.let { text(it["message"]) ?: text(it["code"]) }
         ?: (rawDetail as? JsonArray)?.mapNotNull { (it as? JsonObject)?.let { row -> text(row["msg"]) } }
             ?.takeIf { it.isNotEmpty() }?.joinToString("; ")
         ?: listOf("message", "error_description", "error", "title", "code")

@@ -168,7 +168,10 @@ public suspend fun ThalovantClient.query(
                     val fragment = event.text.trim().replace(whitespace, " ")
                     if (fragment.isNotEmpty() && fragments.lastOrNull() != fragment) fragments.add(fragment)
                 }
-                event.isFailure -> { failure = event; done.complete(Unit) }
+                event.name in listOf(ThalovantEvents.POLICY_DENIED, ThalovantEvents.QUERY_TIMEOUT) -> {
+                    failure = event; done.complete(Unit)
+                }
+                event.isFailure -> failure = event
             }
         }
     }
@@ -187,8 +190,9 @@ public suspend fun ThalovantClient.query(
                 if (failure != null) throw ThalovantRuntimeException("Hub reported ${failure!!.name}.")
                 throw ThalovantTimeoutException("Hub completed the query without a speak reply.")
             }
-            return ThalovantReply(fragments.joinToString(" "), fragments.toList(), failure == null, failure == null,
-                session, request, events.toList(), failure)
+            val terminalFailure = failure?.takeIf { it.name in listOf(ThalovantEvents.POLICY_DENIED, ThalovantEvents.QUERY_TIMEOUT) }
+            return ThalovantReply(fragments.joinToString(" "), fragments.toList(), terminalFailure == null, terminalFailure == null,
+                session, request, events.toList(), terminalFailure)
         }
     } finally { subscription.close() }
 }

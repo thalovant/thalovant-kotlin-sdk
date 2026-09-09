@@ -124,6 +124,30 @@ class TransportTest {
     }
 
     @Test
+    fun `authenticated callbacks release send lock and isolate listener failures`() = runBlocking {
+        startHub()
+        val transport = HiveMindWssTransport(identity(), noiseStore = HiveMindNoiseStore(stateDir))
+        val observed = LinkedBlockingQueue<Boolean>()
+        val executor = java.util.concurrent.Executors.newSingleThreadExecutor()
+        transport.addBusListener { throw IllegalStateException("Application callback failed") }
+        transport.addHiveMessageListener { throw IllegalStateException("Application frame callback failed") }
+        transport.addHiveMessageListener {
+            val result = executor.submit<Boolean> {
+                runBlocking { transport.emitBus("callback.reply", EMPTY_JSON_OBJECT, EMPTY_JSON_OBJECT) }; true
+            }
+            observed.add(runCatching { result.get(2, TimeUnit.SECONDS) }.getOrDefault(false))
+        }
+        try {
+            transport.connect()
+            awaitMessage() // authenticated client hello
+            sendBus("fixture", EMPTY_JSON_OBJECT, EMPTY_JSON_OBJECT)
+            assertEquals(true, observed.poll(5, TimeUnit.SECONDS), "A callback must allow another thread to send")
+            assertTrue(transport.connected && transport.handshakeComplete)
+            assertEquals("callback.reply", ThalovantJson.parseToJsonElement(awaitMessage()).jsonObject["payload"]!!.jsonObject["type"]!!.jsonPrimitive.content)
+        } finally { transport.disconnect(); executor.shutdownNow() }
+    }
+
+    @Test
     fun `queued connect deadline and cancellation never cancel the active socket`() = runBlocking {
         val release = java.util.concurrent.CountDownLatch(1)
         startHub(release)

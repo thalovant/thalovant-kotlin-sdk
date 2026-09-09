@@ -218,7 +218,8 @@ public class HiveMindWssTransport(
         check(socket?.send(frame.toString()) == true) { "Noise handshake send failed." }
     }
 
-    private fun handleRawMessage(raw: String, authenticated: Boolean = false) {
+    private fun handleRawMessage(raw: String, authenticated: Boolean = false): List<() -> Unit> {
+        val deliveries = mutableListOf<() -> Unit>()
         check(authenticated || noiseSession == null) { "Plaintext frame received after Noise negotiation." }
         val parsed = ThalovantJson.parseToJsonElement(raw).asObjectOrNull()
             ?: throw ThalovantConnectionException("Invalid HiveMind JSON frame.")
@@ -237,15 +238,16 @@ public class HiveMindWssTransport(
             "bus" -> {
                 check(authenticated && handshakeComplete) { "Application frame received before Noise authentication." }
                 val event = ThalovantEvent(
-                    name = payload.optionalString("type") ?: return,
+                    name = payload.optionalString("type") ?: return emptyList(),
                     data = payload["data"].asObjectOrNull() ?: EMPTY_JSON_OBJECT,
                     context = payload["context"].asObjectOrNull() ?: EMPTY_JSON_OBJECT,
                 )
-                for (listener in listeners) listener(event)
+                for (listener in listeners.toList()) deliveries.add { listener(event) }
             }
             else -> check(authenticated) { "Unexpected plaintext application frame." }
         }
-        if (authenticated && handshakeComplete) for (listener in hiveListeners) listener(parsed)
+        if (authenticated && handshakeComplete) for (listener in hiveListeners.toList()) deliveries.add { listener(parsed) }
+        return deliveries
     }
 
     private fun handleHandshake(payload: JsonObject) {
@@ -304,30 +306,38 @@ public class HiveMindWssTransport(
     }
 
     private inner class SocketListener(private val currentGeneration: Long) : WebSocketListener() {
-        private fun receive(action: () -> Unit) = synchronized(sendLock) {
-            if (currentGeneration != generation) return@synchronized
-            try { action() } catch (error: Throwable) { failHandshake(error) }
+        private fun receive(action: () -> List<() -> Unit>) {
+            val deliveries = synchronized(sendLock) {
+                if (currentGeneration != generation) return@synchronized emptyList()
+                try { action() } catch (error: Throwable) { failHandshake(error); emptyList() }
+            }
+            // Application callbacks cannot hold the cipher/send lock or turn
+            // an authenticated session into a transport failure.
+            for (deliver in deliveries) runCatching { deliver() }
         }
         override fun onOpen(webSocket: WebSocket, response: Response) = receive {
             socket = webSocket
             connected = true
             phase = "handshake"
             opened.complete(Unit)
+            emptyList()
         }
         override fun onMessage(webSocket: WebSocket, text: String) = receive { handleRawMessage(text) }
         override fun onMessage(webSocket: WebSocket, bytes: ByteString) = receive {
             val session = noiseSession ?: error("Binary frame received before Noise authentication.")
-            val frame = session.decrypt(bytes.toByteArray()) ?: return@receive
+            val frame = session.decrypt(bytes.toByteArray()) ?: return@receive emptyList()
             check(frame.second) { "Binary HiveMind payloads were not negotiated." }
             handleRawMessage(frame.first.toString(Charsets.UTF_8), authenticated = true)
         }
         override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) = receive {
             failHandshake(ThalovantConnectionException("HiveMind WSS connect failed: ${t.message}", t))
+            emptyList()
         }
         override fun onClosing(webSocket: WebSocket, code: Int, reason: String) { webSocket.close(code, reason) }
         override fun onClosed(webSocket: WebSocket, code: Int, reason: String) = receive {
             if (!handshakeComplete) failHandshake(ThalovantConnectionException("HiveMind WSS closed before Noise handshake completed ($code)."))
             else { resetSession(); phase = "closed" }
+            emptyList()
         }
     }
 

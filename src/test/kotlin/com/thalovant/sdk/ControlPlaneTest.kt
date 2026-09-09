@@ -127,6 +127,7 @@ class ControlPlaneTest {
         val secret = "PRIVATE-API-CREDENTIAL"
         val bodies = listOf(
             secret,
+            "{\"detail\":\"$secret\"}",
             "{\"password\":\"$secret\",\"apiKey\":\"$secret\"}",
             "{\"detail\":[{\"msg\":\"Invalid input\",\"input\":{\"password\":\"$secret\"}}]}",
         )
