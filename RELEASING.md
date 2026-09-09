@@ -60,6 +60,12 @@ environment credential. It reports deployment IDs, states, timestamps and
 sanitized validation errors. It cannot upload, publish, or delete a deployment,
 and it does not require the signing key.
 
+The [official Publisher OpenAPI](https://central.sonatype.com/api-doc) documents
+`GET /api/v1/publisher/deployments` (`listDeployments`) with `deploymentName`
+filtering and `pageCount`, followed by `POST /api/v1/publisher/status` for an
+existing deployment ID. A successful empty lookup reports `lookup_result:
+"no-match"`; it is distinct from an HTTP, authentication, or parsing failure.
+
 The pinned publisher can finish uploading before Sonatype validates the bundle.
 A successful upload followed by a public Maven `404` therefore does not prove
 publication succeeded or failed. Preserve the existing deployment while checking

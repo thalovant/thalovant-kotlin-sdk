@@ -1,11 +1,14 @@
 import base64
+import contextlib
 import importlib.util
 import io
 import json
 from pathlib import Path
 import unittest
+from unittest import mock
 import urllib.error
 import urllib.parse
+import urllib.request
 
 spec = importlib.util.spec_from_file_location("status", Path(__file__).with_name("maven-publication-status.py"))
 status = importlib.util.module_from_spec(spec)
@@ -57,6 +60,33 @@ class StatusTests(unittest.TestCase):
         for secret in [username, password, base64.b64encode(f"{username}:{password}".encode()).decode()]:
             self.assertNotIn(secret, serialized)
             self.assertNotIn(json.dumps(secret)[1:-1], result["deployments"][0]["errors"])
+
+    def test_pending_status_accepts_null_purls_and_scalar_fields(self):
+        class PendingOpener(FakeOpener):
+            def open(self, request, timeout):
+                if request.method == "GET":
+                    return super().open(request, timeout)
+                return io.BytesIO(json.dumps({"deploymentState": "VALIDATING", "purls": None,
+                                              "createTimestamp": None, "updateTimestamp": None,
+                                              "deploymentName": None, "errors": None}).encode())
+        row = status.read_status("0.3.2", "user-secret", "password-secret", PendingOpener())["deployments"][0]
+        self.assertEqual(row["purls"], [])
+        self.assertFalse(row["target_present"])
+        self.assertEqual(row["createTimestamp"], "")
+        self.assertEqual(row["updateTimestamp"], "")
+        self.assertEqual(row["deploymentName"], "com.thalovant-thalovant-sdk-0.3.2")
+        self.assertEqual(row["deploymentState"], "VALIDATING")
+
+    def test_successful_empty_lookup_is_reported_without_a_failure_exit(self):
+        class EmptyOpener:
+            def open(self, request, timeout):
+                return io.BytesIO(b'{"deployments": [], "pageCount": 0}')
+        result = status.read_status("0.3.2", "user-secret", "password-secret", EmptyOpener())
+        self.assertEqual(result["lookup_result"], "no-match")
+        self.assertEqual(result["deployments"], [])
+        with mock.patch.object(status, "read_status", return_value=result), contextlib.redirect_stdout(io.StringIO()) as out:
+            self.assertEqual(status.main(), 0)
+        self.assertEqual(json.loads(out.getvalue())["lookup_result"], "no-match")
 
     def test_invalid_version_fails_before_network(self):
         opener = FakeOpener()

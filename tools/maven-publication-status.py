@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Read the existing Sonatype deployment; never upload, publish, or delete.
 
-API contract: https://central.sonatype.com/api-doc
+Current official OpenAPI: https://central.sonatype.com/api-doc
+GET /api/v1/publisher/deployments (listDeployments) provides deploymentName
+filtering and pageCount; POST /api/v1/publisher/status reads the matching ID.
 Credentials stay in the runner environment and are never written to an artifact.
 """
 import base64
@@ -84,7 +86,7 @@ def read_status(version, username, password, opener=None):
             "namespace": "com.thalovant", "deploymentName": name,
             "page": page, "size": 20, "sortField": "createTimestamp", "sortDirection": "desc",
         }, "GET")
-        for item in result.get("deployments", []):
+        for item in result.get("deployments") or []:
             if item.get("deploymentName") != name:
                 continue
             deployment_id = item.get("deploymentId", "")
@@ -92,20 +94,22 @@ def read_status(version, username, password, opener=None):
                 raise DiagnosticError("Sonatype returned an invalid deployment identifier")
             status = request("/api/v1/publisher/status", {"id": deployment_id}, "POST")
             # Keep only diagnostic fields; never dump response headers or account data.
-            row = {key: redact(status.get(key, item.get(key, ""))) for key in (
+            row = {key: redact(status.get(key) or item.get(key) or "") for key in (
                 "deploymentId", "deploymentName", "deploymentState", "createTimestamp", "updateTimestamp",
             )}
-            row["purls"] = [redact(value) for value in status.get("purls", [])[:20]]
-            row["errors"] = json.dumps(redact_errors(status.get("errors", {})), ensure_ascii=True)[:2048]
-            row["target_present"] = purl in status.get("purls", [])
+            purls = status.get("purls") or []
+            row["purls"] = [redact(value) for value in purls[:20]]
+            row["errors"] = json.dumps(redact_errors(status.get("errors") or {}), ensure_ascii=True)[:2048]
+            row["target_present"] = purl in purls
             deployments.append(row)
-        if page + 1 >= result.get("pageCount", 1):
+        if page + 1 >= (result.get("pageCount") or 1):
             break
     else:
         raise DiagnosticError("Deployment listing exceeded the five-page diagnostic limit")
     return {
         "checked_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         "version": version, "mode": "read-only", "deployments": deployments,
+        "lookup_result": "matched" if deployments else "no-match",
     }
 
 
@@ -122,7 +126,7 @@ def main():
         print("Maven deployment diagnostics failed; no raw response or credentials were logged.", file=sys.stderr)
         return 1
     print(json.dumps(result, indent=2, ensure_ascii=True))
-    return 0 if result["deployments"] else 1
+    return 0
 
 
 if __name__ == "__main__":
