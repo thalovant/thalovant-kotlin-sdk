@@ -386,10 +386,10 @@ internal suspend fun ThalovantClient.describeMany(
             // than one window's worth of intents would otherwise turn the whole
             // inventory into a timeout while the same skill with fewer intents
             // only loses its sentences. A hub silent from the start still fails
-            // at the first window, since nothing is found. Only a timeout means
+            // at the first window, unless usable definitions were found. Only a timeout means
             // "this window had nothing": a refusal is a policy problem and
             // reaches the caller.
-            if (batched.isEmpty()) throw timeout
+            if (batched.values.none { it.isNotEmpty() }) throw timeout
         }
     }
     return batched
@@ -440,7 +440,7 @@ private suspend fun ThalovantClient.describeWindow(
             // A partial answer is still an answer: the intents the hub did not
             // describe in time simply carry no sentences.
             synchronized(lock) {
-                if (found.isEmpty()) {
+                if (found.values.none { it.isNotEmpty() }) {
                     throw ThalovantTimeoutException(
                         "Hub did not answer ${ThalovantEvents.INTENT_DESCRIBE} within ${timeoutMs}ms.",
                     )

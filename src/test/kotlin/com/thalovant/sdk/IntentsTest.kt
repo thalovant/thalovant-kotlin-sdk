@@ -808,6 +808,39 @@ class IntentsTest {
         assertTrue(inventory.hasPhrases)
     }
 
+    private class EmptyDescriptionHub(private val refused: Boolean, private val allAnswered: Boolean = false) : FakeHubTransport() {
+        override suspend fun emitBus(eventType: String, data: JsonObject, context: JsonObject) {
+            if (eventType != ThalovantEvents.INTENT_DESCRIBE) return super.emitBus(eventType, data, context)
+            emitted.add(Emitted(eventType, data, context))
+            if (allAnswered || data["intent_name"]?.jsonPrimitive?.content == "first") {
+                deliver(ThalovantEvents.INTENT_DESCRIBE_RESPONSE, buildJsonObject {
+                    put("ok", !refused)
+                    put("definitions", JsonArray(emptyList()))
+                }, context)
+            }
+        }
+    }
+
+    @Test
+    fun `empty descriptions cannot turn later silence into partial success`() = runBlocking {
+        val wanted = listOf(IntentKey(WEATHER, "first", "en-us"), IntentKey(WEATHER, "second", "en-us"))
+        for (refused in listOf(false, true)) for (batch in listOf(0, 1)) {
+            val hub = EmptyDescriptionHub(refused)
+            assertFailsWith<ThalovantTimeoutException> { client(hub).describeMany(wanted, 40, batch) }
+            assertEquals(2, hub.emittedOf(ThalovantEvents.INTENT_DESCRIBE).size)
+        }
+    }
+
+    @Test
+    fun `fully answered empty descriptions remain successful`() = runBlocking {
+        val wanted = listOf(IntentKey(WEATHER, "first", "en-us"), IntentKey(WEATHER, "second", "en-us"))
+        for (refused in listOf(false, true)) {
+            val found = client(EmptyDescriptionHub(refused, true)).describeMany(wanted, 40, 1)
+            assertEquals(2, found.size)
+            assertTrue(found.values.all { it.isEmpty() })
+        }
+    }
+
     @Test
     fun `a hub silent from the first window still fails fast`() = runBlocking {
         val hub = FakeHubTransport(

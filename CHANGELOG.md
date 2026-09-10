@@ -2,6 +2,8 @@
 
 ## 0.3.3
 
+- Preserve a description timeout when earlier replies contain only empty or refused definitions; fully answered empty inventories still succeed.
+
 - Redact recognized credential fields recursively in default bootstrap and identity metadata displays, including case, underscore, and hyphen variants; preserve explicit secret serialization and reference fields.
 
 - Reject hub ratings outside 1–5 before making an HTTP request.
