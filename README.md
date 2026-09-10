@@ -170,15 +170,15 @@ val group = api.createRuntimeGroup(
 val groupId = group["id"]!!.jsonPrimitive.content
 
 // 3. Create a hub attached to it.
-val hub = api.createHub(
-    HubCreatePayload(
-        name = "joke-garden",
-        spec = buildJsonObject {
-            put("protocols", buildJsonObject { put("wss", buildJsonObject { put("enabled", true) }) })
-        },
-        runtimeGroupId = groupId,
-    ),
+val hubPayload = HubCreatePayload(
+    name = "joke-garden",
+    spec = buildJsonObject {
+        put("version", "1.0.0")
+        put("protocols", buildJsonObject { put("wss", buildJsonObject { put("enabled", true) }) })
+    },
+    runtimeGroupId = groupId,
 )
+val hub = api.createHub(hubPayload)
 val hubId = hub["id"]!!.jsonPrimitive.content
 
 // 4. Install a skill from the marketplace catalog.
@@ -196,9 +196,9 @@ you retry after a timeout. The SDK does not retry automatically:
 
 ```kotlin
 val createKey = java.util.UUID.randomUUID().toString()
-val payload = HubCreatePayload(name = "retryable-hub", spec = buildJsonObject {})
-val hub = api.createHub(payload, idempotencyKey = createKey)
-// If this call times out, retry with the same payload and createKey.
+// Use the hubPayload and runtime group from the provisioning example above.
+val hub = api.createHub(hubPayload, idempotencyKey = createKey)
+// If this call times out, retry with the same hubPayload and createKey.
 ```
 
 Updating and deleting a hub use optimistic locking, so `etag` is a **required**
