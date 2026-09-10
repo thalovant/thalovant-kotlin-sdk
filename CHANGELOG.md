@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.3
+
+- Reject hub ratings outside 1–5 before making an HTTP request.
+- Reject duplicate active Ask request IDs and Query IDs on the same client before subscribing or dispatching; preserve separate namespaces and remove reservations on collector cleanup.
+- Document fresh correlation IDs for later operations and caller-retained idempotency keys for retryable hub creation.
+
 ## 0.3.2
 
 - Apply one Ask timeout across connection admission, authentication, sending and
@@ -93,7 +99,7 @@
 ## 0.1.3
 
 - Hub provisioning on `ThalovantControlPlane`: `createHub`, `updateHub`, `deleteHub`, `releaseHub`, `setHubRating`, `clearHubRating`, and `getHubRuntimeCapabilities`, with `HubCreatePayload` / `HubUpdatePayload` / `ReleaseOptions` mapping camelCase Kotlin fields to the API's snake_case body and omitting unset options so the server applies its own defaults.
-- `createHub` always sends an `Idempotency-Key` header, generated when not supplied, so a create retried after a timeout returns the hub that already exists instead of making a second one.
+- `createHub` always sends an `Idempotency-Key` header, generated when not supplied. Retrying one logical create requires the caller to retain and reuse the same explicit key and payload.
 - `updateHub` and `deleteHub` take `etag` as a **required** parameter, sent as `If-Match`. The API enforces optimistic locking on both routes and rejects a missing header exactly as it rejects a stale one — HTTP 412 `ETag mismatch`, with nothing changed — so a nullable, defaulted parameter would only have turned a compile-time requirement into a runtime failure.
 - Runtime groups: `listRuntimeGroups`, `getRuntimeGroup`, `createRuntimeGroup`, `updateRuntimeGroup`, `getRuntimeGroupConfig`, `updateRuntimeGroupConfig`, `releaseRuntimeGroup`, and `deleteRuntimeGroup`, with `RuntimeGroupCreatePayload` / `RuntimeGroupUpdatePayload`. `updateRuntimeGroupConfig` merges `config` into the stored configuration and sends `personas` only when given. No runtime-group route uses `If-Match` or `Idempotency-Key`, and the SDK sends neither.
 - Skills: `installRuntimeGroupSkill` (`InstallSkillOptions` defaulting to `sourceType = "catalog"` and `active = true`) and `uninstallRuntimeGroupSkill`. The skill id is the one free-form path parameter the SDK sends, so it is percent-encoded rather than interpolated raw.

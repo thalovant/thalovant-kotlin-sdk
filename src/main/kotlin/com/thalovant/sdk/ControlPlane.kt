@@ -546,10 +546,10 @@ public class ThalovantControlPlane(
     /**
      * Creates a hub via `POST /v1/hubs`.
      *
-     * The request is idempotent: an `Idempotency-Key` header is always sent
-     * (generated when [idempotencyKey] is null), so a create retried after a
-     * timeout returns the hub that was already created instead of making a
-     * second one.
+     * An `Idempotency-Key` header is always sent. When [idempotencyKey] is null,
+     * this call generates a new key; a separate call generates another key.
+     * To retry the same logical create after a timeout, retain and pass the same
+     * explicit key and payload on every attempt. The SDK does not retry for you.
      *
      * Requires a paid plan and a token with the `hubs:write` scope; a free-plan
      * token fails with HTTP 402 and a token without the scope with HTTP 403.
@@ -611,8 +611,10 @@ public class ThalovantControlPlane(
      * Requires a token with the `hubs:write` scope; unlike the provisioning
      * routes this one is **not** paid-gated.
      */
-    public suspend fun setHubRating(hubId: String, rating: Int): JsonObject =
-        request("PUT", "/v1/hubs/$hubId/rating", body = buildJsonObject { put("rating", rating) })
+    public suspend fun setHubRating(hubId: String, rating: Int): JsonObject {
+        require(rating in 1..5) { "rating must be between 1 and 5." }
+        return request("PUT", "/v1/hubs/$hubId/rating", body = buildJsonObject { put("rating", rating) })
+    }
 
     /**
      * Removes the caller's rating from a public hub via

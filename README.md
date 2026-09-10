@@ -19,7 +19,7 @@ Full docs: <https://docs.thalovant.com/developers/sdks/kotlin/>
 
 ```kotlin
 dependencies {
-    implementation("com.thalovant:thalovant-sdk:0.3.2")
+    implementation("com.thalovant:thalovant-sdk:0.3.3")
 }
 ```
 
@@ -189,10 +189,17 @@ api.releaseRuntimeGroup(groupId, ReleaseOptions(channel = "stable"))
 api.releaseHub(hubId, ReleaseOptions(channel = "stable"))
 ```
 
-Creating a hub is idempotent. `createHub` sends a generated `Idempotency-Key`
-header, so a call retried after a timeout returns the hub that was already
-created instead of making a second one. Pass your own `idempotencyKey` to
-control the key.
+`createHub` sends an `Idempotency-Key` header. Omitting `idempotencyKey`
+generates a new key for each call. For a retryable create, generate and retain
+one key before the first attempt, then reuse that key and the same payload if
+you retry after a timeout. The SDK does not retry automatically:
+
+```kotlin
+val createKey = java.util.UUID.randomUUID().toString()
+val payload = HubCreatePayload(name = "retryable-hub", spec = buildJsonObject {})
+val hub = api.createHub(payload, idempotencyKey = createKey)
+// If this call times out, retry with the same payload and createKey.
+```
 
 Updating and deleting a hub use optimistic locking, so `etag` is a **required**
 parameter rather than an optional one — the API rejects a missing `If-Match`
@@ -415,6 +422,16 @@ optional `data_plane_endpoints`, `protocols`, and `mqtt` broker credentials
 (`endpoint`, `username`, `password`, `topic_prefix`, `tls`).
 
 ## Ask deadlines and correlation
+
+Each logical Ask or Query operation needs a fresh correlation ID. Defaults
+already generate one. If you supply an ID, simultaneous Ask calls on one client
+must use distinct request IDs, and simultaneous Query calls must use distinct
+query IDs. A duplicate active ID raises a runtime error before dispatch. Ask
+and Query have separate namespaces, and separate clients are independent.
+The reservation ends when its collector unsubscribes, including on cancellation;
+it does not cancel or release an admitted physical write. Never reuse an ID for
+a later logical operation while a delayed reply from an earlier operation may
+still arrive.
 
 Ask uses one total timeout across connection, authentication, send, and replies.
 The first nonempty speech starts a fixed settling window (250ms by default).
