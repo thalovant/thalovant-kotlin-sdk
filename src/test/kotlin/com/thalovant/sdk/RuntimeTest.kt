@@ -44,6 +44,59 @@ class RuntimeTest {
         """{"access_key":"access","password":"password","crypto_key":"0123456789abcdef","site_id":"site","default_master":"wss://hub.example"}"""
     ).jsonObject), transport = fake, replySettleMs = 0, emptyReplyWaitMs = 0)
 
+    @Test fun `duplicate live Ask IDs cannot share replies`() = duplicateLiveId(false)
+    @Test fun `duplicate live Query IDs cannot share replies`() = duplicateLiveId(true)
+    private fun duplicateLiveId(query: Boolean) = runBlocking {
+        supervisorScope {
+            val fake = RuntimeFake(); val sdk = client(fake)
+            fun start(prompt: String) = async {
+                if (query) sdk.query(prompt, requestId = prompt, queryId = "shared")
+                else sdk.ask(prompt, requestId = "shared")
+            }
+            val owner = start("owner")
+            withTimeout(2000) { while (if (query) fake.sent.size != 1 else fake.emitted.size != 1) yield() }
+            val duplicate = start("duplicate")
+            withTimeout(2000) { while (!duplicate.isCompleted && (if (query) fake.frames.size != 2 else fake.bus.size != 2)) yield() }
+            if (query) { fake.reply("shared", "speak", "only-owner"); fake.reply("shared", "hive.query.complete") }
+            else fake.deliver(ThalovantEvent("speak", buildJsonObject { put("utterance", "only-owner") },
+                contextWithCorrelation(EMPTY_JSON_OBJECT, requestId = "shared")))
+            assertEquals("only-owner", owner.await().text)
+            assertFailsWith<ThalovantRuntimeException> { duplicate.await() }
+            assertEquals(1, if (query) fake.sent.size else fake.emitted.size)
+        }
+    }
+
+    @Test fun `correlation reservations end with collector cancellation`() = runBlocking {
+        for (query in listOf(false, true)) supervisorScope {
+            val fake = RuntimeFake(); val sdk = client(fake)
+            fun start() = async { if (query) sdk.query("test", queryId = "shared") else sdk.ask("test", requestId = "shared") }
+            val owner = start()
+            withTimeout(2000) { while (if (query) fake.sent.size != 1 else fake.emitted.size != 1) yield() }
+            owner.cancelAndJoin()
+            assertEquals(0, if (query) fake.frames.size else fake.bus.size)
+            // The fake has no pending remote replies; ordinary callers use fresh IDs.
+            val next = start()
+            withTimeout(2000) { while (if (query) fake.sent.size != 2 else fake.emitted.size != 2) yield() }
+            if (query) { fake.reply("shared", "speak", "next-only"); fake.reply("shared", "hive.query.complete") }
+            else fake.deliver(ThalovantEvent("speak", buildJsonObject { put("utterance", "next-only") },
+                contextWithCorrelation(EMPTY_JSON_OBJECT, requestId = "shared")))
+            assertEquals("next-only", next.await().text)
+        }
+    }
+
+    @Test fun `Ask Query and separate clients have independent ID namespaces`() = runBlocking {
+        val fake = RuntimeFake(); val other = RuntimeFake(); val sdk = client(fake); val second = client(other)
+        val ask = async { sdk.ask("ask", requestId = "shared") }
+        val query = async { sdk.query("query", queryId = "shared") }
+        val remote = async { second.ask("other", requestId = "shared") }
+        withTimeout(2000) { while (fake.emitted.size != 1 || fake.sent.size != 1 || other.emitted.size != 1) yield() }
+        val context = contextWithCorrelation(EMPTY_JSON_OBJECT, requestId = "shared")
+        fake.deliver(ThalovantEvent("speak", buildJsonObject { put("utterance", "ask-only") }, context))
+        fake.reply("shared", "speak", "query-only"); fake.reply("shared", "hive.query.complete")
+        other.deliver(ThalovantEvent("speak", buildJsonObject { put("utterance", "other-only") }, context))
+        assertEquals("ask-only", ask.await().text); assertEquals("query-only", query.await().text); assertEquals("other-only", remote.await().text)
+    }
+
     @Test fun `ask budget includes connect send empty wait and settle`() = runBlocking {
         for (phase in listOf("connect", "send", "empty", "settle", "no_speech")) {
             val fake = RuntimeFake(); val sdk = client(fake)

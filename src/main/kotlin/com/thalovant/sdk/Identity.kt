@@ -123,7 +123,7 @@ public class ThalovantIdentity(input: JsonObject) {
             put("data_plane_endpoints", endpoints)
         }
         if (metadata.isNotEmpty()) {
-            put("metadata", metadata)
+            put("metadata", if (includeSecrets) metadata else redactBootstrapSecrets(metadata))
         }
         if (includeSecrets) {
             put("access_key", accessKey)

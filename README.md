@@ -19,7 +19,7 @@ Full docs: <https://docs.thalovant.com/developers/sdks/kotlin/>
 
 ```kotlin
 dependencies {
-    implementation("com.thalovant:thalovant-sdk:0.3.2")
+    implementation("com.thalovant:thalovant-sdk:0.3.3")
 }
 ```
 
@@ -72,6 +72,19 @@ identity secrets, the hub/client secret subkeys, and any URL userinfo
 credentials — so it is safe to log. `result.asJson(includeSecrets = true)`
 returns the real secrets unchanged, so never log or persist it in a
 world-readable place.
+
+Default bootstrap and identity JSON displays also remove recognized credential
+fields recursively from metadata (`authorization`, `client_secret`,
+`private_key`, `api_secret`, `secret_key`, `credentials`, token fields, and
+`initial_identify`), ignoring case,
+underscores, and hyphens. Reference fields such as `apiKeyRef` remain intact.
+This does not sanitize arbitrary text or alter the explicit `includeSecrets`
+serialization used for persistence.
+
+Intent descriptions may return partial results after a timeout only when at
+least one reply supplied parsed definitions. Empty or refused descriptions
+alone do not hide a missing reply, including in a later batch. When every
+requested description is answered explicitly, an empty inventory is valid.
 
 ## Log In With MFA
 
@@ -170,15 +183,16 @@ val group = api.createRuntimeGroup(
 val groupId = group["id"]!!.jsonPrimitive.content
 
 // 3. Create a hub attached to it.
-val hub = api.createHub(
-    HubCreatePayload(
-        name = "joke-garden",
-        spec = buildJsonObject {
-            put("protocols", buildJsonObject { put("wss", buildJsonObject { put("enabled", true) }) })
-        },
-        runtimeGroupId = groupId,
-    ),
+val hubPayload = HubCreatePayload(
+    name = "joke-garden",
+    spec = buildJsonObject {
+        put("version", "1.0.0")
+        put("protocols", buildJsonObject { put("wss", buildJsonObject { put("enabled", true) }) })
+    },
+    runtimeGroupId = groupId,
 )
+val createKey = java.util.UUID.randomUUID().toString()
+val hub = api.createHub(hubPayload, idempotencyKey = createKey)
 val hubId = hub["id"]!!.jsonPrimitive.content
 
 // 4. Install a skill from the marketplace catalog.
@@ -189,10 +203,16 @@ api.releaseRuntimeGroup(groupId, ReleaseOptions(channel = "stable"))
 api.releaseHub(hubId, ReleaseOptions(channel = "stable"))
 ```
 
-Creating a hub is idempotent. `createHub` sends a generated `Idempotency-Key`
-header, so a call retried after a timeout returns the hub that was already
-created instead of making a second one. Pass your own `idempotencyKey` to
-control the key.
+`createHub` sends an `Idempotency-Key` header. Omitting `idempotencyKey`
+generates a new key for each call. For a retryable create, generate and retain
+one key before the first attempt, then reuse that key and the same payload if
+you retry after a timeout. The SDK does not retry automatically:
+
+```kotlin
+// Retry only when needed, using the original hubPayload and createKey above.
+val hub = api.createHub(hubPayload, idempotencyKey = createKey)
+// If this call times out, retry with the same hubPayload and createKey.
+```
 
 Updating and deleting a hub use optimistic locking, so `etag` is a **required**
 parameter rather than an optional one — the API rejects a missing `If-Match`
@@ -415,6 +435,16 @@ optional `data_plane_endpoints`, `protocols`, and `mqtt` broker credentials
 (`endpoint`, `username`, `password`, `topic_prefix`, `tls`).
 
 ## Ask deadlines and correlation
+
+Each logical Ask or Query operation needs a fresh correlation ID. Defaults
+already generate one. If you supply an ID, simultaneous Ask calls on one client
+must use distinct request IDs, and simultaneous Query calls must use distinct
+query IDs. A duplicate active ID raises a runtime error before dispatch. Ask
+and Query have separate namespaces, and separate clients are independent.
+The reservation ends when its collector unsubscribes, including on cancellation;
+it does not cancel or release an admitted physical write. Never reuse an ID for
+a later logical operation while a delayed reply from an earlier operation may
+still arrive.
 
 Ask uses one total timeout across connection, authentication, send, and replies.
 The first nonempty speech starts a fixed settling window (250ms by default).

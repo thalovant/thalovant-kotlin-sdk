@@ -8,6 +8,7 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -15,6 +16,55 @@ import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonObject
 
 class IdentityTest {
+    private fun displayMetadata() = buildJsonObject {
+        put("label", "keep-me")
+        put("apiKeyRef", "key-reference")
+        put("passwordSecretRef", "password-reference")
+        put("nested", JsonArray(listOf(buildJsonObject {
+            put("Authorization", "DISPLAY-CREDENTIAL-authorization")
+            put("token", "DISPLAY-CREDENTIAL-token")
+            put("access_token", "DISPLAY-CREDENTIAL-access-token")
+            put("refresh-token", "DISPLAY-CREDENTIAL-refresh-token")
+            put("authToken", "DISPLAY-CREDENTIAL-auth-token")
+            put("InitialIdentify", "{\"password\":\"DISPLAY-CREDENTIAL-serialized\"}")
+            put("client_secret", "DISPLAY-CREDENTIAL-client")
+            put("private-key", "DISPLAY-CREDENTIAL-private")
+            put("apiSecret", "DISPLAY-CREDENTIAL-api")
+            put("SECRET_KEY", "DISPLAY-CREDENTIAL-key")
+            putJsonObject("credentials") { put("opaque", "DISPLAY-CREDENTIAL-object") }
+        })))
+    }
+
+    private fun displayIdentity() = ThalovantIdentity(buildJsonObject {
+        put("access_key", "fixture-access")
+        put("password", "fixture-password")
+        put("site_id", "fixture-site")
+        put("default_master", "https://hub.example.com")
+        put("metadata", displayMetadata())
+    })
+
+    @Test
+    fun `default identity display normalizes known credential keys without mutating persistence`() {
+        val identity = displayIdentity()
+        val redacted = identity.asJson()
+        assertTrue("DISPLAY-CREDENTIAL" !in redacted.toString())
+        assertEquals("key-reference", redacted["metadata"]?.jsonObject?.get("apiKeyRef")?.jsonPrimitive?.content)
+        assertEquals("password-reference", redacted["metadata"]?.jsonObject?.get("passwordSecretRef")?.jsonPrimitive?.content)
+        assertEquals(displayMetadata(), identity.asJson(true)["metadata"])
+        assertEquals(displayMetadata(), identity.metadata)
+    }
+
+    @Test
+    fun `default bootstrap display normalizes known credential keys without mutating resources`() {
+        val result = BootstrapIdentityResult(displayIdentity(), displayMetadata(), displayMetadata(), null)
+        val redacted = result.asJson()
+        assertTrue("DISPLAY-CREDENTIAL" !in redacted.toString())
+        assertEquals("key-reference", redacted["hub"]?.jsonObject?.get("apiKeyRef")?.jsonPrimitive?.content)
+        assertEquals("password-reference", redacted["client"]?.jsonObject?.get("passwordSecretRef")?.jsonPrimitive?.content)
+        assertEquals(displayMetadata(), result.asJson(true)["hub"])
+        assertEquals(displayMetadata(), result.client)
+    }
+
     @Test
     fun `normalizes aliases`() {
         val identity = ThalovantIdentity(

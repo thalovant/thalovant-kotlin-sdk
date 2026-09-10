@@ -546,10 +546,10 @@ public class ThalovantControlPlane(
     /**
      * Creates a hub via `POST /v1/hubs`.
      *
-     * The request is idempotent: an `Idempotency-Key` header is always sent
-     * (generated when [idempotencyKey] is null), so a create retried after a
-     * timeout returns the hub that was already created instead of making a
-     * second one.
+     * An `Idempotency-Key` header is always sent. When [idempotencyKey] is null,
+     * this call generates a new key; a separate call generates another key.
+     * To retry the same logical create after a timeout, retain and pass the same
+     * explicit key and payload on every attempt. The SDK does not retry for you.
      *
      * Requires a paid plan and a token with the `hubs:write` scope; a free-plan
      * token fails with HTTP 402 and a token without the scope with HTTP 403.
@@ -611,8 +611,10 @@ public class ThalovantControlPlane(
      * Requires a token with the `hubs:write` scope; unlike the provisioning
      * routes this one is **not** paid-gated.
      */
-    public suspend fun setHubRating(hubId: String, rating: Int): JsonObject =
-        request("PUT", "/v1/hubs/$hubId/rating", body = buildJsonObject { put("rating", rating) })
+    public suspend fun setHubRating(hubId: String, rating: Int): JsonObject {
+        require(rating in 1..5) { "rating must be between 1 and 5." }
+        return request("PUT", "/v1/hubs/$hubId/rating", body = buildJsonObject { put("rating", rating) })
+    }
 
     /**
      * Removes the caller's rating from a public hub via
@@ -1198,29 +1200,26 @@ private fun installSkillBody(skillId: String, options: InstallSkillOptions): Jso
  * by [ThalovantControlPlane.createClientIdentity]: the `POST /v1/clients`
  * bootstrap payloads (`initial_identify`, `initial_identify_token`) plus the
  * identity secrets echoed inside `spec` (camelCase) and `initial_identify`
- * (snake_case). Matched by exact key name, so reference shapes such as
+ * (snake_case), plus known credential fields in arbitrary metadata. Compared
+ * case-insensitively without underscores or hyphens; reference shapes such as
  * `apiKeyRef` are untouched.
  */
 private val BOOTSTRAP_SECRET_KEYS = setOf(
-    "initial_identify",
-    "initial_identify_token",
-    "access_key",
-    "api_key",
-    "apiKey",
-    "password",
-    "crypto_key",
-    "cryptoKey",
+    "initialidentify", "initialidentifytoken", "accesskey", "apikey", "password",
+    "cryptokey", "username", "brokerusername", "brokerpassword", "authorization",
+    "clientsecret", "privatekey", "apisecret", "secretkey", "credentials",
+    "token", "accesstoken", "refreshtoken", "authtoken",
 )
 
 /**
  * Recursively removes [BOOTSTRAP_SECRET_KEYS] and strips URL userinfo
  * credentials from string values, mirroring the `includeSecrets = false`
  * behavior of [ThalovantIdentity.asJson] for raw API resources. Used only for
- * the redacted [BootstrapIdentityResult.asJson] view — never for request
+ * the redacted identity metadata and [BootstrapIdentityResult.asJson] view — never for request
  * bodies or identity persistence.
  */
-private fun redactBootstrapSecrets(value: JsonObject): JsonObject = JsonObject(
-    value.filterKeys { it !in BOOTSTRAP_SECRET_KEYS }
+internal fun redactBootstrapSecrets(value: JsonObject): JsonObject = JsonObject(
+    value.filterKeys { it.replace("_", "").replace("-", "").lowercase() !in BOOTSTRAP_SECRET_KEYS }
         .mapValues { (_, child) -> redactBootstrapElement(child) },
 )
 

@@ -999,6 +999,36 @@ class ControlPlaneTest {
     }
 
     @Test
+    fun `invalid hub ratings fail before HTTP`() = runBlocking {
+        // A permissive peer proves validation happens in the SDK, before I/O.
+        for (rating in listOf(Int.MIN_VALUE, 0, 6, Int.MAX_VALUE)) {
+            enqueueJson(200, """{"id":"hub-1"}""")
+            assertFailsWith<IllegalArgumentException> {
+                api(accessToken = "token").setHubRating("hub-1", rating)
+            }
+            assertEquals(0, server.requestCount)
+        }
+    }
+
+    @Test
+    fun `create retry preserves an explicitly retained idempotency key`() = runBlocking {
+        enqueueJson(504, """{"detail":"response lost after creation"}""")
+        enqueueJson(200, """{"id":"original-hub"}""")
+        val api = api(accessToken = "token")
+        val payload = HubCreatePayload(name = "retryable-hub", spec = JsonObject(emptyMap()))
+        val key = "one-logical-create"
+        assertFailsWith<ThalovantApiException> { api.createHub(payload, idempotencyKey = key) }
+        val hub = api.createHub(payload, idempotencyKey = key)
+        val first = server.takeRequest()
+        val retry = server.takeRequest()
+        assertEquals(key, first.getHeader("Idempotency-Key"))
+        assertEquals(key, retry.getHeader("Idempotency-Key"))
+        assertEquals(first.body.readUtf8(), retry.body.readUtf8())
+        assertEquals("original-hub", hub["id"]?.jsonPrimitive?.content)
+        assertEquals(2, server.requestCount)
+    }
+
+    @Test
     fun `sets and clears a hub rating without If-Match`() = runBlocking {
         enqueueJson(200, """{"id":"hub-1","viewer_rating":5}""")
         enqueueJson(200, """{"id":"hub-1","viewer_rating":null}""")

@@ -153,67 +153,70 @@ public suspend fun ThalovantClient.query(
     val ready = CompletableDeferred<Unit>()
     val request = requestId ?: newRequestId()
     val query = queryId ?: request
-    val session = sessionId ?: newSessionId()
-    val fullContext = contextWithCorrelation(context, session, identity.siteId, lang, request)
-    val done = CompletableDeferred<Unit>()
-    val lock = Any()
-    val events = mutableListOf<ThalovantEvent>()
-    val fragments = mutableListOf<String>()
-    var failure: ThalovantEvent? = null
-    var responseSessionId: String? = null
-    val whitespace = Regex("\\s+")
-    val subscription = transport.addHiveMessageListener { message ->
-        if (message.optionalString("msg_type") !in listOf("query", "cascade")) return@addHiveMessageListener
-        val metadata = message["metadata"].asObjectOrNull() ?: return@addHiveMessageListener
-        if (metadata.optionalString("query_id", "queryId") != query) return@addHiveMessageListener
-        val event = queryEvent(message) ?: return@addHiveMessageListener
-        synchronized(lock) {
-            if (done.isCompleted) return@synchronized
-            events.add(event)
-            if (responseSessionId == null) responseSessionId = event.sessionId?.takeIf { it.isNotBlank() }
-            when {
-                event.name == "hive.query.complete" -> done.complete(Unit)
-                event.name in listOf(ThalovantEvents.SPEAK, ThalovantEvents.OVOS_UTTERANCE_SPEAK) -> {
-                    val fragment = event.text.trim().replace(whitespace, " ")
-                    if (fragment.isNotEmpty() && fragments.lastOrNull() != fragment) fragments.add(fragment)
-                }
-                event.name in listOf(ThalovantEvents.POLICY_DENIED, ThalovantEvents.QUERY_TIMEOUT) -> {
-                    failure = event; done.complete(Unit)
-                }
-                event.isFailure -> failure = event
-            }
-        }
-    }
-    val operation = launchRuntimeIo(onFailure = { error ->
-        synchronized(lock) { if (!done.isCompleted) done.completeExceptionally(error) }
-    }) {
-        val connectBudget = remaining()
-        if (connectBudget <= 0) throw ThalovantTimeoutException("Query budget expired before connecting.")
-        connect(connectBudget)
-        kotlinx.coroutines.currentCoroutineContext().ensureActive()
-        ready.complete(Unit)
-        val bus = hiveMessage("bus", buildJsonObject {
-            put("type", ThalovantEvents.RECOGNIZER_LOOP_UTTERANCE)
-            put("data", utterancePayload(prompt, lang)); put("context", fullContext)
-        })
-        transport.sendHiveFrame(hiveMessage("query", bus, buildJsonObject { put("query_id", query) }))
-    }
+    val correlation = reserveRuntimeId(query, query = true)
     try {
-        withTimeoutOrNull(remaining()) {
-            select { ready.onAwait {}; done.onAwait {} }
-            awaitRuntime(done)
-        } ?: throw ThalovantTimeoutException("Hub did not complete the query within ${timeoutMs}ms.")
-        kotlinx.coroutines.currentCoroutineContext().ensureActive()
-        synchronized(lock) {
-            if (fragments.isEmpty()) {
-                if (failure != null) throw ThalovantRuntimeException("Hub reported ${failure!!.name}.")
-                throw ThalovantTimeoutException("Hub completed the query without a speak reply.")
+        val session = sessionId ?: newSessionId()
+        val fullContext = contextWithCorrelation(context, session, identity.siteId, lang, request)
+        val done = CompletableDeferred<Unit>()
+        val lock = Any()
+        val events = mutableListOf<ThalovantEvent>()
+        val fragments = mutableListOf<String>()
+        var failure: ThalovantEvent? = null
+        var responseSessionId: String? = null
+        val whitespace = Regex("\\s+")
+        val subscription = transport.addHiveMessageListener { message ->
+            if (message.optionalString("msg_type") !in listOf("query", "cascade")) return@addHiveMessageListener
+            val metadata = message["metadata"].asObjectOrNull() ?: return@addHiveMessageListener
+            if (metadata.optionalString("query_id", "queryId") != query) return@addHiveMessageListener
+            val event = queryEvent(message) ?: return@addHiveMessageListener
+            synchronized(lock) {
+                if (done.isCompleted) return@synchronized
+                events.add(event)
+                if (responseSessionId == null) responseSessionId = event.sessionId?.takeIf { it.isNotBlank() }
+                when {
+                    event.name == "hive.query.complete" -> done.complete(Unit)
+                    event.name in listOf(ThalovantEvents.SPEAK, ThalovantEvents.OVOS_UTTERANCE_SPEAK) -> {
+                        val fragment = event.text.trim().replace(whitespace, " ")
+                        if (fragment.isNotEmpty() && fragments.lastOrNull() != fragment) fragments.add(fragment)
+                    }
+                    event.name in listOf(ThalovantEvents.POLICY_DENIED, ThalovantEvents.QUERY_TIMEOUT) -> {
+                        failure = event; done.complete(Unit)
+                    }
+                    event.isFailure -> failure = event
+                }
             }
-            val terminalFailure = failure?.takeIf { it.name in listOf(ThalovantEvents.POLICY_DENIED, ThalovantEvents.QUERY_TIMEOUT) }
-            return ThalovantReply(fragments.joinToString(" "), fragments.toList(), terminalFailure == null, terminalFailure == null,
-                responseSessionId ?: session, request, events.toList(), terminalFailure)
         }
-    } finally { operation.cancel(); subscription.close() }
+        val operation = launchRuntimeIo(onFailure = { error ->
+            synchronized(lock) { if (!done.isCompleted) done.completeExceptionally(error) }
+        }) {
+            val connectBudget = remaining()
+            if (connectBudget <= 0) throw ThalovantTimeoutException("Query budget expired before connecting.")
+            connect(connectBudget)
+            kotlinx.coroutines.currentCoroutineContext().ensureActive()
+            ready.complete(Unit)
+            val bus = hiveMessage("bus", buildJsonObject {
+                put("type", ThalovantEvents.RECOGNIZER_LOOP_UTTERANCE)
+                put("data", utterancePayload(prompt, lang)); put("context", fullContext)
+            })
+            transport.sendHiveFrame(hiveMessage("query", bus, buildJsonObject { put("query_id", query) }))
+        }
+        try {
+            withTimeoutOrNull(remaining()) {
+                select { ready.onAwait {}; done.onAwait {} }
+                awaitRuntime(done)
+            } ?: throw ThalovantTimeoutException("Hub did not complete the query within ${timeoutMs}ms.")
+            kotlinx.coroutines.currentCoroutineContext().ensureActive()
+            synchronized(lock) {
+                if (fragments.isEmpty()) {
+                    if (failure != null) throw ThalovantRuntimeException("Hub reported ${failure!!.name}.")
+                    throw ThalovantTimeoutException("Hub completed the query without a speak reply.")
+                }
+                val terminalFailure = failure?.takeIf { it.name in listOf(ThalovantEvents.POLICY_DENIED, ThalovantEvents.QUERY_TIMEOUT) }
+                return ThalovantReply(fragments.joinToString(" "), fragments.toList(), terminalFailure == null, terminalFailure == null,
+                    responseSessionId ?: session, request, events.toList(), terminalFailure)
+            }
+        } finally { operation.cancel(); subscription.close() }
+    } finally { correlation.close() }
 }
 
 /** Recursion is bounded for untrusted nested cascade envelopes. */
