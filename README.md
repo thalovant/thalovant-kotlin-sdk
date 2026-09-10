@@ -178,7 +178,8 @@ val hubPayload = HubCreatePayload(
     },
     runtimeGroupId = groupId,
 )
-val hub = api.createHub(hubPayload)
+val createKey = java.util.UUID.randomUUID().toString()
+val hub = api.createHub(hubPayload, idempotencyKey = createKey)
 val hubId = hub["id"]!!.jsonPrimitive.content
 
 // 4. Install a skill from the marketplace catalog.
@@ -195,8 +196,7 @@ one key before the first attempt, then reuse that key and the same payload if
 you retry after a timeout. The SDK does not retry automatically:
 
 ```kotlin
-val createKey = java.util.UUID.randomUUID().toString()
-// Use the hubPayload and runtime group from the provisioning example above.
+// Retry only when needed, using the original hubPayload and createKey above.
 val hub = api.createHub(hubPayload, idempotencyKey = createKey)
 // If this call times out, retry with the same hubPayload and createKey.
 ```
