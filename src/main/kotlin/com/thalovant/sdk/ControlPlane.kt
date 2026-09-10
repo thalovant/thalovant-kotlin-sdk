@@ -1200,29 +1200,26 @@ private fun installSkillBody(skillId: String, options: InstallSkillOptions): Jso
  * by [ThalovantControlPlane.createClientIdentity]: the `POST /v1/clients`
  * bootstrap payloads (`initial_identify`, `initial_identify_token`) plus the
  * identity secrets echoed inside `spec` (camelCase) and `initial_identify`
- * (snake_case). Matched by exact key name, so reference shapes such as
+ * (snake_case), plus known credential fields in arbitrary metadata. Compared
+ * case-insensitively without underscores or hyphens; reference shapes such as
  * `apiKeyRef` are untouched.
  */
 private val BOOTSTRAP_SECRET_KEYS = setOf(
-    "initial_identify",
-    "initial_identify_token",
-    "access_key",
-    "api_key",
-    "apiKey",
-    "password",
-    "crypto_key",
-    "cryptoKey",
+    "initialidentify", "initialidentifytoken", "accesskey", "apikey", "password",
+    "cryptokey", "username", "brokerusername", "brokerpassword", "authorization",
+    "clientsecret", "privatekey", "apisecret", "secretkey", "credentials",
+    "token", "accesstoken", "refreshtoken", "authtoken",
 )
 
 /**
  * Recursively removes [BOOTSTRAP_SECRET_KEYS] and strips URL userinfo
  * credentials from string values, mirroring the `includeSecrets = false`
  * behavior of [ThalovantIdentity.asJson] for raw API resources. Used only for
- * the redacted [BootstrapIdentityResult.asJson] view — never for request
+ * the redacted identity metadata and [BootstrapIdentityResult.asJson] view — never for request
  * bodies or identity persistence.
  */
-private fun redactBootstrapSecrets(value: JsonObject): JsonObject = JsonObject(
-    value.filterKeys { it !in BOOTSTRAP_SECRET_KEYS }
+internal fun redactBootstrapSecrets(value: JsonObject): JsonObject = JsonObject(
+    value.filterKeys { it.replace("_", "").replace("-", "").lowercase() !in BOOTSTRAP_SECRET_KEYS }
         .mapValues { (_, child) -> redactBootstrapElement(child) },
 )
 

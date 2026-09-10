@@ -2,6 +2,8 @@
 
 ## 0.3.3
 
+- Redact recognized credential fields recursively in default bootstrap and identity metadata displays, including case, underscore, and hyphen variants; preserve explicit secret serialization and reference fields.
+
 - Reject hub ratings outside 1–5 before making an HTTP request.
 - Reject duplicate active Ask request IDs and Query IDs on the same client before subscribing or dispatching; preserve separate namespaces and remove reservations on collector cleanup.
 - Document fresh correlation IDs for later operations and caller-retained idempotency keys for retryable hub creation.

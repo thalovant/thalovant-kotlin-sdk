@@ -73,6 +73,14 @@ credentials — so it is safe to log. `result.asJson(includeSecrets = true)`
 returns the real secrets unchanged, so never log or persist it in a
 world-readable place.
 
+Default bootstrap and identity JSON displays also remove recognized credential
+fields recursively from metadata (`authorization`, `client_secret`,
+`private_key`, `api_secret`, `secret_key`, `credentials`, token fields, and
+`initial_identify`), ignoring case,
+underscores, and hyphens. Reference fields such as `apiKeyRef` remain intact.
+This does not sanitize arbitrary text or alter the explicit `includeSecrets`
+serialization used for persistence.
+
 ## Log In With MFA
 
 Accounts with multi-factor authentication enabled must include a TOTP code or a
