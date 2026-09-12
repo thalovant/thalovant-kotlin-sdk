@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.6.2 — 2026-09-12
+
+- Compare sentence punctuation as full Unicode scalars. Supplementary letters sharing a UTF-16 surrogate with a punctuation mark are no longer mistaken for sentence endings or trimmed from a phrase.
+
 ## 0.6.1 — 2026-09-12
 
 - Refresh bundled listing rules to thalovant-languages 0.2.1, matching Python 0.6.8 across 270 languages. Preserve regional inheritance and the corrected French/Spanish trailing-word behavior.

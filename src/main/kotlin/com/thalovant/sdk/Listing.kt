@@ -24,6 +24,13 @@ public class ListingRules(data: JsonObject? = listingResource("listing.json")) {
     private val snapshot = data?.let { Json.parseToJsonElement(it.toString()).jsonObject } ?: JsonObject(emptyMap())
     private val languages = snapshot["languages"]?.jsonObject ?: JsonObject(emptyMap())
     public val sentenceEnds: String = snapshot["sentence_ends"]?.jsonPrimitive?.content.orEmpty()
+    private val sentenceEndPoints = mutableSetOf<Int>().apply {
+        var index = 0
+        while (index < sentenceEnds.length) {
+            val scalar = sentenceEnds.codePointAt(index)
+            add(scalar); index += Character.charCount(scalar)
+        }
+    }
     private fun values(data: JsonObject, key: String): List<String> = data[key]?.jsonArray?.map { it.jsonPrimitive.content } ?: emptyList()
     private fun compile(expression: String, ignoreCase: Boolean): Pattern {
         val boundary = "(?:(?<![\\p{L}\\p{N}_])(?=[\\p{L}\\p{N}_])|(?<=[\\p{L}\\p{N}_])(?![\\p{L}\\p{N}_]))"
@@ -51,7 +58,15 @@ public class ListingRules(data: JsonObject? = listingResource("listing.json")) {
     public fun languageData(lang: String?): JsonObject = tag(lang)?.let { Json.parseToJsonElement(languages.getValue(it).toString()).jsonObject } ?: JsonObject(emptyMap())
     private fun wordSet(lang: String?, key: String): Set<String> = (if (lang.isNullOrEmpty()) languages.values.map { it.jsonObject } else listOf(languageData(lang))).flatMap { values(it,key) }.map { it.lowercase() }.toSet()
     private fun words(text: String): List<String> = text.splitToSequence(Regex("(?U)\\s+")).filter { it.isNotEmpty() }.toList()
-    public fun dangling(text: String,lang: String? = null): Boolean = words(text.trimEnd { it == ' ' || it in sentenceEnds }).lastOrNull()?.lowercase() in wordSet(lang,"trailing_words")
+    public fun dangling(text: String,lang: String? = null): Boolean {
+        var end = text.length
+        while (end > 0) {
+            val scalar = text.codePointBefore(end)
+            if (scalar != ' '.code && scalar !in sentenceEndPoints) break
+            end -= Character.charCount(scalar)
+        }
+        return words(text.substring(0,end)).lastOrNull()?.lowercase() in wordSet(lang,"trailing_words")
+    }
     private fun matches(pattern: Pattern, text: String): Boolean = try { pattern.matcher(BudgetText(text)).find() } catch (_: StackOverflowError) { throw ListingRuleLimitException("Listing rule exceeded the regex stack budget") }
     /** Throws [ListingRuleLimitException] when a custom rule exceeds its budget. */
     public fun asks(text: String,lang: String? = null): Boolean {
@@ -63,7 +78,7 @@ public class ListingRules(data: JsonObject? = listingResource("listing.json")) {
         var text = raw.trim(); if (text.isEmpty()) return text
         val end = Character.charCount(text.codePointAt(0))
         text = text.substring(0,end).uppercase()+text.substring(end)
-        if (text.last() in sentenceEnds || dangling(text,lang)) return text
+        if (text.codePointBefore(text.length) in sentenceEndPoints || dangling(text,lang)) return text
         val data = languageData(lang)
         if (lang.isNullOrEmpty() || listOf("question_openers","question_words_anywhere","question_patterns").all { values(data,it).isEmpty() }) return text
         // Literal whole-word rewrites use bounded matching too.
