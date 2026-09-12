@@ -1167,12 +1167,12 @@ class ControlPlaneTest {
         val api = api(accessToken = "token")
 
         val current = api.getRuntimeGroupConfig("rg-1")
-        val merged = api.updateRuntimeGroupConfig(
+        val merged = api.replaceRuntimeGroupConfig(
             "rg-1",
             ThalovantJson.parseToJsonElement("""{"lang":"en-us"}""").jsonObject,
             personas = ThalovantJson.parseToJsonElement("""{"default":"friendly"}""").jsonObject,
         )
-        api.updateRuntimeGroupConfig("rg-1", ThalovantJson.parseToJsonElement("""{"lang":"fr-fr"}""").jsonObject)
+        api.replaceRuntimeGroupConfig("rg-1", ThalovantJson.parseToJsonElement("""{"lang":"fr-fr"}""").jsonObject)
 
         val get = server.takeRequest()
         assertEquals("GET", get.method)

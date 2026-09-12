@@ -19,7 +19,7 @@ Full docs: <https://docs.thalovant.com/developers/sdks/kotlin/>
 
 ```kotlin
 dependencies {
-    implementation("com.thalovant:thalovant-sdk:0.4.0")
+    implementation("com.thalovant:thalovant-sdk:0.5.0")
 }
 ```
 
@@ -235,7 +235,7 @@ Deleting a hub also deletes its clients and ACLs. Runtime groups have no
 to delete the workspace default group or a group that still has hubs attached
 (HTTP 409).
 
-Runtime configuration is merged, not replaced, and `personas` is replaced only
+Runtime configuration is deep-merged using a revision precondition, and `personas` is replaced only
 when you pass it:
 
 ```kotlin
@@ -681,3 +681,51 @@ If an automatic wait fails, `HubSkillOperationException.accepted` preserves the
 full response, including the install/remove state. Pass it to
 `waitForHubSkillOperation` to resume. `timedOut` distinguishes the polling budget
 expiring; coroutine cancellation propagates normally.
+
+## Request helpers and safe configuration updates (0.5.0)
+
+Request hints carry a recognized language, ordered intent pipeline, and caller
+location without changing the caller's context. Empty hints are omitted. The
+location helper requires a city and omits invalid or zero/zero coordinates.
+The hub validates language hints against its configured languages.
+
+Replies expose their reported language, ordered speech/audio events, and a
+count of dropped media. Embedded skill clips are limited to 4 MiB each and
+16 MiB per reply, checked before retention and decoding. Audio does not extend
+the reply settlement window. Decoding accepts hexadecimal bytes with ASCII
+whitespace between bytes; it never fetches a skill-supplied URL or file path.
+The application owns playback (the `play`/`Play` function in this example).
+
+```kotlin
+val location = buildLocation(city = "Montréal", country = "CA")
+val reply = client.askWithHints("Quel temps fait-il ?", sttLang = "fr-ca", location = location)
+for (event in reply.mediaEvents) if (event.isAudio) play(event.audioBytes())
+val examples = intent.examplesWithOptions("en-us", speakable = true)
+api.updateRuntimeGroupConfig(groupId, delta)
+// Explicit full replacement:
+api.replaceRuntimeGroupConfig(groupId, fullConfig)
+```
+
+Guarded merging requires the `hubs:read` and `hubs:write` scopes and a paid plan.
+Safe merging requires an API whose configuration GET returns a valid `revision`
+and whose configuration PUT checks `expected_revision`. The SDK rereads and
+reapplies the original delta only after HTTP 412, with at most three attempts.
+Arrays and scalar values replace; objects merge recursively. Personas replace
+only when explicitly supplied. Connection failures, redirects, other statuses,
+and ambiguous write results are never retried. No unsafe PATCH fallback is used.
+Unconditional replacements must still be coordinated with other writers.
+
+Use the explicit replacement operation shown above when a complete replacement
+is intended, including when working with an older API. Existing code relying on
+replacement must opt into it when upgrading. Raw intent patterns remain the
+default; speakable examples remove optional parts, choose alternatives, and
+substitute caller-supplied slots while retaining complete-phrase priority.
+
+The audio limits use encoded-length upper bounds before decoding, so formatting
+whitespace consumes budget too. Like Python's `bytes.fromhex`, ASCII whitespace
+alone decodes to zero bytes. Bounded malformed clips remain available as event
+metadata and fail when decoded; they are never fetched or played automatically.
+Distinct audio events may intentionally repeat identical sound content. Only
+repeated delivery of the same event object is suppressed where object identity
+is available, without counting it as a dropped clip. Rendered example ranking
+uses the original pattern's slot presence even when sample values are supplied.

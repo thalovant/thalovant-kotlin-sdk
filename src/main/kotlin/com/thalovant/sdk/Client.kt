@@ -145,6 +145,7 @@ public class ThalovantClient(
             val lock = Any()
             val fragments = mutableListOf<String>()
             val events = mutableListOf<ThalovantEvent>()
+            val mediaBudget = ReplyMediaBudget()
             var failureEvent: ThalovantEvent? = null
             var softFailureEvent: ThalovantEvent? = null
             var operationFailure: Exception? = null
@@ -161,7 +162,9 @@ public class ThalovantClient(
                 if (event.requestId != effectiveRequestId) return@addBusListener
                 synchronized(lock) {
                     if (failureEvent != null || operationFailure != null) return@addBusListener
+                    if (!mediaBudget.accept(event)) return@addBusListener
                     when (event.name) {
+                        ThalovantEvents.AUDIO_QUEUE -> events.add(event)
                         ThalovantEvents.SPEAK, ThalovantEvents.OVOS_UTTERANCE_SPEAK -> {
                             val normalized = event.text.trim().replace(whitespace, " ")
                             if (normalized.isNotEmpty() && fragments.lastOrNull() != normalized) {
@@ -225,7 +228,7 @@ public class ThalovantClient(
                     if (failure == null && fragments.isEmpty()) throw ThalovantTimeoutException("Hub handled the utterance without a speak reply within the request budget.")
                     if (failure != null && fragments.isEmpty()) throw ThalovantRuntimeException(failure.text.ifEmpty { "Hub reported ${failure.name}." })
                     return ThalovantReply(fragments.joinToString(" "), fragments.toList(), failure == null, failure == null,
-                        responseSessionId ?: effectiveSessionId, effectiveRequestId, events.toList(), failure)
+                        responseSessionId ?: effectiveSessionId, effectiveRequestId, events.toList(), failure, mediaBudget.dropped)
                 }
             } finally { operation.cancel(); subscription.close() }
         } finally { correlation.close() }

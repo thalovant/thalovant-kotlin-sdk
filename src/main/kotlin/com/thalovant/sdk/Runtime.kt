@@ -160,6 +160,7 @@ public suspend fun ThalovantClient.query(
         val done = CompletableDeferred<Unit>()
         val lock = Any()
         val events = mutableListOf<ThalovantEvent>()
+        val mediaBudget = ReplyMediaBudget()
         val fragments = mutableListOf<String>()
         var failure: ThalovantEvent? = null
         var responseSessionId: String? = null
@@ -171,6 +172,7 @@ public suspend fun ThalovantClient.query(
             val event = queryEvent(message) ?: return@addHiveMessageListener
             synchronized(lock) {
                 if (done.isCompleted) return@synchronized
+                if (!mediaBudget.accept(event)) return@synchronized
                 events.add(event)
                 if (responseSessionId == null) responseSessionId = event.sessionId?.takeIf { it.isNotBlank() }
                 when {
@@ -213,7 +215,7 @@ public suspend fun ThalovantClient.query(
                 }
                 val terminalFailure = failure?.takeIf { it.name in listOf(ThalovantEvents.POLICY_DENIED, ThalovantEvents.QUERY_TIMEOUT) }
                 return ThalovantReply(fragments.joinToString(" "), fragments.toList(), terminalFailure == null, terminalFailure == null,
-                    responseSessionId ?: session, request, events.toList(), terminalFailure)
+                    responseSessionId ?: session, request, events.toList(), terminalFailure, mediaBudget.dropped)
             }
         } finally { operation.cancel(); subscription.close() }
     } finally { correlation.close() }

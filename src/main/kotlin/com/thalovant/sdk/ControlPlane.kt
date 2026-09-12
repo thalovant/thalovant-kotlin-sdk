@@ -704,25 +704,37 @@ public class ThalovantControlPlane(
      * Requires a token with the `hubs:read` scope.
      */
     public suspend fun getRuntimeGroupConfig(runtimeGroupId: String): JsonObject =
-        request("GET", "/v1/runtime-groups/$runtimeGroupId/config")
+        request("GET", "/v1/runtime-groups/${encodePathSegment(runtimeGroupId)}/config")
 
-    /**
-     * Merges runtime configuration into a runtime group via
-     * `PATCH /v1/runtime-groups/{runtimeGroupId}/config`.
-     *
-     * The API merges [config] into the stored configuration rather than
-     * replacing it, and marks the group pending so the runtime operator
-     * reconciles the change. [personas] is replaced only when provided.
-     *
-     * Requires a paid plan and a token with the `hubs:write` scope.
-     */
-    public suspend fun updateRuntimeGroupConfig(
+    /** Deep merge with a revision precondition. Only 412 retries, at most three attempts.
+     * Older servers fail before a write. Requires hubs:read and paid hubs:write. */
+    public suspend fun updateRuntimeGroupConfig(runtimeGroupId: String, config: JsonObject, personas: JsonObject? = null): JsonObject {
+        val delta = ThalovantJson.parseToJsonElement(config.toString()) as JsonObject
+        val stablePersonas = personas?.let { ThalovantJson.parseToJsonElement(it.toString()) as JsonObject }
+        repeat(3) { attempt ->
+            val snapshot = getRuntimeGroupConfig(runtimeGroupId)
+            val revision = (snapshot["revision"] as? JsonPrimitive)?.takeIf { it.isString }?.content
+            val base = snapshot["config"] as? JsonObject
+            if (revision == null || !Regex("^[0-9a-f]{64}$").matches(revision) || base == null)
+                throw ThalovantApiException("Safe configuration merge requires a valid config and revision from the API.")
+            try {
+                return request("PUT", "/v1/runtime-groups/${encodePathSegment(runtimeGroupId)}/config", body = buildJsonObject {
+                    put("config", mergeRuntimeConfig(base, delta)); put("expected_revision", revision)
+                    stablePersonas?.let { put("personas", it) }
+                })
+            } catch (error: ThalovantApiException) { if (error.statusCode != 412 || attempt == 2) throw error }
+        }
+        error("Last attempt always returns")
+    }
+
+    /** Explicit unconditional configuration replacement. Personas replace only when supplied. */
+    public suspend fun replaceRuntimeGroupConfig(
         runtimeGroupId: String,
         config: JsonObject,
         personas: JsonObject? = null,
     ): JsonObject = request(
         "PATCH",
-        "/v1/runtime-groups/$runtimeGroupId/config",
+        "/v1/runtime-groups/${encodePathSegment(runtimeGroupId)}/config",
         body = buildJsonObject {
             put("config", config)
             personas?.let { put("personas", it) }
@@ -1349,4 +1361,13 @@ public data class HubSkillWaitOptions(
     internal fun validate() {
         require(timeoutMs > 0 && pollIntervalMs > 0) { "hub skill wait durations must be positive" }
     }
+}
+
+private fun mergeRuntimeConfig(base: JsonObject, delta: JsonObject): JsonObject {
+    val result = base.toMutableMap()
+    for ((key, value) in delta) {
+        val old = base[key]
+        result[key] = if (old is JsonObject && value is JsonObject) mergeRuntimeConfig(old, value) else value
+    }
+    return JsonObject(result)
 }
