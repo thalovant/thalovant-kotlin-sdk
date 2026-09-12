@@ -19,7 +19,7 @@ Full docs: <https://docs.thalovant.com/developers/sdks/kotlin/>
 
 ```kotlin
 dependencies {
-    implementation("com.thalovant:thalovant-sdk:0.6.0")
+    implementation("com.thalovant:thalovant-sdk:0.6.1")
 }
 ```
 
@@ -735,7 +735,7 @@ uses the original pattern's slot presence even when sample values are supplied.
 `intent.examplesWithListing("fr-CA", sentence = true)` renders the closest
 registered locale as capitalized sentences. `asSentence("quelle heure est-il",
 "fr-CA")` returns `"Quelle heure est-il?"`. `speakableWithLanguage(pattern,
-slots, lang)` uses bundled thalovant-languages 0.1.1 examples before explicit
+slots, lang)` uses bundled thalovant-languages 0.2.1 examples before explicit
 slot overrides. The existing `speakable` and `examplesWithOptions` signatures
 remain available.
 
@@ -762,3 +762,13 @@ into the main resource directory before packaging.
 
 The SDK code, CLDR matching tables and bundled `thalovant-languages` data
 retain their upstream MIT license notices. Both data notices ship with the SDK.
+
+### Language data refresh
+
+The bundled listing data follows `thalovant-languages` 0.2.1: 270 languages
+(290 base and regional entries), with regional rules resolved through the
+public package loader. Sentence marks and trailing words now match Python 0.6.8;
+for example Spanish `qué hora es` becomes `Qué hora es?`, while French
+`coupe le son` remains a complete sentence. Undescribed languages such as
+`tlh` still render bare. The reference fixtures cover 4,652 listing cases and
+990 OVOS language-selection cases.
