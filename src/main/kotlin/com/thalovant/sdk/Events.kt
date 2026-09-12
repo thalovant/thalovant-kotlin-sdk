@@ -10,6 +10,7 @@ import kotlinx.serialization.json.put
 /** Well-known hub bus event names. */
 public object ThalovantEvents {
     public const val RECOGNIZER_LOOP_UTTERANCE: String = "recognizer_loop:utterance"
+    public const val AUDIO_QUEUE: String = "mycroft.audio.queue"
     public const val SPEAK: String = "speak"
     public const val OVOS_UTTERANCE_SPEAK: String = "ovos.utterance.speak"
     public const val UTTERANCE_HANDLED: String = "ovos.utterance.handled"
@@ -78,11 +79,42 @@ public class ThalovantEvent(
 
     public val requestId: String? get() = requestIdFromContext(context) ?: requestIdFromMapping(data)
 
+    public val lang: String? get() = listOf(data["lang"], context["lang"], context["session"].asObjectOrNull()?.get("lang"))
+        .mapNotNull { optionalStringRaw(it) }.firstOrNull { it.isNotEmpty() }
+    public val isAudio: Boolean get() = name == ThalovantEvents.AUDIO_QUEUE
+    public val hasAudio: Boolean get() = isAudio && (data["binary_data"] as? JsonPrimitive)?.let { it.isString && it.content.isNotEmpty() } == true
+    /** Decode embedded hex only; never fetch skill-provided paths or URLs. */
+    public fun audioBytes(maxBytes: Int = MAX_AUDIO_CLIP_BYTES): ByteArray {
+        val encoded = (data["binary_data"] as? JsonPrimitive)?.takeIf { it.isString }?.content
+        require(isAudio && maxBytes >= 0 && !encoded.isNullOrEmpty() && encoded.length.toLong() <= maxBytes.toLong() * 2) { "Missing or oversized embedded audio." }
+        // Avoid recursive regex matching on multi-megabyte valid clips.
+        val bytes = ByteArray(encoded.length / 2)
+        var high = -1
+        var written = 0
+        for (c in encoded) {
+            if (c == ' ' || c.code in 9..13) {
+                require(high < 0) { "Invalid embedded audio hex." }
+                continue
+            }
+            val value = when (c) {
+                in '0'..'9' -> c - '0'
+                in 'a'..'f' -> c - 'a' + 10
+                in 'A'..'F' -> c - 'A' + 10
+                else -> -1
+            }
+            require(value >= 0) { "Invalid embedded audio hex." }
+            if (high < 0) high = value
+            else { bytes[written++] = (high * 16 + value).toByte(); high = -1 }
+        }
+        require(high < 0) { "Invalid embedded audio hex." }
+        return if (written == bytes.size) bytes else bytes.copyOf(written)
+    }
+
     public val isFailure: Boolean get() = name in ThalovantEvents.FAILURE_EVENTS
 }
 
 /** Aggregated reply returned by [ThalovantClient.ask]. */
-public class ThalovantReply(
+public class ThalovantReply @JvmOverloads constructor(
     public val text: String,
     public val utterances: List<String>,
     public val handled: Boolean,
@@ -91,7 +123,12 @@ public class ThalovantReply(
     public val requestId: String?,
     public val events: List<ThalovantEvent>,
     public val failureEvent: ThalovantEvent?,
-)
+    public val droppedMedia: Int = 0,
+) {
+    public val lang: String? get() = events.firstNotNullOfOrNull { it.lang?.takeIf(String::isNotEmpty) }
+    public val hasAudio: Boolean get() = events.any { it.isAudio }
+    public val mediaEvents: List<ThalovantEvent> get() = events.filter { it.isAudio || it.name in listOf(ThalovantEvents.SPEAK, ThalovantEvents.OVOS_UTTERANCE_SPEAK) }
+}
 
 public fun newSessionId(): String = "thalovant-session-" + UUID.randomUUID().toString().replace("-", "")
 

@@ -191,10 +191,20 @@ public data class HubIntent(
      * A few sentences worth showing: whole ones before ones with a slot, shorter
      * first. With no [lang], the first listed language; with [limit] <= 0, all.
      */
-    public fun examples(lang: String? = null, limit: Int = 2): List<String> {
-        val pool = if (lang != null) phrasesFor(lang) else phrases.values.firstOrNull() ?: emptyList()
+    public fun examples(lang: String? = null, limit: Int = 2): List<String> = examplesWithOptions(lang, limit)
+
+    public fun examplesWithOptions(lang: String? = null, limit: Int = 2, speakable: Boolean = false, slots: Map<String, String> = emptyMap()): List<String> {
+        var pool = if (lang != null) phrasesFor(lang) else phrases.values.firstOrNull() ?: emptyList()
+        val ranks = linkedMapOf<String, Boolean>()
+        if (speakable) {
+            for (pattern in pool) {
+                val sentence = com.thalovant.sdk.speakable(pattern, slots)
+                if (sentence.isNotEmpty()) ranks[sentence] = (ranks[sentence] ?: true) && '{' in pattern
+            }
+            pool = ranks.keys.toList()
+        }
         if (limit <= 0) return pool
-        return pool.sortedWith(compareBy({ '{' in it }, { it.length })).take(limit)
+        return pool.sortedWith(compareBy({ ranks[it] ?: ('{' in it) }, { it.codePointCount(0, it.length) })).take(limit)
     }
 
     public fun asJson(): JsonObject = buildJsonObject {
