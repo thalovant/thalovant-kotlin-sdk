@@ -4,6 +4,7 @@ import java.security.SecureRandom
 import java.util.Base64
 import java.util.UUID
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -938,6 +939,67 @@ public class ThalovantControlPlane(
         return SelectedHubEndpoint(effective, endpoint)
     }
 
+    /** Skills on the shared runtime behind this hub; requires hubs:inspect. */
+    public suspend fun listHubSkills(hubId: String): JsonObject =
+        request("GET", hubSkillsPath(hubId))
+
+    /** Newest-first shared-runtime events and operations. Limit must be 1–200. */
+    public suspend fun listHubSkillHistory(hubId: String, limit: Int = 50): JsonObject {
+        require(limit in 1..200) { "limit must be from 1 to 200" }
+        return request("GET", "${hubSkillsPath(hubId)}/history", query = mapOf("limit" to limit.toString()))
+    }
+
+    /** Install on the shared runtime, affecting all served hubs. Requires hubs:write and a paid plan. */
+    public suspend fun installHubSkill(hubId: String, skill: String, version: String = "latest",
+        options: HubSkillWaitOptions = HubSkillWaitOptions()): JsonObject =
+        changeHubSkill("POST", hubSkillsPath(hubId), buildJsonObject {
+            put("skill", JsonPrimitive(skill)); put("version", JsonPrimitive(version))
+        }, options)
+
+    /** Move a shared-runtime skill to an exact version or latest. */
+    public suspend fun updateHubSkill(hubId: String, skill: String, version: String,
+        options: HubSkillWaitOptions = HubSkillWaitOptions()): JsonObject =
+        changeHubSkill("PATCH", "${hubSkillsPath(hubId)}/${encodePathSegment(skill)}",
+            buildJsonObject { put("version", JsonPrimitive(version)) }, options)
+
+    /** Remove a shared-runtime attachment, affecting all served hubs. */
+    public suspend fun removeHubSkill(hubId: String, skill: String,
+        options: HubSkillWaitOptions = HubSkillWaitOptions()): JsonObject =
+        changeHubSkill("DELETE", "${hubSkillsPath(hubId)}/${encodePathSegment(skill)}", null, options)
+
+    private fun hubSkillsPath(hubId: String): String = "/v1/hubs/${encodePathSegment(hubId)}/skills"
+
+    private suspend fun changeHubSkill(method: String, path: String, body: JsonObject?, options: HubSkillWaitOptions): JsonObject {
+        options.validate()
+        val accepted = request(method, path, body)
+        return if (options.wait) waitForHubSkillOperation(accepted, options) else accepted
+    }
+
+    /** Resume polling without repeating the write. Retain accepted before waiting when cancellation is possible. */
+    public suspend fun waitForHubSkillOperation(accepted: JsonObject, options: HubSkillWaitOptions = HubSkillWaitOptions()): JsonObject {
+        options.validate()
+        val id = (accepted["operation_id"] as? JsonPrimitive)?.content?.takeIf { it.isNotBlank() }
+            ?: throw ThalovantApiException("Missing accepted operation_id.")
+        val state = (accepted["state"] as? JsonPrimitive)?.content
+        val converged = if (state == "removing" || state == "removed") "removed" else "installed"
+        val start = System.nanoTime()
+        fun remaining(): Long = options.timeoutMs - (System.nanoTime() - start) / 1_000_000
+        while (true) {
+            kotlinx.coroutines.currentCoroutineContext().ensureActive()
+            if (remaining() <= 0) throw ThalovantTimeoutException("Timed out waiting for accepted operation $id")
+            val operation = try { request("GET", "/v1/operations/${encodePathSegment(id)}") }
+                catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
+                catch (_: Exception) { throw ThalovantApiException("Could not read accepted operation $id; resume using its ID.") }
+            when ((operation["status"] as? JsonPrimitive)?.content) {
+                "ready" -> return JsonObject(accepted + mapOf("state" to JsonPrimitive(converged), "operation" to operation))
+                "failed", "timed_out" -> throw ThalovantApiException("Accepted operation $id failed; inspect getOperation for details.")
+            }
+            val left = remaining()
+            if (left <= 0) throw ThalovantTimeoutException("Timed out waiting for accepted operation $id")
+            delay(minOf(options.pollIntervalMs, left))
+        }
+    }
+
     private suspend fun request(
         method: String,
         path: String,
@@ -1269,5 +1331,16 @@ private fun stripPath(endpoint: String): String {
         }
     } catch (_: Exception) {
         endpoint.trimEnd('/')
+    }
+}
+
+/** Optional waiting after a skill mutation; polling never repeats the accepted write. */
+public data class HubSkillWaitOptions(
+    public val wait: Boolean = false,
+    public val timeoutMs: Long = 120_000,
+    public val pollIntervalMs: Long = 2_000,
+) {
+    internal fun validate() {
+        require(timeoutMs > 0 && pollIntervalMs > 0) { "hub skill wait durations must be positive" }
     }
 }
