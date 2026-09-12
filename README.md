@@ -760,5 +760,5 @@ reference cases using the public Python environment pinned in
 and `--test-dir src/test/resources/thalovant`. Copy both generated license files
 into the main resource directory before packaging.
 
-The SDK code and CLDR matching tables are MIT-licensed; bundled
-`thalovant-languages` data is Apache-2.0-licensed. Both notices ship with the SDK.
+The SDK code, CLDR matching tables and bundled `thalovant-languages` data
+retain their upstream MIT license notices. Both data notices ship with the SDK.
