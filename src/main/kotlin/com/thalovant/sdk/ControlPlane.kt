@@ -709,6 +709,8 @@ public class ThalovantControlPlane(
     /** Deep merge with a revision precondition. Only 412 retries, at most three attempts.
      * Older servers fail before a write. Requires hubs:read and paid hubs:write. */
     public suspend fun updateRuntimeGroupConfig(runtimeGroupId: String, config: JsonObject, personas: JsonObject? = null): JsonObject {
+        val delta = ThalovantJson.parseToJsonElement(config.toString()) as JsonObject
+        val stablePersonas = personas?.let { ThalovantJson.parseToJsonElement(it.toString()) as JsonObject }
         repeat(3) { attempt ->
             val snapshot = getRuntimeGroupConfig(runtimeGroupId)
             val revision = (snapshot["revision"] as? JsonPrimitive)?.takeIf { it.isString }?.content
@@ -717,8 +719,8 @@ public class ThalovantControlPlane(
                 throw ThalovantApiException("Safe configuration merge requires a valid config and revision from the API.")
             try {
                 return request("PUT", "/v1/runtime-groups/${encodePathSegment(runtimeGroupId)}/config", body = buildJsonObject {
-                    put("config", mergeRuntimeConfig(base, config)); put("expected_revision", revision)
-                    personas?.let { put("personas", it) }
+                    put("config", mergeRuntimeConfig(base, delta)); put("expected_revision", revision)
+                    stablePersonas?.let { put("personas", it) }
                 })
             } catch (error: ThalovantApiException) { if (error.statusCode != 412 || attempt == 2) throw error }
         }

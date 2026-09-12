@@ -7,6 +7,37 @@ import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
 
 class PythonParityTest {
+    @Test fun `configuration snapshots caller backed JSON maps before reads`() = runBlocking {
+        val configMap = mutableMapOf<String, JsonElement>("value" to JsonPrimitive("original"))
+        val personaMap = mutableMapOf<String, JsonElement>("name" to JsonPrimitive("original"))
+        val config = buildJsonObject { put("nested", JsonObject(configMap)) }
+        val personas = buildJsonObject { put("default", JsonObject(personaMap)) }
+        MockWebServer().use { server ->
+            server.start()
+            val http = okhttp3.OkHttpClient.Builder().addInterceptor { chain ->
+                if (chain.request().method == "GET") {
+                    configMap["value"] = JsonPrimitive("changed")
+                    personaMap["name"] = JsonPrimitive("changed")
+                }
+                chain.proceed(chain.request())
+            }.build()
+            val api = ThalovantControlPlane(server.url("/").toString(), accessToken="test", httpClient=http)
+            server.enqueue(reply("{\"config\":{},\"revision\":\"${"a".repeat(64)}\"}"))
+            server.enqueue(reply("{}",412))
+            server.enqueue(reply("{\"config\":{},\"revision\":\"${"b".repeat(64)}\"}"))
+            server.enqueue(reply("{}"))
+            try {
+                api.updateRuntimeGroupConfig("g",config,personas)
+                repeat(2) {
+                    assertEquals("GET",server.takeRequest().method)
+                    val put=server.takeRequest(); assertEquals("PUT",put.method)
+                    val body=obj(put.body.readUtf8())
+                    assertEquals("original",body["config"]!!.jsonObject["nested"]!!.jsonObject["value"]!!.jsonPrimitive.content)
+                    assertEquals("original",body["personas"]!!.jsonObject["default"]!!.jsonObject["name"]!!.jsonPrimitive.content)
+                }
+            } finally { http.dispatcher.executorService.shutdown(); http.connectionPool.evictAll() }
+        }
+    }
     @Test fun `maximum size audio avoids recursive matching`() {
         val clip = "a5".repeat(MAX_AUDIO_CLIP_BYTES)
         val bytes = ThalovantEvent(ThalovantEvents.AUDIO_QUEUE, buildJsonObject { put("binary_data", clip) }).audioBytes()
@@ -32,6 +63,17 @@ class PythonParityTest {
         assertEquals("did i ask about thing", speakable("did i (already |)ask (about|for|to|) {thing}"))
         val intent = HubIntent("x","x","padatious",mapOf("en-us" to listOf("{x}","a complete sentence","[please]","(x|y)","x")))
         assertEquals(listOf("x","a complete sentence"),intent.examplesWithOptions("en-us",2,true))
+    }
+    @Test fun `audio admission preserves Python encoded budgets and delivery identity`() {
+        val first=ThalovantEvent(ThalovantEvents.AUDIO_QUEUE,obj("{\"binary_data\":\"00\"}"))
+        val second=ThalovantEvent(ThalovantEvents.AUDIO_QUEUE,obj("{\"binary_data\":\"00\"}"))
+        val budget=ReplyMediaBudget()
+        assertTrue(budget.accept(first));assertTrue(budget.accept(second));assertFalse(budget.accept(first));assertEquals(0,budget.dropped)
+        val malformed=ThalovantEvent(ThalovantEvents.AUDIO_QUEUE,obj("{\"binary_data\":\"gg\"}"))
+        assertTrue(budget.accept(malformed)) // Bounded event metadata remains inspectable.
+        assertFailsWith<IllegalArgumentException> { malformed.audioBytes() }
+        assertTrue(ThalovantEvent(ThalovantEvents.AUDIO_QUEUE,buildJsonObject { put("binary_data"," \t") }).audioBytes().isEmpty())
+        assertFailsWith<IllegalArgumentException> { ThalovantEvent(ThalovantEvents.AUDIO_QUEUE,buildJsonObject { put("binary_data","00 ") }).audioBytes(1) }
     }
     @Test fun `embedded audio is strict bounded and ordered`() {
         val event = ThalovantEvent(ThalovantEvents.AUDIO_QUEUE,obj("""{"binary_data":"00 ff\n10","lang":"fr"}"""))
