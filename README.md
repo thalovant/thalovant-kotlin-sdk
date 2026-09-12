@@ -673,6 +673,11 @@ an already-running HTTP request retains its normal request timeout.
 
 Methods: `listHubSkills / listHubSkillHistory / installHubSkill / updateHubSkill / removeHubSkill / waitForHubSkillOperation`. Responses preserve API JSON fields. Use
 `HubSkillWaitOptions` to opt into waiting. For cancellation-sensitive work, submit
-without waiting, retain the returned `operation_id`, then call the wait helper
-separately. Cancelling waiting does not undo the server operation. After a polling
+without waiting, retain the complete accepted response (including `operation_id`
+and `state`), then pass that response to the wait helper separately. Cancelling waiting does not undo the server operation. After a polling
 failure, inspect/resume that operation instead of submitting the write again.
+
+If an automatic wait fails, `HubSkillOperationException.accepted` preserves the
+full response, including the install/remove state. Pass it to
+`waitForHubSkillOperation` to resume. `timedOut` distinguishes the polling budget
+expiring; coroutine cancellation propagates normally.

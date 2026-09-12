@@ -78,3 +78,10 @@ public class ThalovantDeviceLoginDeniedException(message: String) : ThalovantExc
 
 /** The device sign-in code expired before it was approved. */
 public class ThalovantDeviceLoginExpiredException(message: String) : ThalovantException(message)
+
+/** An automatic skill wait failed after acceptance. Resume with [accepted]; never replay the write. */
+public class HubSkillOperationException(
+    public val accepted: kotlinx.serialization.json.JsonObject,
+    public val timedOut: Boolean,
+    message: String,
+) : ThalovantException(message)

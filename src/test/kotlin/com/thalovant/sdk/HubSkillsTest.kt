@@ -45,6 +45,27 @@ class HubSkillsTest {
             }
         }
     }
+    @Test fun `automatic install and removal failures retain resumable response`() = runBlocking {
+        for (removal in listOf(false, true)) {
+            MockWebServer().use { server ->
+                server.start()
+                val api = ThalovantControlPlane(server.url("/").toString(), accessToken = "token")
+                val state = if (removal) "removing" else "installing"
+                server.enqueue(reply("""{"operation_id":"op-1","state":"$state","skill":"s"}""", 202))
+                server.enqueue(reply("""{"detail":"private-data"}""", 503))
+                server.enqueue(reply("""{"status":"ready"}"""))
+                val error = assertFailsWith<HubSkillOperationException> {
+                    if (removal) api.removeHubSkill("h", "s", HubSkillWaitOptions(wait = true))
+                    else api.installHubSkill("h", "s", options = HubSkillWaitOptions(wait = true))
+                }
+                assertFalse(error.timedOut)
+                assertEquals(state, error.accepted["state"]!!.jsonPrimitive.content)
+                val result = api.waitForHubSkillOperation(error.accepted)
+                assertEquals(if (removal) "removed" else "installed", result["state"]!!.jsonPrimitive.content)
+                assertEquals(listOf(if (removal) "DELETE" else "POST", "GET", "GET"), (1..3).map { server.takeRequest().method })
+            }
+        }
+    }
     @Test fun `invalid limits and wait options do not send`() = runBlocking {
         MockWebServer().use { server ->
             server.start(); val api = ThalovantControlPlane(server.url("/").toString(), accessToken = "token")

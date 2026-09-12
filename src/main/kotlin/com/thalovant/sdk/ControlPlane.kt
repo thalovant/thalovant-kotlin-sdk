@@ -972,10 +972,16 @@ public class ThalovantControlPlane(
     private suspend fun changeHubSkill(method: String, path: String, body: JsonObject?, options: HubSkillWaitOptions): JsonObject {
         options.validate()
         val accepted = request(method, path, body)
-        return if (options.wait) waitForHubSkillOperation(accepted, options) else accepted
+        if (!options.wait) return accepted
+        return try { waitForHubSkillOperation(accepted, options) }
+            catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
+            catch (error: ThalovantException) {
+                throw HubSkillOperationException(accepted, error is ThalovantTimeoutException,
+                    error.message ?: "Accepted skill operation could not be observed.")
+            }
     }
 
-    /** Resume polling without repeating the write. Retain accepted before waiting when cancellation is possible. */
+    /** Resume polling without repeating the write. Retain the complete accepted response, including state, before waiting when cancellation is possible. */
     public suspend fun waitForHubSkillOperation(accepted: JsonObject, options: HubSkillWaitOptions = HubSkillWaitOptions()): JsonObject {
         options.validate()
         val id = (accepted["operation_id"] as? JsonPrimitive)?.content?.takeIf { it.isNotBlank() }
@@ -989,7 +995,7 @@ public class ThalovantControlPlane(
             if (remaining() <= 0) throw ThalovantTimeoutException("Timed out waiting for accepted operation $id")
             val operation = try { request("GET", "/v1/operations/${encodePathSegment(id)}") }
                 catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
-                catch (_: Exception) { throw ThalovantApiException("Could not read accepted operation $id; resume using its ID.") }
+                catch (_: Exception) { throw ThalovantApiException("Could not read accepted operation $id; inspect the operation by ID, or resume with the complete accepted response.") }
             when ((operation["status"] as? JsonPrimitive)?.content) {
                 "ready" -> return JsonObject(accepted + mapOf("state" to JsonPrimitive(converged), "operation" to operation))
                 "failed", "timed_out" -> throw ThalovantApiException("Accepted operation $id failed; inspect getOperation for details.")
