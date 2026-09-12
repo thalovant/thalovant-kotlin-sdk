@@ -184,27 +184,26 @@ public data class HubIntent(
     public val languages: List<String> get() = phrases.keys.toList()
 
     /** The sentences for one language; tags compare case-insensitively with `_`/`-` folded. */
-    public fun phrasesFor(lang: String): List<String> =
-        phrases.entries.firstOrNull { sameLanguage(it.key, lang) }?.value ?: emptyList()
+    public fun phrasesFor(lang: String): List<String> = closestLanguage(lang,phrases.keys)?.let { phrases[it] } ?: emptyList()
 
-    /**
-     * A few sentences worth showing: whole ones before ones with a slot, shorter
-     * first. With no [lang], the first listed language; with [limit] <= 0, all.
-     */
-    public fun examples(lang: String? = null, limit: Int = 2): List<String> = examplesWithOptions(lang, limit)
+    /** Complete phrases before prefixes/slots, fuller wording up to eight words. */
+    public fun examples(lang: String? = null,limit: Int = 2): List<String> = examplesWithOptions(lang,limit)
 
-    public fun examplesWithOptions(lang: String? = null, limit: Int = 2, speakable: Boolean = false, slots: Map<String, String> = emptyMap()): List<String> {
-        var pool = if (lang != null) phrasesFor(lang) else phrases.values.firstOrNull() ?: emptyList()
-        val ranks = linkedMapOf<String, Boolean>()
-        if (speakable) {
-            for (pattern in pool) {
-                val sentence = com.thalovant.sdk.speakable(pattern, slots)
-                if (sentence.isNotEmpty()) ranks[sentence] = (ranks[sentence] ?: true) && '{' in pattern
-            }
-            pool = ranks.keys.toList()
+    public fun examplesWithOptions(lang: String? = null,limit: Int = 2,speakable: Boolean = false,slots: Map<String,String> = emptyMap()): List<String> = examplesWithListing(lang,limit,speakable,false,slots)
+
+    public fun examplesWithListing(lang: String? = null,limit: Int = 2,speakable: Boolean = false,sentence: Boolean = false,slots: Map<String,String> = emptyMap(),listing: ListingRules = DEFAULT_LISTING): List<String> {
+        val renderLang = lang?.takeIf { it.isNotEmpty() } ?: phrases.keys.firstOrNull()
+        val pool = renderLang?.let { phrasesFor(it) } ?: emptyList()
+        if (!speakable && !sentence) return if (limit <= 0) pool else listing.rank(pool,renderLang).take(limit)
+        val result = linkedSetOf<String>()
+        for (pattern in listing.rank(pool,renderLang)) {
+            var text = listing.speakable(pattern,slots,renderLang)
+            if (sentence) text = listing.asSentence(text,renderLang)
+            if (text.isEmpty()) continue
+            result.add(text)
+            if (limit > 0 && result.size >= limit) break
         }
-        if (limit <= 0) return pool
-        return pool.sortedWith(compareBy({ ranks[it] ?: ('{' in it) }, { it.codePointCount(0, it.length) })).take(limit)
+        return result.toList()
     }
 
     public fun asJson(): JsonObject = buildJsonObject {

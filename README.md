@@ -19,7 +19,7 @@ Full docs: <https://docs.thalovant.com/developers/sdks/kotlin/>
 
 ```kotlin
 dependencies {
-    implementation("com.thalovant:thalovant-sdk:0.5.0")
+    implementation("com.thalovant:thalovant-sdk:0.6.0")
 }
 ```
 
@@ -682,7 +682,7 @@ full response, including the install/remove state. Pass it to
 `waitForHubSkillOperation` to resume. `timedOut` distinguishes the polling budget
 expiring; coroutine cancellation propagates normally.
 
-## Request helpers and safe configuration updates (0.5.0)
+## Request helpers and safe configuration updates (0.6.0)
 
 Request hints carry a recognized language, ordered intent pipeline, and caller
 location without changing the caller's context. Empty hints are omitted. The
@@ -729,3 +729,36 @@ Distinct audio events may intentionally repeat identical sound content. Only
 repeated delivery of the same event object is suppressed where object identity
 is available, without counting it as a dropped clip. Rendered example ranking
 uses the original pattern's slot presence even when sample values are supplied.
+
+## Locale-aware intent listings
+
+`intent.examplesWithListing("fr-CA", sentence = true)` renders the closest
+registered locale as capitalized sentences. `asSentence("quelle heure est-il",
+"fr-CA")` returns `"Quelle heure est-il?"`. `speakableWithLanguage(pattern,
+slots, lang)` uses bundled thalovant-languages 0.1.1 examples before explicit
+slot overrides. The existing `speakable` and `examplesWithOptions` signatures
+remain available.
+
+Complete phrases rank before prefixes and slot patterns, then fuller wording up
+to eight words. Empty and duplicate rendered phrases do not consume limits. Raw
+unlimited examples keep registration order. Omitted languages preserve the
+selected registration's locale. Regional matching uses OVOS-compatible
+langcodes 3.5.1 CLDR distances; ties preserve order and distances above ten do
+not match.
+
+`ListingRules(data)` snapshots a complete JSON tree. Set the `listing` option
+or call its methods to use it. `ListingRules(null)` selects bare rendering
+without locale data; unknown languages also retain slot names and bare lines.
+Invalid regex patterns fail construction. Regex evaluation allows at most
+200,000 character accesses per match; `asks` throws `ListingRuleLimitException`
+on budget or stack exhaustion, while sentence rendering leaves the line bare.
+Rules can be shared between threads; the language data is packaged in the jar.
+
+The jar includes canonical data and its upstream licenses. Regenerate data and
+reference cases using the public Python environment pinned in
+`scripts/sync-listing-data.py`, selecting `--data-dir src/main/resources/thalovant`
+and `--test-dir src/test/resources/thalovant`. Copy both generated license files
+into the main resource directory before packaging.
+
+The SDK code, CLDR matching tables and bundled `thalovant-languages` data
+retain their upstream MIT license notices. Both data notices ship with the SDK.

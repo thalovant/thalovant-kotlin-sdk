@@ -62,7 +62,7 @@ class PythonParityTest {
     @Test fun `speakable examples retain source priority and duplicate best rank`() {
         assertEquals("did i ask about thing", speakable("did i (already |)ask (about|for|to|) {thing}"))
         val intent = HubIntent("x","x","padatious",mapOf("en-us" to listOf("{x}","a complete sentence","[please]","(x|y)","x")))
-        assertEquals(listOf("x","a complete sentence"),intent.examplesWithOptions("en-us",2,true))
+        assertEquals(listOf("a complete sentence","x"),intent.examplesWithOptions("en-us",2,true))
     }
     @Test fun `audio admission preserves Python encoded budgets and delivery identity`() {
         val first=ThalovantEvent(ThalovantEvents.AUDIO_QUEUE,obj("{\"binary_data\":\"00\"}"))

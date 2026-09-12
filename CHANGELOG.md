@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.6.0 — 2026-09-12
+
+- Add locale-aware sentence listings, canonical slot examples, fuller phrase ranking and OVOS-compatible regional language selection.
+- Snapshot custom rule data, preserve selected locale and count unique rendered phrases toward limits.
+- Bound question-regex character access and handle regex stack exhaustion conservatively.
+
 ## 0.5.0 — 2026-09-12
 
 - Match Python 0.6.3 request hints, location construction, ordered embedded audio replies, strict bounded hex decoding, and speakable intent examples with original phrase priority.
