@@ -4,6 +4,14 @@ import kotlinx.serialization.json.*
 import kotlin.test.*
 
 class ListingTest {
+    @Test fun `sentence marks compare whole Unicode scalars`() {
+        val letter = "\uD801\uDC41"
+        val mark = "\uD807\uDC41"
+        assertEquals("Go $letter.",asSentence("go $letter","en"))
+        assertEquals("Go $mark",asSentence("go $mark","en"))
+        assertFalse(DEFAULT_LISTING.dangling("weather in$letter","en"))
+        assertTrue(DEFAULT_LISTING.dangling("weather in$mark","en"))
+    }
     private fun fixture(name: String) = javaClass.getResourceAsStream("/thalovant/$name")!!.bufferedReader().use { Json.parseToJsonElement(it.readText()).jsonObject }
     private fun data(text: String) = Json.parseToJsonElement(text).jsonObject
     @Test fun `matches published Python listing reference cases`() {
