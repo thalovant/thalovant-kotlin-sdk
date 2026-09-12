@@ -53,4 +53,10 @@ class ListingTest {
         assertFailsWith<ListingRuleLimitException> { costly.asks(text,"xq") }
         assertTrue(costly.asSentence(text,"xq") == "A"+text.drop(1))
     }
+
+    @Test fun `Unicode non-boundaries share the word definition`() {
+        val rules = ListingRules(data("""{"languages":{"xq":{"question_patterns":["\\Bété\\B"]}}}"""))
+        assertFalse(rules.asks("été","xq"))
+        assertTrue(rules.asks("pétéx","xq"))
+    }
 }

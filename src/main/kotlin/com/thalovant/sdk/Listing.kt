@@ -27,12 +27,13 @@ public class ListingRules(data: JsonObject? = listingResource("listing.json")) {
     private fun values(data: JsonObject, key: String): List<String> = data[key]?.jsonArray?.map { it.jsonPrimitive.content } ?: emptyList()
     private fun compile(expression: String, ignoreCase: Boolean): Pattern {
         val boundary = "(?:(?<![\\p{L}\\p{N}_])(?=[\\p{L}\\p{N}_])|(?<=[\\p{L}\\p{N}_])(?![\\p{L}\\p{N}_]))"
+        val nonBoundary = "(?:(?=[\\s\\S])|(?<=[\\s\\S]))(?:(?<=[\\p{L}\\p{N}_])(?=[\\p{L}\\p{N}_])|(?<![\\p{L}\\p{N}_])(?![\\p{L}\\p{N}_]))"
         val converted = StringBuilder(); var inClass = false; var i = 0
         while (i < expression.length) {
             val char = expression[i++]
             if (char == '\\' && i < expression.length) {
                 val next = expression[i++]
-                if (next == 'b' && !inClass) converted.append(boundary) else converted.append(char).append(next)
+                if (next == 'b' && !inClass) converted.append(boundary) else if (next == 'B' && !inClass) converted.append(nonBoundary) else converted.append(char).append(next)
             } else {
                 if (char == '[') inClass = true
                 if (char == ']') inClass = false
