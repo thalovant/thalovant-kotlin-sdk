@@ -11,7 +11,7 @@ plugins {
 }
 
 group = "com.thalovant"
-version = "0.5.0"
+version = "0.6.0"
 
 repositories {
     mavenCentral()
@@ -80,6 +80,11 @@ mavenPublishing {
             license {
                 name.set("MIT License")
                 url.set("https://github.com/thalovant/thalovant-kotlin-sdk/blob/main/LICENSE")
+                distribution.set("repo")
+            }
+            license {
+                name.set("Apache License, Version 2.0 (bundled language data)")
+                url.set("https://www.apache.org/licenses/LICENSE-2.0")
                 distribution.set("repo")
             }
         }
