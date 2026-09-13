@@ -125,6 +125,14 @@ public class ThalovantReply @JvmOverloads constructor(
     public val failureEvent: ThalovantEvent?,
     public val droppedMedia: Int = 0,
 ) {
+    public val pipelineIds: List<String> get() = contextIdentifiers("pipeline_id")
+    public val skillIds: List<String> get() = contextIdentifiers("skill_id")
+    /** Advisory claim status; unstamped successful legacy replies remain claimed. */
+    public val claimed: Boolean get() = handled && ok && failureEvent == null &&
+        pipelineIds.let { stages -> stages.isEmpty() || stages.any { !it.contains("fallback") } }
+    private fun contextIdentifiers(key: String): List<String> = events.mapNotNull {
+        (it.context[key] as? JsonPrimitive)?.takeIf { value -> value.isString }?.content?.takeIf(String::isNotEmpty)
+    }.distinct()
     public val lang: String? get() = events.firstNotNullOfOrNull { it.lang?.takeIf(String::isNotEmpty) }
     public val hasAudio: Boolean get() = events.any { it.isAudio }
     public val mediaEvents: List<ThalovantEvent> get() = events.filter { it.isAudio || it.name in listOf(ThalovantEvents.SPEAK, ThalovantEvents.OVOS_UTTERANCE_SPEAK) }
