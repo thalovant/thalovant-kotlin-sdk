@@ -4,6 +4,11 @@ import kotlinx.serialization.json.*
 import kotlin.test.*
 
 class ListingTest {
+    @Test fun `question detection matches Python reference`() {
+        for (row in fixture("question-vectors.json")["cases"]!!.jsonArray.map { it.jsonObject }) {
+            assertEquals(row["expected"]!!.jsonPrimitive.boolean, DEFAULT_LISTING.asks(row["text"]!!.jsonPrimitive.content,row["lang"]?.jsonPrimitive?.contentOrNull),row.toString())
+        }
+    }
     @Test fun `sentence marks compare whole Unicode scalars`() {
         val letter = "\uD801\uDC41"
         val mark = "\uD807\uDC41"
