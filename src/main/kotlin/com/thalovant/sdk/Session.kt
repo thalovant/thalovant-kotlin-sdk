@@ -12,7 +12,7 @@ public data class HubSessionPolicy(public val retrySeconds: Double = 10.0,
     init { require(listOf(retrySeconds,retryCeilingSeconds,probeSeconds,probeDownSeconds).all { it.isFinite() && it > 0 } && retryCeilingSeconds >= retrySeconds) }
     public fun nextWait(current: Double): Double = minOf(current*2,retryCeilingSeconds)
 }
-public fun alive(client: ThalovantClient?): Boolean = client != null && client.transport.connectionInfo.phase !in setOf("closed","error")
+public fun alive(client: ThalovantClient?): Boolean = client != null && client.transport.connected && client.transport.handshakeComplete
 /** Owns one hub connection. Call probe at probeDelay intervals from the host.
  * A failed admitted call is never replayed; Ask may trigger an action.
  */
@@ -39,6 +39,7 @@ public class HubSession(private val connect: suspend () -> ThalovantClient,
         val listener=Listener(eventName,handler,client?.on(eventName,handler=handler));listeners.add(listener)
         ThalovantSubscription { synchronized(lock) { listener.bound?.close(); listeners.remove(listener) }; Unit }
     }
+    // Failed disconnects can retain a live transport: retry cleanup before replacement.
     private suspend fun cleanup() { retired?.let { it.close(); retired=null } }
     private suspend fun drop() {
         synchronized(lock) {
@@ -62,9 +63,13 @@ public class HubSession(private val connect: suspend () -> ThalovantClient,
             return fresh
         } catch (error: Exception) {
             synchronized(lock) { retryAt=clock()+retryWait;retryWait=policy.nextWait(retryWait);retired=fresh }
-            withContext(NonCancellable) { drop() }
+            cleanupAfterFailure(error)
             throw error
         }
+    }
+    private suspend fun cleanupAfterFailure(original: Exception) {
+        try { withContext(NonCancellable) { drop() } }
+        catch (cleanup: Exception) { if (cleanup !== original) original.addSuppressed(cleanup) }
     }
     public fun warm(): Job? = synchronized(lock) {
         if (closed || clock()<retryAt) return@synchronized null
@@ -85,7 +90,7 @@ public class HubSession(private val connect: suspend () -> ThalovantClient,
         val connected=ensure()
         try { block(connected) }
         catch(error: ThalovantRuntimeException) { throw error }
-        catch(error: Exception) { withContext(NonCancellable) { drop() };throw error }
+        catch(error: Exception) { cleanupAfterFailure(error);throw error }
     }
     public suspend fun ask(text: String,timeoutMs: Long=12000,lang: String="en-us",sessionId: String?=null,
         requestId: String?=null,context: JsonObject=EMPTY_JSON_OBJECT,replySettleMs: Long?=null,emptyReplyWaitMs: Long?=null): ThalovantReply =

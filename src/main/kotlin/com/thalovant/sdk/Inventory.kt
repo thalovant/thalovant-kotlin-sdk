@@ -9,7 +9,6 @@ import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.*
-import java.net.URI
 
 public const val INVENTORY_CACHE_VERSION: Int = 1
 public const val INVENTORY_CACHE_TTL_SECONDS: Double = 3600.0
@@ -117,13 +116,14 @@ public class InventoryCache(public val directory: Path = Path.of(System.getenv("
     }
     public companion object {
         public fun key(mode: String, identity: Path? = null, host: String? = null): String {
-            val digest=MessageDigest.getInstance("SHA-256").digest("$mode|${identity ?: ""}".toByteArray(Charsets.UTF_8)).take(4).joinToString("") { "%02x".format(it) }
-            val readable=(host ?: identityHost(identity) ?: "local").replace(Regex("[^A-Za-z0-9._-]"),"-").take(40)
+            val hostname=host ?: identityHost(identity) ?: "local"
+            val digest=MessageDigest.getInstance("SHA-256").digest("$mode|${identity ?: ""}|$hostname".toByteArray(Charsets.UTF_8)).take(4).joinToString("") { "%02x".format(it) }
+            val readable=hostname.replace(Regex("[^A-Za-z0-9._-]"),"-").take(40)
             return "$mode-$readable-$digest"
         }
     }
 }
 
 public fun identityHost(identity: Path?): String? = try {
-    identity?.let { path -> inventoryJson.parseToJsonElement(Files.readString(path)).jsonObject["default_master"]?.jsonPrimitive?.contentOrNull?.let { URI(it).host } }
+    identity?.let { path -> inventoryJson.parseToJsonElement(Files.readString(path)).jsonObject["default_master"]?.jsonPrimitive?.contentOrNull?.let { hubHostname(it).takeIf { host -> host.isNotEmpty() } } }
 } catch (_: Exception) { null }

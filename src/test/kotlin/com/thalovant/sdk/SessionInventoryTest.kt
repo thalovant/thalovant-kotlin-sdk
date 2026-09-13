@@ -13,12 +13,12 @@ import kotlinx.serialization.json.*
 private class SessionTransport : HiveMindRuntimeTransport {
     override var connected = false
     override val handshakeComplete get() = connected
-    override val connectionInfo get() = ThalovantConnectionInfo(if(connected)"ready" else "closed")
+    var closeError: Exception? = null
     var closes=0;var emissions=0;var fail=false;var rejectListener=false
     var block: (suspend ()->Unit)? = null
     val listeners=CopyOnWriteArrayList<(ThalovantEvent)->Unit>()
     override suspend fun connect(timeoutMs: Long) { connected=true }
-    override suspend fun disconnect() { connected=false;closes++ }
+    override suspend fun disconnect() { closes++;closeError?.let { throw it };connected=false }
     override fun addBusListener(listener: (ThalovantEvent)->Unit): ThalovantSubscription {
         if(rejectListener)throw IllegalStateException("listener refused")
         listeners.add(listener);return ThalovantSubscription {listeners.remove(listener)}
@@ -31,6 +31,44 @@ private class SessionTransport : HiveMindRuntimeTransport {
     fun deliver(name: String) {listeners.forEach {it(ThalovantEvent(name))}}
 }
 class SessionInventoryTest {
+    @Test fun `idle default transport is not alive and is replaced before publication`() = runBlocking {
+        val first=SessionTransport();val second=SessionTransport();var builds=0
+        assertFalse(alive(null));assertFalse(alive(client(first)))
+        val session=HubSession(connect={client(if(++builds==1)first else second).also {it.connect()}},warm=false)
+        session.emit("first");assertTrue(alive(client(first)))
+        first.connected=false
+        assertEquals("idle",first.connectionInfo.phase)
+        session.emit("second")
+        assertEquals(2,builds);assertEquals(1,first.emissions);assertEquals(1,second.emissions)
+        session.close()
+    }
+    @Test fun `cleanup failures preserve original error and prevent overlapping transports`() = runBlocking {
+        val cleanup=java.io.IOException("disconnect unconfirmed")
+        val first=SessionTransport().also {it.fail=true;it.closeError=cleanup};var builds=0
+        val session=HubSession(connect={client(if(++builds==1)first else SessionTransport()).also {it.connect()}},warm=false)
+        val failure=assertFailsWith<ThalovantConnectionException> {session.emit("action")}
+        assertEquals(1,failure.suppressed.size)
+        assertIs<java.io.IOException>(failure.suppressed.single())
+        assertEquals(cleanup.message,failure.suppressed.single().message)
+        assertFailsWith<java.io.IOException> {session.emit("status")}
+        assertEquals(1,builds);assertEquals(1,first.emissions)
+        first.closeError=null
+        session.emit("status");assertEquals(2,builds)
+        session.close()
+    }
+
+    @Test fun `cache keys hash full normalized hostnames`() {
+        val directory=Files.createTempDirectory("thalovant-cache-key-")
+        try {
+            val file=directory.resolve("identity.json")
+            val first="a".repeat(40)+"one.example";val second="a".repeat(40)+"two.example"
+            Files.writeString(file,buildJsonObject { put("default_master",first) }.toString())
+            assertEquals(first,identityHost(file));val key=InventoryCache.key("hub",file)
+            Files.writeString(file,buildJsonObject { put("default_master",second) }.toString())
+            assertNotEquals(key,InventoryCache.key("hub",file))
+        } finally { directory.toFile().deleteRecursively() }
+    }
+
     @Test fun `cancelled preferred origin does not fall back after an IO failure`() = runBlocking {
         val preference = OriginPreference("10.0.0.2")
         var attempts = 0
@@ -48,6 +86,7 @@ class SessionInventoryTest {
     @Test fun `shared Python reference survives sorted JSON`() {
         val raw = javaClass.getResourceAsStream("/thalovant/inventory-vectors.json")!!.bufferedReader().use { it.readText() }
         val data = kotlinx.serialization.json.Json.parseToJsonElement(raw).jsonObject
+        assertEquals(data.getValue("cache_key").jsonPrimitive.content,InventoryCache.key("hub"))
         val inventory = Inventory.fromJson(data.getValue("inventory").toString())
         for (row in data.getValue("examples").jsonArray.map { it.jsonObject }) {
             assertEquals(row.getValue("expected").jsonArray.map { it.jsonPrimitive.content },inventory.intents.first().examples(row["language"]?.jsonPrimitive?.contentOrNull,row.getValue("limit").jsonPrimitive.int))
