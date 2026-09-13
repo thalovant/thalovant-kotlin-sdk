@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.6.3 — 2026-09-13
+
+- Replace stale WebSocket authorization query values with the current identity, preserving unrelated query parameters and URL fragments.
+- Keep credential-bearing network diagnostics out of connection exceptions and their causes.
+
 ## 0.6.2 — 2026-09-12
 
 - Compare sentence punctuation as full Unicode scalars. Supplementary letters sharing a UTF-16 surrogate with a punctuation mark are no longer mistaken for sentence endings or trimmed from a phrase.

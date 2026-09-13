@@ -49,7 +49,7 @@ jobs:
         with:
           persist-credentials: false
           repository: thalovant/thalovant-node-sdk
-          ref: b28d3e5e099eba67506b59f4c47bce0762a858c9
+          ref: 261123f5244b32a0213e066e281cbbb715686c49
           path: .reference-node
       - name: Build independent Node Noise peer
         working-directory: .reference-node

@@ -16,6 +16,7 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import okhttp3.OkHttpClient
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.Request
 import okhttp3.Response
 import okhttp3.WebSocket
@@ -112,9 +113,18 @@ public class HiveMindWssTransport(
             if (!raw.startsWith("ws://") && !raw.startsWith("wss://")) {
                 throw ThalovantConnectionException("WSS endpoint must start with ws:// or wss://.")
             }
-            val encoded = java.net.URLEncoder.encode(authorization, Charsets.UTF_8)
-            val separator = if ("?" in raw) "&" else "?"
-            return "$raw${separator}authorization=$encoded"
+            // HttpUrl owns query encoding and fragment placement. Convert only
+            // the scheme for parsing, then restore the public WebSocket URL.
+            val url = ("http" + raw.substring(2)).toHttpUrlOrNull()
+                ?: throw ThalovantConnectionException("Invalid WSS endpoint.")
+            val builder = url.newBuilder().query(null)
+            // Compare decoded names: %61uthorization is the same parameter.
+            for (index in 0 until url.querySize) {
+                val name = url.queryParameterName(index)
+                if (name != "authorization") builder.addQueryParameter(name, url.queryParameterValue(index))
+            }
+            val authorized = builder.addQueryParameter("authorization", authorization).build().toString()
+            return "ws" + authorized.substring(4)
         }
 
     override suspend fun connect(timeoutMs: Long) {
@@ -338,7 +348,9 @@ public class HiveMindWssTransport(
             handleRawMessage(frame.first.toString(Charsets.UTF_8), authenticated = true)
         }
         override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) = receive {
-            failHandshake(ThalovantConnectionException("HiveMind WSS connect failed: ${t.message}", t))
+            // OkHttp/interceptor failures can contain the authorized request
+            // URL. Never retain that message or cause in public diagnostics.
+            failHandshake(ThalovantConnectionException("HiveMind WSS connection failed."))
             emptyList()
         }
         override fun onClosing(webSocket: WebSocket, code: Int, reason: String) { webSocket.close(code, reason) }
