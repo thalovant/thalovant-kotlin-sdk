@@ -70,8 +70,12 @@ public class ListingRules(data: JsonObject? = listingResource("listing.json")) {
     private fun matches(pattern: Pattern, text: String): Boolean = try { pattern.matcher(BudgetText(text)).find() } catch (_: StackOverflowError) { throw ListingRuleLimitException("Listing rule exceeded the regex stack budget") }
     /** Throws [ListingRuleLimitException] when a custom rule exceeds its budget. */
     public fun asks(text: String,lang: String? = null): Boolean {
-        if (patterns[tag(lang)].orEmpty().any { matches(it,text) }) return true
-        val words = words(text).map { it.trim { c -> c in ",;:!?.’'\"()" }.lowercase() }.filter { it.isNotEmpty() }
+        if (!available) return false
+        val trimmed = text.trim()
+        if (trimmed.isNotEmpty() && trimmed.codePointBefore(trimmed.length) in setOf(0x3f, 0xbf, 0x37e, 0x55e, 0x61f, 0x1367, 0x1945, 0x2047, 0x2049, 0x2753, 0x2754, 0x2a7b, 0x2a7c, 0x2cfa, 0x2cfb, 0x2e2e, 0x2e54, 0xa60f, 0xa6f7, 0xfe16, 0xfe56, 0xff1f, 0x11143, 0x1e95f, 0x1fbc4, 0xe003f)) return true
+        val rules = if (lang.isNullOrEmpty()) patterns.values.flatten() else patterns[tag(lang)].orEmpty()
+        if (rules.any { matches(it,trimmed) }) return true
+        val words = words(trimmed).map { it.trim { c -> c in ",;:!?.’'\"()" }.lowercase() }.filter { it.isNotEmpty() }
         return words.firstOrNull() in wordSet(lang,"question_openers") || words.any { it in wordSet(lang,"question_words_anywhere") }
     }
     public fun asSentence(raw: String,lang: String? = null): String {

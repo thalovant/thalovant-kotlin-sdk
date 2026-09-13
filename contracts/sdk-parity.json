@@ -1,0 +1,81 @@
+{
+  "schema_version": 1,
+  "reference_digests": [
+    "1133ac83dca463a5b7c69c980d1b5db46a1314d08151b31508982ad1cf41b6c6",
+    "47738ba99b2252964314e0c627c790021cc9597eb71c1097ad337535e7251298"
+  ],
+  "capabilities": {
+    "runtime": {
+      "status": "required",
+      "reason": "Applicable public behavior is implemented and exercised by the named regression suites and shared fixtures.",
+      "implementation": {
+        "src/main/kotlin/com/thalovant/sdk/Runtime.kt": "4d366a4d8338c8e3d114d9b0e55f749c7c22dee51c1e571d50eff373b53516aa",
+        "src/main/kotlin/com/thalovant/sdk/Transport.kt": "199cb0a4799ac5b15ea15ebca206c5051e667cc689e96e9c57d4381dddc3e2d4"
+      },
+      "tests": {
+        "src/test/kotlin/com/thalovant/sdk/RuntimeTest.kt": "559ff997f458d157cd3937b15429ab236788b073f4c04fc186a3fcb8f4cf3668",
+        "src/test/kotlin/com/thalovant/sdk/TransportTest.kt": "5f02ea94d8d43dfd9cf108d24c148a20b4468fc9c1e99affdc5a568f86d6fd30"
+      }
+    },
+    "control": {
+      "status": "required",
+      "reason": "Applicable public behavior is implemented and exercised by the named regression suites and shared fixtures.",
+      "implementation": {
+        "src/main/kotlin/com/thalovant/sdk/ControlPlane.kt": "1016af155ff57f10fc2e061b2e95f451b75758642dae8c027d23f8176be2e33c"
+      },
+      "tests": {
+        "src/test/kotlin/com/thalovant/sdk/HubSkillsTest.kt": "8950dfd274888338586289b92f6bb72a9eb6ca0a36d0113123c9f7f7f6a4f21e",
+        "src/test/kotlin/com/thalovant/sdk/ControlPlaneTest.kt": "35d3f8bdcbed7ce92bec95dcf7a711d37862b461bba44c3691d1d888f50b1189"
+      }
+    },
+    "identity": {
+      "status": "required",
+      "reason": "Applicable public behavior is implemented and exercised by the named regression suites and shared fixtures.",
+      "implementation": {
+        "src/main/kotlin/com/thalovant/sdk/Identity.kt": "8caf73b93a99c4bda9577106b878552d2d367725adb808715506895272e72b25",
+        "src/main/kotlin/com/thalovant/sdk/Protocols.kt": "24f103b3ca1897d5ee2661f9acfe73daaa18a6951fb0fb842291afade9c87bae"
+      },
+      "tests": {
+        "src/test/kotlin/com/thalovant/sdk/IdentityTest.kt": "b0175ee7cb24c2b82aaa8aaf8dfc5c02b745b2aa0abd50ee52d826b8c5f35b0b",
+        "src/test/kotlin/com/thalovant/sdk/ProtocolsTest.kt": "e38ed5cda9a2354ee016d0ab40293d6e6285c0f49336f4e047afbce38a8e698d"
+      }
+    },
+    "listing": {
+      "status": "required",
+      "reason": "Applicable public behavior is implemented and exercised by the named regression suites and shared fixtures.",
+      "implementation": {
+        "src/main/kotlin/com/thalovant/sdk/Listing.kt": "e1d0dbfb9eea4fb95a9b6e5abf34b0ca74f1af15f9778dda7b73e26615a8f9f7",
+        "src/main/kotlin/com/thalovant/sdk/Intents.kt": "ef2c8f90ef792ae23974208da897581f8b9758c354eb0dad5932d80f7a06163b"
+      },
+      "tests": {
+        "src/test/kotlin/com/thalovant/sdk/ListingTest.kt": "e60a44a679056a45f39a743df7a1f1e7701e626882dffad4d9f5aae58497ec13",
+        "src/test/resources/thalovant/question-vectors.json": "046a163f1340976ae5898da153f080dbdd9326a733c97c4acbe7c2302474286e"
+      }
+    },
+    "inventory": {
+      "status": "required",
+      "reason": "Applicable public behavior is implemented and exercised by the named regression suites and shared fixtures.",
+      "implementation": {
+        "src/main/kotlin/com/thalovant/sdk/Inventory.kt": "383c87cf02cbe52066c6af44d8d9e06b30d771951ee2dd27b3ac414991ccf32d"
+      },
+      "tests": {
+        "src/test/kotlin/com/thalovant/sdk/SessionInventoryTest.kt": "0860798fa28d6ad1cbffcd123f3ad7245d67b2442a61e8c93a73ea1c58455cdd",
+        "src/test/resources/thalovant/inventory-vectors.json": "78c7bf51a748dc9b9f66277dc63d83f9cd75a54a341ca630fb8bc55d0b30bcf5"
+      }
+    },
+    "session": {
+      "status": "required",
+      "reason": "Applicable public behavior is implemented and exercised by the named regression suites and shared fixtures.",
+      "implementation": {
+        "src/main/kotlin/com/thalovant/sdk/Session.kt": "814ee76e9cd976520db8c36165eaffb55ef691e454fa3004a202b2f221697cbb"
+      },
+      "tests": {
+        "src/test/kotlin/com/thalovant/sdk/SessionInventoryTest.kt": "0860798fa28d6ad1cbffcd123f3ad7245d67b2442a61e8c93a73ea1c58455cdd"
+      }
+    },
+    "cli": {
+      "status": "not-applicable",
+      "reason": "Python command line entry point; consumers expose idiomatic language APIs or MCP tools."
+    }
+  }
+}
