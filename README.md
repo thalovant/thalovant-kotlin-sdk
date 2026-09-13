@@ -19,7 +19,7 @@ Full docs: <https://docs.thalovant.com/developers/sdks/kotlin/>
 
 ```kotlin
 dependencies {
-    implementation("com.thalovant:thalovant-sdk:0.6.2")
+    implementation("com.thalovant:thalovant-sdk:0.6.3")
 }
 ```
 
@@ -485,6 +485,10 @@ Hubs may expose one or more public data-plane protocols:
 - `wss`: secure realtime WebSocket, the default public path and SDK preference.
 - `https`: request/response HTTP protocol exposed as HTTPS.
 - `mqtt`: broker-mediated MQTT over TLS. Requires per-client broker credentials.
+
+WebSocket connections replace existing `authorization` query values with the current
+identity, preserve other query parameters, and keep credentials out of connection
+failure diagnostics.
 
 This release connects over **WSS only**. Requesting `https` or `mqtt`
 throws `ThalovantUnsupportedProtocolException`. Endpoint selection still honors

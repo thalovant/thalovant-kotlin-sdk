@@ -10,6 +10,7 @@ import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
@@ -27,6 +28,8 @@ import kotlinx.serialization.json.put
 import java.nio.file.Files
 import okio.ByteString
 import okhttp3.Response
+import okhttp3.OkHttpClient
+import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
 import okhttp3.mockwebserver.MockResponse
@@ -100,13 +103,13 @@ class TransportTest {
         server.start()
     }
 
-    private fun identity(): ThalovantIdentity = ThalovantIdentity(
+    private fun identity(endpoint: String = "ws://${server.hostName}:${server.port}"): ThalovantIdentity = ThalovantIdentity(
         buildJsonObject {
             put("access_key", "access")
             put("password", "secret")
             put("crypto_key", CRYPTO_KEY)
             put("site_id", "site")
-            put("default_master", "ws://${server.hostName}:${server.port}")
+            put("default_master", endpoint)
         },
     )
 
@@ -114,6 +117,68 @@ class TransportTest {
         val message = received.poll(5, TimeUnit.SECONDS)
         assertNotNull(message, "expected a message from the SDK within 5s")
         return message
+    }
+
+    @Test
+    fun `endpoint replaces every authorization value and preserves query and fragment`() {
+        val transport = HiveMindWssTransport(identity(
+            "wss://hub.example/runtime?authorization=stale&route=a%2Fb&%61uthorization=older&route=x%2By#section",
+        ))
+        val endpoint = transport.endpoint
+        assertTrue(endpoint.startsWith("wss://"))
+        val parsed = ("http" + endpoint.substring(2)).toHttpUrl()
+        assertEquals(listOf(transport.authorization), parsed.queryParameterValues("authorization"))
+        assertEquals(listOf("a/b", "x+y"), parsed.queryParameterValues("route"))
+        assertEquals("section", parsed.fragment)
+        assertEquals("/runtime", parsed.encodedPath)
+    }
+
+    @Test
+    fun `authorized query precedes a fragment on an endpoint without a query`() {
+        val transport = HiveMindWssTransport(identity("wss://hub.example/runtime#section"))
+        val parsed = ("http" + transport.endpoint.substring(2)).toHttpUrl()
+        assertEquals(transport.authorization, parsed.queryParameter("authorization"))
+        assertEquals("section", parsed.fragment)
+    }
+
+    @Test
+    fun `connection failures do not expose authorized URLs through exception causes`() = runBlocking {
+        val marker = "test-only-private-diagnostic"
+        val http = OkHttpClient.Builder().addInterceptor { chain ->
+            throw java.io.IOException("$marker ${chain.request().url}")
+        }.build()
+        val transport = HiveMindWssTransport(identity("wss://hub.example/runtime"), httpClient = http)
+        try {
+            val error = assertFailsWith<ThalovantConnectionException> { transport.connect(3000) }
+            for (diagnostic in listOf(error.stackTraceToString(), transport.lastError?.stackTraceToString().orEmpty(), transport.connectionInfo.toString())) {
+                assertFalse(diagnostic.contains(marker))
+                assertFalse(diagnostic.contains("authorization="))
+                assertFalse(diagnostic.contains(transport.authorization))
+            }
+        } finally {
+            transport.disconnect()
+            http.dispatcher.executorService.shutdown()
+            http.connectionPool.evictAll()
+        }
+    }
+
+    @Test
+    fun `stale endpoint credentials cannot override the identity on the wire`() = runBlocking {
+        startHub()
+        val transport = HiveMindWssTransport(
+            identity("ws://${server.hostName}:${server.port}/runtime?authorization=stale&route=kept"),
+            noiseStore = HiveMindNoiseStore(stateDir),
+        )
+        try {
+            transport.connect(5000)
+            assertTrue(transport.handshakeComplete)
+            val request = server.takeRequest(5, TimeUnit.SECONDS)
+            assertNotNull(request)
+            assertEquals(listOf(transport.authorization), request.requestUrl?.queryParameterValues("authorization"))
+            assertEquals("kept", request.requestUrl?.queryParameter("route"))
+        } finally {
+            transport.disconnect()
+        }
     }
 
     private fun sendBus(type: String, data: JsonObject, context: JsonObject) {
