@@ -22,7 +22,7 @@ jobs:
     permissions:
       contents: read
     with:
-      source_ref: ${{ github.event_name == 'release' && github.event.release.tag_name || inputs.release_tag || github.ref }}
+      source_ref: ${{ github.event_name == 'release' && github.event.release.tag_name || inputs.release_tag || github.sha }}
 
   publish:
     needs: sdk-parity
@@ -42,7 +42,7 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          ref: ${{ env.RELEASE_TAG || github.ref }}
+          ref: ${{ env.RELEASE_TAG || github.sha }}
 
       - name: Set up Java
         uses: actions/setup-java@c5195efecf7bdfc987ee8bae7a71cb8b11521c00 # v4.7.1
