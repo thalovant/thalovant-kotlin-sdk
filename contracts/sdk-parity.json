@@ -3,19 +3,24 @@
   "reference_digests": [
     "1133ac83dca463a5b7c69c980d1b5db46a1314d08151b31508982ad1cf41b6c6",
     "c13f62bf0c5ff9a8b06808542f89481f961e7c4e24af13928055598b76e2550c",
-    "2440dd10059c468ca5012a3e4e9e057c9bd2df7ef442eba1d5dcdeb4afb3eafd"
+    "2440dd10059c468ca5012a3e4e9e057c9bd2df7ef442eba1d5dcdeb4afb3eafd",
+    "4f17f2e999105c5629defd1c1ea71a197ecf725a9b559ff7b3bf9932638645bd",
+    "676e935e66330f8614d6c23cccddd48e1c4577c3af761775f18e1ea0128b8007"
   ],
   "capabilities": {
     "runtime": {
       "status": "required",
-      "reason": "Applicable public behavior is implemented and exercised by the named regression suites and shared fixtures. HiveMind #251/#252 only changes the Python upstream client dispatcher; this consumer uses native single-dispatch transports (MCP delegates to the Node SDK), or caller-owned frame parsing in embedded C. No Python HiveMind bus dependency or slave-protocol reinjection exists here. Python now requires fixed upstream 1.1.9a1 and removes its identity-based suppression; equal independent native frames remain distinct.",
+      "reason": "Applicable public behavior is implemented and exercised by the named regression suites and shared fixtures. HiveMind #251/#252 only changes the Python upstream client dispatcher; this consumer uses native single-dispatch transports (MCP delegates to the Node SDK), or caller-owned frame parsing in embedded C. No Python HiveMind bus dependency or slave-protocol reinjection exists here. Python now requires fixed upstream 1.1.9a1 and removes its identity-based suppression; equal independent native frames remain distinct. Reply claim metadata follows the Python string-ID contract, with first-seen ordering, case-sensitive fallback stages and legacy unstamped success. Invalid non-string stamps are ignored. Embedded C exposes bounded extraction and claim classification while its caller retains ordered IDs.",
       "implementation": {
         "src/main/kotlin/com/thalovant/sdk/Runtime.kt": "4d366a4d8338c8e3d114d9b0e55f749c7c22dee51c1e571d50eff373b53516aa",
-        "src/main/kotlin/com/thalovant/sdk/Transport.kt": "199cb0a4799ac5b15ea15ebca206c5051e667cc689e96e9c57d4381dddc3e2d4"
+        "src/main/kotlin/com/thalovant/sdk/Transport.kt": "199cb0a4799ac5b15ea15ebca206c5051e667cc689e96e9c57d4381dddc3e2d4",
+        "src/main/kotlin/com/thalovant/sdk/Events.kt": "adf73f4b2d76a4f7546189d41e7cb68e1918c20e8607ca34a4f3b1e754a58764"
       },
       "tests": {
         "src/test/kotlin/com/thalovant/sdk/RuntimeTest.kt": "559ff997f458d157cd3937b15429ab236788b073f4c04fc186a3fcb8f4cf3668",
-        "src/test/kotlin/com/thalovant/sdk/TransportTest.kt": "5f02ea94d8d43dfd9cf108d24c148a20b4468fc9c1e99affdc5a568f86d6fd30"
+        "src/test/kotlin/com/thalovant/sdk/TransportTest.kt": "5f02ea94d8d43dfd9cf108d24c148a20b4468fc9c1e99affdc5a568f86d6fd30",
+        "src/test/kotlin/com/thalovant/sdk/ReplyClaimsTest.kt": "48215df9f7ceeeb02f59298d22534506a4eb2e4bdf52075782b3cf2e2a3bb205",
+        "src/test/resources/thalovant/reply-claim-vectors.json": "bfcd4a649fa8ecb0cede0ccd495cdbdc1a9881760e4654cd776cf81bed558cb1"
       }
     },
     "control": {
