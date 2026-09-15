@@ -1,6 +1,7 @@
 package com.thalovant.sdk
 
 import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 
 /** Base class for every exception thrown by the Thalovant SDK. */
@@ -68,7 +69,35 @@ public class ThalovantApiException(
     message: String,
     public val statusCode: Int? = null,
     public val body: String? = null,
-) : ThalovantException(message)
+) : ThalovantException(message) {
+
+    /**
+     * The sentence the API wrote for a person, out of [body], or null.
+     *
+     * The control plane answers RFC 7807 and writes its refusals to be read:
+     * "Free plan allows up to 1 client." [message] is not that -- it is the
+     * whole body, whitespace-collapsed and truncated, behind "Thalovant API
+     * request failed with HTTP 403:" -- so a caller that wants to show
+     * somebody why gets a JSON blob or writes this itself.
+     *
+     * thalovant-android wrote it itself, which is why a phone said "Thalovant
+     * could not answer just now. Try again in a moment." to somebody whose
+     * plan was full: not a moment, and trying again would not have helped.
+     *
+     * Both shapes the API emits are handled: `{"detail": "..."}` and the
+     * validation wrapper `{"detail": {"detail": "...", "errors": [...]}}`.
+     */
+    public val detail: String?
+        get() {
+            val raw = body?.takeIf { it.isNotBlank() } ?: return null
+            val root = runCatching { ThalovantJson.parseToJsonElement(raw).asObjectOrNull() }
+                .getOrNull() ?: return null
+            val detail = root["detail"] ?: return null
+            (detail as? JsonPrimitive)?.takeIf { it.isString }?.content?.let { return it }
+            return ((detail as? JsonObject)?.get("detail") as? JsonPrimitive)
+                ?.takeIf { it.isString }?.content
+        }
+}
 
 /** The requested data-plane protocol is unavailable or unsupported. */
 public class ThalovantUnsupportedProtocolException(message: String) : ThalovantException(message)
