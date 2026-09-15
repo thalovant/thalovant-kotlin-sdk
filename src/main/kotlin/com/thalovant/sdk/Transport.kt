@@ -355,13 +355,36 @@ public class HiveMindWssTransport(
         }
         override fun onClosing(webSocket: WebSocket, code: Int, reason: String) { webSocket.close(code, reason) }
         override fun onClosed(webSocket: WebSocket, code: Int, reason: String) = receive {
-            if (!handshakeComplete) failHandshake(ThalovantConnectionException("HiveMind WSS closed before Noise handshake completed ($code)."))
+            if (!handshakeComplete) failHandshake(closedBeforeHandshake(code))
             else { resetSession(); phase = "closed" }
             emptyList()
+        }
+
+        /**
+         * The close code says whose problem this is, so it decides the type.
+         *
+         * A hub that refuses an access key closes with 1008, RFC 6455's policy
+         * violation. Reporting that as a connection failure sends somebody to
+         * check their network for a credential the hub has already read and
+         * rejected -- the one thing their network cannot fix. The identity type
+         * already exists and already means "the hub would not accept this
+         * client", so a refusal raises that instead.
+         *
+         * The server's own `reason` is never echoed: it is remote text, and the
+         * code carries everything a caller should branch on.
+         */
+        private fun closedBeforeHandshake(code: Int): ThalovantException = when (code) {
+            POLICY_VIOLATION -> ThalovantIdentityException(
+                "The hub refused this client's credentials. Pair this client with the hub again.",
+            )
+            else -> ThalovantConnectionException("HiveMind WSS closed before Noise handshake completed ($code).")
         }
     }
 
     private companion object {
+        /** RFC 6455 policy violation. HiveMind closes with it on a refused key. */
+        const val POLICY_VIOLATION = 1008
+
         val defaultClient: OkHttpClient = OkHttpClient.Builder()
             .pingInterval(30, TimeUnit.SECONDS)
             .build()
