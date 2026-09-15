@@ -469,6 +469,39 @@ public class ThalovantControlPlane(
         }
     }
 
+    /**
+     * Exchange an authorization code for a scoped access token and store it.
+     *
+     * The other half of [NativeSignIn]. The verifier is sent here and nowhere
+     * else; it never entered the browser, which is what makes an intercepted
+     * code useless to whoever intercepted it.
+     *
+     * A code presented twice revokes the token the first exchange minted
+     * (RFC 9700), so retrying a failed exchange with the same code destroys
+     * the token it is trying to obtain. Start again from [NativeSignIn.begin].
+     */
+    public suspend fun completeNativeSignIn(
+        code: String,
+        verifier: String,
+        clientId: String,
+        redirectUri: String,
+    ): JsonObject {
+        val body = buildJsonObject {
+            put("grant_type", "authorization_code")
+            put("code", code)
+            put("code_verifier", verifier)
+            put("client_id", clientId)
+            put("redirect_uri", redirectUri)
+        }
+        val token = request("POST", "/v1/auth/native/token", body = body, auth = false)
+        val accessToken = (token["access_token"] as? JsonPrimitive)?.takeIf { it.isString }?.content
+        if (accessToken.isNullOrEmpty()) {
+            throw ThalovantApiException("Thalovant API token response did not include access_token.")
+        }
+        this.accessToken = accessToken
+        return token
+    }
+
     public suspend fun listHubs(limit: Int = 100, cursor: String? = null, ownerId: String? = null): JsonObject {
         val query = linkedMapOf("limit" to limit.toString())
         cursor?.takeIf { it.isNotEmpty() }?.let { query["cursor"] = it }
