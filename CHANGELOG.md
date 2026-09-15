@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.4
+
+- Automated patch release of the unreleased changes on `main` since v0.7.3.
+
 ## 0.7.3
 
 - Automated patch release of the unreleased changes on `main` since v0.7.2.
