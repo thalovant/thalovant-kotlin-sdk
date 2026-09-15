@@ -1,88 +1,102 @@
 {
-  "schema_version": 1,
+  "capabilities": {
+    "cli": {
+      "reason": "Python command line entry point; consumers expose idiomatic language APIs or MCP tools.",
+      "status": "not-applicable"
+    },
+    "control": {
+      "implementation": {
+        "src/main/kotlin/com/thalovant/sdk/ControlPlane.kt": "1dde66bddc9824e6fa56cdd2a5b500c9587458a903a5f09339d394caecb71073"
+      },
+      "reason": "Applicable public behavior is implemented and exercised by the named regression suites and shared fixtures.",
+      "status": "required",
+      "tests": {
+        "src/test/kotlin/com/thalovant/sdk/ControlPlaneTest.kt": "35d3f8bdcbed7ce92bec95dcf7a711d37862b461bba44c3691d1d888f50b1189",
+        "src/test/kotlin/com/thalovant/sdk/HubSkillsTest.kt": "8950dfd274888338586289b92f6bb72a9eb6ca0a36d0113123c9f7f7f6a4f21e"
+      }
+    },
+    "identity": {
+      "implementation": {
+        "src/main/kotlin/com/thalovant/sdk/Identity.kt": "8caf73b93a99c4bda9577106b878552d2d367725adb808715506895272e72b25",
+        "src/main/kotlin/com/thalovant/sdk/Protocols.kt": "24f103b3ca1897d5ee2661f9acfe73daaa18a6951fb0fb842291afade9c87bae"
+      },
+      "reason": "Applicable public behavior is implemented and exercised by the named regression suites and shared fixtures.",
+      "status": "required",
+      "tests": {
+        "src/test/kotlin/com/thalovant/sdk/IdentityTest.kt": "b0175ee7cb24c2b82aaa8aaf8dfc5c02b745b2aa0abd50ee52d826b8c5f35b0b",
+        "src/test/kotlin/com/thalovant/sdk/ProtocolsTest.kt": "e38ed5cda9a2354ee016d0ab40293d6e6285c0f49336f4e047afbce38a8e698d"
+      }
+    },
+    "inventory": {
+      "implementation": {
+        "src/main/kotlin/com/thalovant/sdk/Inventory.kt": "0a57f95540b2f1fa28e4dc3f04572f7a83b09fdb117349aa6fc8a48e8c5a2c37"
+      },
+      "reason": "Applicable public behavior is implemented and exercised by the named regression suites and shared fixtures.",
+      "status": "required",
+      "tests": {
+        "src/test/kotlin/com/thalovant/sdk/SessionInventoryTest.kt": "8564690078ffb87b9f93ad2c93df7bbef16c5328a2b99be82791c42f19e6073a",
+        "src/test/resources/thalovant/inventory-vectors.json": "4deb456540b8b08aa4b59f8366d4295318b743245e7936febbdb199eb2dcfae0"
+      }
+    },
+    "listing": {
+      "implementation": {
+        "src/main/kotlin/com/thalovant/sdk/Intents.kt": "ef2c8f90ef792ae23974208da897581f8b9758c354eb0dad5932d80f7a06163b",
+        "src/main/kotlin/com/thalovant/sdk/Listing.kt": "e1d0dbfb9eea4fb95a9b6e5abf34b0ca74f1af15f9778dda7b73e26615a8f9f7"
+      },
+      "reason": "Applicable public behavior is implemented and exercised by the named regression suites and shared fixtures.",
+      "status": "required",
+      "tests": {
+        "src/test/kotlin/com/thalovant/sdk/ListingTest.kt": "e60a44a679056a45f39a743df7a1f1e7701e626882dffad4d9f5aae58497ec13",
+        "src/test/resources/thalovant/question-vectors.json": "046a163f1340976ae5898da153f080dbdd9326a733c97c4acbe7c2302474286e"
+      }
+    },
+    "native_auth": {
+      "implementation": {
+        "src/main/kotlin/com/thalovant/sdk/Hubs.kt": "7f77d01990106a91859e808359c44c1c7b17897bc5b63e81892618281294c244",
+        "src/main/kotlin/com/thalovant/sdk/NativeSignIn.kt": "d36c6a92c07044d059ab14a1af7379ef086ba136c88be590e4c61669fe5ddb93"
+      },
+      "reason": "Authorization-code sign-in with PKCE is implemented and exercised by the named regression suites: the challenge is checked to be S256 of the verifier, the verifier is checked never to reach the browser, a redirect answering a different attempt or carrying error= is refused, and the token exchange refuses cleartext to a non-loopback host. hubDisplayName is exercised against a catalog title, a name, a bare slug and a spec that is not shaped like a catalog.",
+      "status": "required",
+      "tests": {
+        "src/test/kotlin/com/thalovant/sdk/NativeSignInTest.kt": "e036cdbfeb9c28d85208319956bb2e963c429e3df15f549203865f5d198a6550",
+        "src/test/kotlin/com/thalovant/sdk/SdkGapsTest.kt": "6bb55aac24057f94e91b05657a906240c4222b8bd8010576e934b6ecea7d5364"
+      }
+    },
+    "runtime": {
+      "implementation": {
+        "src/main/kotlin/com/thalovant/sdk/Events.kt": "adf73f4b2d76a4f7546189d41e7cb68e1918c20e8607ca34a4f3b1e754a58764",
+        "src/main/kotlin/com/thalovant/sdk/Runtime.kt": "4d366a4d8338c8e3d114d9b0e55f749c7c22dee51c1e571d50eff373b53516aa",
+        "src/main/kotlin/com/thalovant/sdk/Transport.kt": "199cb0a4799ac5b15ea15ebca206c5051e667cc689e96e9c57d4381dddc3e2d4"
+      },
+      "reason": "Applicable public behavior is implemented and exercised by the named regression suites and shared fixtures. HiveMind #251/#252 only changes the Python upstream client dispatcher; this consumer uses native single-dispatch transports (MCP delegates to the Node SDK), or caller-owned frame parsing in embedded C. No Python HiveMind bus dependency or slave-protocol reinjection exists here. Python now requires fixed upstream 1.1.9a1 and removes its identity-based suppression; equal independent native frames remain distinct. Reply claim metadata follows the Python string-ID contract, with first-seen ordering, case-sensitive fallback stages and legacy unstamped success. Invalid non-string stamps are ignored. Embedded C exposes bounded extraction and claim classification while its caller retains ordered IDs.",
+      "status": "required",
+      "tests": {
+        "src/test/kotlin/com/thalovant/sdk/ReplyClaimsTest.kt": "48215df9f7ceeeb02f59298d22534506a4eb2e4bdf52075782b3cf2e2a3bb205",
+        "src/test/kotlin/com/thalovant/sdk/RuntimeTest.kt": "559ff997f458d157cd3937b15429ab236788b073f4c04fc186a3fcb8f4cf3668",
+        "src/test/kotlin/com/thalovant/sdk/TransportTest.kt": "5f02ea94d8d43dfd9cf108d24c148a20b4468fc9c1e99affdc5a568f86d6fd30",
+        "src/test/resources/thalovant/reply-claim-vectors.json": "bfcd4a649fa8ecb0cede0ccd495cdbdc1a9881760e4654cd776cf81bed558cb1"
+      }
+    },
+    "session": {
+      "implementation": {
+        "src/main/kotlin/com/thalovant/sdk/Session.kt": "bcf2d5007f54c364abdd96fe266a9870da0c2ff9602cd5c615d505bcb9618cdc"
+      },
+      "reason": "Applicable public behavior is implemented and exercised by the named regression suites and shared fixtures. The connected-client factory owns failed connection cleanup; Python performs that dial internally and retains failed retirement before replacement.",
+      "status": "required",
+      "tests": {
+        "src/test/kotlin/com/thalovant/sdk/SessionInventoryTest.kt": "8564690078ffb87b9f93ad2c93df7bbef16c5328a2b99be82791c42f19e6073a"
+      }
+    }
+  },
   "reference_digests": [
     "1133ac83dca463a5b7c69c980d1b5db46a1314d08151b31508982ad1cf41b6c6",
     "c13f62bf0c5ff9a8b06808542f89481f961e7c4e24af13928055598b76e2550c",
     "2440dd10059c468ca5012a3e4e9e057c9bd2df7ef442eba1d5dcdeb4afb3eafd",
     "4f17f2e999105c5629defd1c1ea71a197ecf725a9b559ff7b3bf9932638645bd",
     "676e935e66330f8614d6c23cccddd48e1c4577c3af761775f18e1ea0128b8007",
-    "8b71292c815a4b7219be7b1a7a5d01e9500faaa23e7c97c6a48683fc0411e1d0"
+    "8b71292c815a4b7219be7b1a7a5d01e9500faaa23e7c97c6a48683fc0411e1d0",
+    "e1a17c218e70eb278e4a06161314076269c6d7f3fd24afc522711e1eedb2c2e8",
+    "c1b37fdf37eba918c14fcbd234d02a4c80ffd6a72a55c3db5566cd8ed59e7a5b"
   ],
-  "capabilities": {
-    "runtime": {
-      "status": "required",
-      "reason": "Applicable public behavior is implemented and exercised by the named regression suites and shared fixtures. HiveMind #251/#252 only changes the Python upstream client dispatcher; this consumer uses native single-dispatch transports (MCP delegates to the Node SDK), or caller-owned frame parsing in embedded C. No Python HiveMind bus dependency or slave-protocol reinjection exists here. Python now requires fixed upstream 1.1.9a1 and removes its identity-based suppression; equal independent native frames remain distinct. Reply claim metadata follows the Python string-ID contract, with first-seen ordering, case-sensitive fallback stages and legacy unstamped success. Invalid non-string stamps are ignored. Embedded C exposes bounded extraction and claim classification while its caller retains ordered IDs.",
-      "implementation": {
-        "src/main/kotlin/com/thalovant/sdk/Runtime.kt": "4d366a4d8338c8e3d114d9b0e55f749c7c22dee51c1e571d50eff373b53516aa",
-        "src/main/kotlin/com/thalovant/sdk/Transport.kt": "199cb0a4799ac5b15ea15ebca206c5051e667cc689e96e9c57d4381dddc3e2d4",
-        "src/main/kotlin/com/thalovant/sdk/Events.kt": "adf73f4b2d76a4f7546189d41e7cb68e1918c20e8607ca34a4f3b1e754a58764"
-      },
-      "tests": {
-        "src/test/kotlin/com/thalovant/sdk/RuntimeTest.kt": "559ff997f458d157cd3937b15429ab236788b073f4c04fc186a3fcb8f4cf3668",
-        "src/test/kotlin/com/thalovant/sdk/TransportTest.kt": "5f02ea94d8d43dfd9cf108d24c148a20b4468fc9c1e99affdc5a568f86d6fd30",
-        "src/test/kotlin/com/thalovant/sdk/ReplyClaimsTest.kt": "48215df9f7ceeeb02f59298d22534506a4eb2e4bdf52075782b3cf2e2a3bb205",
-        "src/test/resources/thalovant/reply-claim-vectors.json": "bfcd4a649fa8ecb0cede0ccd495cdbdc1a9881760e4654cd776cf81bed558cb1"
-      }
-    },
-    "control": {
-      "status": "required",
-      "reason": "Applicable public behavior is implemented and exercised by the named regression suites and shared fixtures.",
-      "implementation": {
-        "src/main/kotlin/com/thalovant/sdk/ControlPlane.kt": "1016af155ff57f10fc2e061b2e95f451b75758642dae8c027d23f8176be2e33c"
-      },
-      "tests": {
-        "src/test/kotlin/com/thalovant/sdk/HubSkillsTest.kt": "8950dfd274888338586289b92f6bb72a9eb6ca0a36d0113123c9f7f7f6a4f21e",
-        "src/test/kotlin/com/thalovant/sdk/ControlPlaneTest.kt": "35d3f8bdcbed7ce92bec95dcf7a711d37862b461bba44c3691d1d888f50b1189"
-      }
-    },
-    "identity": {
-      "status": "required",
-      "reason": "Applicable public behavior is implemented and exercised by the named regression suites and shared fixtures.",
-      "implementation": {
-        "src/main/kotlin/com/thalovant/sdk/Identity.kt": "8caf73b93a99c4bda9577106b878552d2d367725adb808715506895272e72b25",
-        "src/main/kotlin/com/thalovant/sdk/Protocols.kt": "24f103b3ca1897d5ee2661f9acfe73daaa18a6951fb0fb842291afade9c87bae"
-      },
-      "tests": {
-        "src/test/kotlin/com/thalovant/sdk/IdentityTest.kt": "b0175ee7cb24c2b82aaa8aaf8dfc5c02b745b2aa0abd50ee52d826b8c5f35b0b",
-        "src/test/kotlin/com/thalovant/sdk/ProtocolsTest.kt": "e38ed5cda9a2354ee016d0ab40293d6e6285c0f49336f4e047afbce38a8e698d"
-      }
-    },
-    "listing": {
-      "status": "required",
-      "reason": "Applicable public behavior is implemented and exercised by the named regression suites and shared fixtures.",
-      "implementation": {
-        "src/main/kotlin/com/thalovant/sdk/Listing.kt": "e1d0dbfb9eea4fb95a9b6e5abf34b0ca74f1af15f9778dda7b73e26615a8f9f7",
-        "src/main/kotlin/com/thalovant/sdk/Intents.kt": "ef2c8f90ef792ae23974208da897581f8b9758c354eb0dad5932d80f7a06163b"
-      },
-      "tests": {
-        "src/test/kotlin/com/thalovant/sdk/ListingTest.kt": "e60a44a679056a45f39a743df7a1f1e7701e626882dffad4d9f5aae58497ec13",
-        "src/test/resources/thalovant/question-vectors.json": "046a163f1340976ae5898da153f080dbdd9326a733c97c4acbe7c2302474286e"
-      }
-    },
-    "inventory": {
-      "status": "required",
-      "reason": "Applicable public behavior is implemented and exercised by the named regression suites and shared fixtures.",
-      "implementation": {
-        "src/main/kotlin/com/thalovant/sdk/Inventory.kt": "0a57f95540b2f1fa28e4dc3f04572f7a83b09fdb117349aa6fc8a48e8c5a2c37"
-      },
-      "tests": {
-        "src/test/kotlin/com/thalovant/sdk/SessionInventoryTest.kt": "8564690078ffb87b9f93ad2c93df7bbef16c5328a2b99be82791c42f19e6073a",
-        "src/test/resources/thalovant/inventory-vectors.json": "4deb456540b8b08aa4b59f8366d4295318b743245e7936febbdb199eb2dcfae0"
-      }
-    },
-    "session": {
-      "status": "required",
-      "reason": "Applicable public behavior is implemented and exercised by the named regression suites and shared fixtures. The connected-client factory owns failed connection cleanup; Python performs that dial internally and retains failed retirement before replacement.",
-      "implementation": {
-        "src/main/kotlin/com/thalovant/sdk/Session.kt": "bcf2d5007f54c364abdd96fe266a9870da0c2ff9602cd5c615d505bcb9618cdc"
-      },
-      "tests": {
-        "src/test/kotlin/com/thalovant/sdk/SessionInventoryTest.kt": "8564690078ffb87b9f93ad2c93df7bbef16c5328a2b99be82791c42f19e6073a"
-      }
-    },
-    "cli": {
-      "status": "not-applicable",
-      "reason": "Python command line entry point; consumers expose idiomatic language APIs or MCP tools."
-    }
-  }
+  "schema_version": 1
 }
