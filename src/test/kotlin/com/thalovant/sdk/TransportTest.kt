@@ -514,4 +514,48 @@ class TransportTest {
         )
         assertFailsWith<ThalovantUnsupportedProtocolException> { ThalovantClient(identity) }
     }
+
+    /**
+     * A hub that refuses an access key closes with 1008 before the Noise
+     * handshake. That is the exact shape of the production failure on
+     * 2026-09-15: the phone was told "check this phone is online" for a
+     * credential the hub had read and rejected.
+     */
+    @Test
+    fun `a refused key is an identity failure, not a connection failure`() {
+        server.enqueue(
+            MockResponse().withWebSocketUpgrade(
+                object : WebSocketListener() {
+                    override fun onOpen(webSocket: WebSocket, response: Response) {
+                        webSocket.close(1008, "invalid api key")
+                    }
+                },
+            ),
+        )
+        server.start()
+        val client = ThalovantClient(identity(), noiseStore = HiveMindNoiseStore(stateDir), protocol = HubProtocol.WSS)
+        val failure = assertFailsWith<ThalovantIdentityException> { runBlocking { client.connect() } }
+        // The server's own words are never echoed back to the caller.
+        assertFalse(failure.message.orEmpty().contains("invalid api key"))
+        assertTrue(failure.message.orEmpty().contains("Pair this client"))
+    }
+
+    /** Any other early close still reads as a connection problem. */
+    @Test
+    fun `an ordinary early close is still a connection failure`() {
+        server.enqueue(
+            MockResponse().withWebSocketUpgrade(
+                object : WebSocketListener() {
+                    override fun onOpen(webSocket: WebSocket, response: Response) {
+                        webSocket.close(1011, "internal error")
+                    }
+                },
+            ),
+        )
+        server.start()
+        val client = ThalovantClient(identity(), noiseStore = HiveMindNoiseStore(stateDir), protocol = HubProtocol.WSS)
+        val failure = assertFailsWith<ThalovantConnectionException> { runBlocking { client.connect() } }
+        assertTrue(failure.message.orEmpty().contains("1011"))
+    }
+
 }
