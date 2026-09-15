@@ -8,14 +8,14 @@
       "implementation": {
         "src/main/kotlin/com/thalovant/sdk/ControlPlane.kt": "1dde66bddc9824e6fa56cdd2a5b500c9587458a903a5f09339d394caecb71073",
         "src/main/kotlin/com/thalovant/sdk/Hubs.kt": "7f77d01990106a91859e808359c44c1c7b17897bc5b63e81892618281294c244",
-        "src/main/kotlin/com/thalovant/sdk/NativeSignIn.kt": "d36c6a92c07044d059ab14a1af7379ef086ba136c88be590e4c61669fe5ddb93"
+        "src/main/kotlin/com/thalovant/sdk/NativeSignIn.kt": "e70368a425b18dfc218a19a2ab76dc59bee9ba6c425fcacfd6c36327332e4384"
       },
       "reason": "Applicable public behavior is implemented and exercised by the named regression suites and shared fixtures. The authorization-code grant with PKCE is covered here alongside the device grant: the challenge is checked to be S256 of the verifier, the verifier never to reach the browser, a redirect answering a different attempt or carrying error= to be refused, and the token exchange to refuse cleartext to a non-loopback host.",
       "status": "required",
       "tests": {
         "src/test/kotlin/com/thalovant/sdk/ControlPlaneTest.kt": "35d3f8bdcbed7ce92bec95dcf7a711d37862b461bba44c3691d1d888f50b1189",
         "src/test/kotlin/com/thalovant/sdk/HubSkillsTest.kt": "8950dfd274888338586289b92f6bb72a9eb6ca0a36d0113123c9f7f7f6a4f21e",
-        "src/test/kotlin/com/thalovant/sdk/NativeSignInTest.kt": "e036cdbfeb9c28d85208319956bb2e963c429e3df15f549203865f5d198a6550",
+        "src/test/kotlin/com/thalovant/sdk/NativeSignInTest.kt": "b50d6cae0b7303ae6098a27e5d782020e3cbc32fdb9c2227274c9fbeef45604b",
         "src/test/kotlin/com/thalovant/sdk/SdkGapsTest.kt": "6bb55aac24057f94e91b05657a906240c4222b8bd8010576e934b6ecea7d5364"
       }
     },
@@ -88,7 +88,8 @@
     "676e935e66330f8614d6c23cccddd48e1c4577c3af761775f18e1ea0128b8007",
     "8b71292c815a4b7219be7b1a7a5d01e9500faaa23e7c97c6a48683fc0411e1d0",
     "e1a17c218e70eb278e4a06161314076269c6d7f3fd24afc522711e1eedb2c2e8",
-    "c1b37fdf37eba918c14fcbd234d02a4c80ffd6a72a55c3db5566cd8ed59e7a5b"
+    "c1b37fdf37eba918c14fcbd234d02a4c80ffd6a72a55c3db5566cd8ed59e7a5b",
+    "c18d57ee45159a53773222e64586c9d36769ebc55475d1a283dc483296bb9107"
   ],
   "schema_version": 1
 }

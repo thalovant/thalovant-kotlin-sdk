@@ -136,6 +136,11 @@ public object NativeSignIn {
     public fun isThalovantUrl(url: String): Boolean {
         val uri = runCatching { URI(url) }.getOrNull() ?: return false
         if (!uri.scheme.equals("https", ignoreCase = true)) return false
+        // Reject embedded credentials. `https://evil.test@dash.thalovant.com/`
+        // has a host that passes, and thalovant-android refused it on purpose
+        // before this existed: a URL somebody is about to be sent to should
+        // not read as one host and resolve to another.
+        if (uri.rawUserInfo != null) return false
         val host = uri.host?.lowercase() ?: return false
         return host == "thalovant.com" || host.endsWith(".thalovant.com")
     }
