@@ -469,6 +469,68 @@ public class ThalovantControlPlane(
         }
     }
 
+    /**
+     * Exchange an authorization code for a scoped access token and store it.
+     *
+     * The other half of [NativeSignIn]. The verifier is sent here and nowhere
+     * else; it never entered the browser, which is what makes an intercepted
+     * code useless to whoever intercepted it.
+     *
+     * A code presented twice revokes the token the first exchange minted
+     * (RFC 9700), so retrying a failed exchange with the same code destroys
+     * the token it is trying to obtain. Start again from [NativeSignIn.begin].
+     */
+    public suspend fun completeNativeSignIn(
+        code: String,
+        verifier: String,
+        clientId: String,
+        redirectUri: String,
+    ): JsonObject {
+        requireSecureTokenExchange()
+        val body = buildJsonObject {
+            put("grant_type", "authorization_code")
+            put("code", code)
+            put("code_verifier", verifier)
+            put("client_id", clientId)
+            put("redirect_uri", redirectUri)
+        }
+        val token = request("POST", "/v1/auth/native/token", body = body, auth = false)
+        val accessToken = (token["access_token"] as? JsonPrimitive)?.takeIf { it.isString }?.content
+        if (accessToken.isNullOrEmpty()) {
+            throw ThalovantApiException("Thalovant API token response did not include access_token.")
+        }
+        this.accessToken = accessToken
+        return token
+    }
+
+    /**
+     * Refuse to put an authorization code and its PKCE verifier on the wire in
+     * cleartext.
+     *
+     * [apiUrl] accepts an `http` scheme -- a self-hosted or local control
+     * plane may legitimately be served that way -- and `request()` hands
+     * whatever it is given to OkHttp without looking. Every other call that
+     * would leak over http leaks a bearer token the caller already holds; this
+     * one leaks the two secrets that are about to become one, and a code is
+     * exchangeable by whoever sees it first.
+     *
+     * Loopback is allowed, because a request that never leaves the machine has
+     * no cleartext to observe, and that is how the control plane is run while
+     * somebody is working on it.
+     */
+    private fun requireSecureTokenExchange() {
+        val uri = runCatching { java.net.URI(apiUrl) }.getOrNull()
+            ?: throw ThalovantApiException("Thalovant API URL could not be read: $apiUrl")
+        if (uri.scheme.equals("https", ignoreCase = true)) return
+        when (uri.host?.lowercase()) {
+            "localhost", "127.0.0.1", "::1", "[::1]" -> return
+        }
+        throw ThalovantApiException(
+            "Refusing to send an authorization code and PKCE verifier in cleartext to " +
+                "${uri.host ?: apiUrl}. Use https, or a loopback address while developing.",
+        )
+    }
+
     public suspend fun listHubs(limit: Int = 100, cursor: String? = null, ownerId: String? = null): JsonObject {
         val query = linkedMapOf("limit" to limit.toString())
         cursor?.takeIf { it.isNotEmpty() }?.let { query["cursor"] = it }
