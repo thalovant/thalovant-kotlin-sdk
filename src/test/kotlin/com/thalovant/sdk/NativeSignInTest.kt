@@ -167,7 +167,14 @@ class NativeSignInTest {
 
     @Test
     fun `a dashboard that is not safe to hand the request to is refused`() {
-        for (bad in listOf("http://dash.example.test", "https://evil.test@dash.thalovant.com", "ftp://dash.thalovant.com")) {
+        for (bad in listOf(
+            "http://dash.example.test",
+            "https://evil.test@dash.thalovant.com",
+            "ftp://dash.thalovant.com",
+            // A fragment puts every parameter somewhere a browser never sends.
+            "https://dash.example.test#section",
+            "https://dash.example.test?next=/x",
+        )) {
             assertFailsWith<IllegalArgumentException>(bad) {
                 NativeSignIn.begin(clientId = "app", redirectUri = "app://auth", dashboardUrl = bad)
             }

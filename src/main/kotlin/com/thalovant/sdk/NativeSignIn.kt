@@ -157,6 +157,14 @@ public object NativeSignIn {
         return host == "thalovant.com" || host.endsWith(".thalovant.com")
     }
 
+    /**
+     * Whether a callback arrived at the address this attempt asked for.
+     *
+     * Scheme, host and path, with a trailing slash treated as absent: a
+     * browser may add or drop one, and it changes nothing about where the
+     * callback landed. The query is deliberately not compared -- it is the
+     * part carrying the answer.
+     */
     private fun sameTarget(got: URI, expected: String): Boolean {
         val want = runCatching { URI(expected) }.getOrNull() ?: return false
         return got.scheme.equals(want.scheme, ignoreCase = true) &&
@@ -178,6 +186,14 @@ public object NativeSignIn {
         val uri = runCatching { URI(dashboardUrl) }.getOrNull()
             ?: throw IllegalArgumentException("dashboardUrl is not a URL: $dashboardUrl")
         require(uri.rawUserInfo == null) { "dashboardUrl must not carry credentials." }
+        // A query or a fragment breaks the address this builds. "<dash>#x"
+        // becomes "<dash>#x/authorize?client_id=..." -- every parameter lands
+        // in the fragment, which a browser never sends, so the authorize
+        // endpoint receives nothing and says nothing. A query mangles the path
+        // the same way. A plain path is fine: "<dash>/app" works.
+        require(uri.rawQuery == null && uri.rawFragment == null) {
+            "dashboardUrl must not carry a query or a fragment."
+        }
         if (uri.scheme.equals("https", ignoreCase = true)) return
         if (uri.scheme.equals("http", ignoreCase = true) && isLoopback(uri.host)) return
         throw IllegalArgumentException(
@@ -189,12 +205,15 @@ public object NativeSignIn {
     internal fun isLoopback(host: String?): Boolean =
         host?.lowercase() in setOf("localhost", "127.0.0.1", "::1", "[::1]")
 
+    /** Random bytes as base64url with no padding, for a verifier or a state. */
     private fun randomUrlSafe(bytes: Int): String =
         base64Url.encodeToString(ByteArray(bytes).also(random::nextBytes))
 
+    /** Percent-encode for a query value, with a space as %20 rather than +. */
     private fun encode(value: String): String =
         java.net.URLEncoder.encode(value, "UTF-8").replace("+", "%20")
 
+    /** Undo [encode]. A value that will not decode is returned as it arrived. */
     private fun decode(value: String): String =
         runCatching { java.net.URLDecoder.decode(value, "UTF-8") }.getOrDefault(value)
 }
