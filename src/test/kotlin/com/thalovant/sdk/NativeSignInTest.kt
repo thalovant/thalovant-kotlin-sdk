@@ -154,4 +154,28 @@ class NativeSignInTest {
             )
         }
     }
+
+    @Test
+    fun `a callback arriving somewhere else is refused`() {
+        // CodeRabbit: state proves the answer belongs to this request; it does
+        // not prove it came back to the app that made it.
+        val begun = NativeSignIn.begin(clientId = "app", redirectUri = "app://auth")
+        assertEquals("abc", begun.codeFrom("app://auth?code=abc&state=${begun.state}"))
+        assertNull(begun.codeFrom("app://elsewhere?code=abc&state=${begun.state}"))
+        assertNull(begun.codeFrom("https://evil.test/auth?code=abc&state=${begun.state}"))
+    }
+
+    @Test
+    fun `a dashboard that is not safe to hand the request to is refused`() {
+        for (bad in listOf("http://dash.example.test", "https://evil.test@dash.thalovant.com", "ftp://dash.thalovant.com")) {
+            assertFailsWith<IllegalArgumentException>(bad) {
+                NativeSignIn.begin(clientId = "app", redirectUri = "app://auth", dashboardUrl = bad)
+            }
+        }
+        // Self-hosted https is real, and loopback never leaves the machine.
+        for (good in listOf("https://dash.example.test", "http://localhost:9000", "http://127.0.0.1:9000")) {
+            val begun = NativeSignIn.begin(clientId = "app", redirectUri = "app://auth", dashboardUrl = good)
+            assertTrue(begun.authorizationUrl.startsWith(good), good)
+        }
+    }
 }

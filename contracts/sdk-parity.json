@@ -6,16 +6,16 @@
     },
     "control": {
       "implementation": {
-        "src/main/kotlin/com/thalovant/sdk/ControlPlane.kt": "ef25d6e730b33c6402b826976e5deb2dfae0322bfdccb99e9120d74829156b6e",
+        "src/main/kotlin/com/thalovant/sdk/ControlPlane.kt": "edebd173c8304449ec499ef236316ce59df9bf27b3e67ed014e4c81a4de498e0",
         "src/main/kotlin/com/thalovant/sdk/Hubs.kt": "7f77d01990106a91859e808359c44c1c7b17897bc5b63e81892618281294c244",
-        "src/main/kotlin/com/thalovant/sdk/NativeSignIn.kt": "e70368a425b18dfc218a19a2ab76dc59bee9ba6c425fcacfd6c36327332e4384"
+        "src/main/kotlin/com/thalovant/sdk/NativeSignIn.kt": "aa5aedbeec0bf713cfa7555cf43a5584bafbc72c96a33fe241a4a6d7102f19df"
       },
       "reason": "Applicable public behavior is implemented and exercised by the named regression suites and shared fixtures. The authorization-code grant with PKCE is covered here alongside the device grant: the challenge is checked to be S256 of the verifier, the verifier never to reach the browser, a redirect answering a different attempt or carrying error= to be refused, and the token exchange to refuse cleartext to a non-loopback host.",
       "status": "required",
       "tests": {
         "src/test/kotlin/com/thalovant/sdk/ControlPlaneTest.kt": "35d3f8bdcbed7ce92bec95dcf7a711d37862b461bba44c3691d1d888f50b1189",
         "src/test/kotlin/com/thalovant/sdk/HubSkillsTest.kt": "8950dfd274888338586289b92f6bb72a9eb6ca0a36d0113123c9f7f7f6a4f21e",
-        "src/test/kotlin/com/thalovant/sdk/NativeSignInTest.kt": "b50d6cae0b7303ae6098a27e5d782020e3cbc32fdb9c2227274c9fbeef45604b",
+        "src/test/kotlin/com/thalovant/sdk/NativeSignInTest.kt": "c104dd4204cc80ad8e560e76c1ef34c1ca82d7cf6c0d8298faa3fea6891cdbaf",
         "src/test/kotlin/com/thalovant/sdk/SdkGapsTest.kt": "6bb55aac24057f94e91b05657a906240c4222b8bd8010576e934b6ecea7d5364"
       }
     },
@@ -90,7 +90,8 @@
     "e1a17c218e70eb278e4a06161314076269c6d7f3fd24afc522711e1eedb2c2e8",
     "c1b37fdf37eba918c14fcbd234d02a4c80ffd6a72a55c3db5566cd8ed59e7a5b",
     "c18d57ee45159a53773222e64586c9d36769ebc55475d1a283dc483296bb9107",
-    "d02b21380724ae606673f1b7e74b57f7962c2dea1b0640fe642856c2f2be97e2"
+    "d02b21380724ae606673f1b7e74b57f7962c2dea1b0640fe642856c2f2be97e2",
+    "8c8c6d952c7d86633eb65eee20415f06ee114389b3cd5efc138e59a858ffdbab"
   ],
   "schema_version": 1
 }
