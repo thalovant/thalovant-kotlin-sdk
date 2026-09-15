@@ -642,6 +642,25 @@ public class ThalovantControlPlane(
         )
 
     /**
+     * Deletes one client via `DELETE /v1/clients/{clientId}`.
+     *
+     * A client is a connection, and connections are counted against a plan. An
+     * app that mints a new client every time somebody pairs, without removing
+     * the one it made last time, spends its own allowance: on a plan that
+     * allows a single connection, the second attempt is refused because of the
+     * first. That is what this exists to prevent.
+     *
+     * Like [deleteHub] this route requires the client's current [etag], sent
+     * as `If-Match`; a stale or missing value fails with HTTP 412. The etag
+     * comes back from the call that created the client.
+     *
+     * Requires a token with the `clients:write` scope.
+     */
+    public suspend fun deleteClient(clientId: String, etag: String) {
+        request("DELETE", "/v1/clients/${encodePathSegment(clientId)}", headers = mapOf("If-Match" to etag))
+    }
+
+    /**
      * Deletes a hub and its dependent clients and ACLs via
      * `DELETE /v1/hubs/{hubId}`.
      *

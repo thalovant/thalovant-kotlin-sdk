@@ -1365,6 +1365,28 @@ class ControlPlaneTest {
     fun `default user agent is derived from the SDK version`() {
         assertEquals("ThalovantKotlinSDK/$SDK_VERSION", DEFAULT_USER_AGENT)
     }
+
+    /**
+     * A client is a connection, and connections are counted against a plan.
+     * An app that mints one per pairing without removing the last spends its
+     * own allowance, which on a one-connection plan means the second attempt
+     * is refused because of the first.
+     */
+    @Test
+    fun `deleteClient sends If-Match and encodes the id`() = runBlocking {
+        server.enqueue(MockResponse().setResponseCode(204))
+        val api = api(accessToken = "token")
+
+        api.deleteClient("client-cef72d17/../hubs", etag = "etag-9")
+
+        val request = server.takeRequest()
+        assertEquals("DELETE", request.method)
+        assertEquals("etag-9", request.getHeader("If-Match"))
+        // The id is a path segment, not a path: a client id carrying a slash
+        // must not be able to address a different route.
+        assertEquals("/api/v1/clients/client-cef72d17%2F..%2Fhubs", request.requestUrl?.encodedPath)
+    }
+
 }
 
 private val DEVICE_GRANT = """
