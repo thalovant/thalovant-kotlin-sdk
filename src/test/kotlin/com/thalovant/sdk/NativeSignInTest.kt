@@ -3,6 +3,7 @@ package com.thalovant.sdk
 import java.net.URI
 import java.security.MessageDigest
 import java.util.Base64
+import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -113,5 +114,42 @@ class NativeSignInTest {
         assertFalse(NativeSignIn.isThalovantUrl("https://dash.thalovant.com.evil.test"))
         assertFalse(NativeSignIn.isThalovantUrl("https://notthalovant.com"))
         assertFalse(NativeSignIn.isThalovantUrl("nonsense"))
+    }
+
+    @Test
+    fun `a refusal that also carries a code is still a refusal`() {
+        // CodeRabbit caught this: checking only for a missing code accepted
+        // `error=access_denied&code=...` and would have started an exchange on
+        // a code the authorization server had just declined to issue.
+        val begun = NativeSignIn.begin(clientId = "app", redirectUri = "app://auth")
+        assertNull(begun.codeFrom("app://auth?error=access_denied&code=abc&state=${begun.state}"))
+        assertNull(begun.codeFrom("app://auth?code=abc&error=server_error&state=${begun.state}"))
+    }
+
+    @Test
+    fun `the token exchange refuses to put the code on the wire in cleartext`() = runBlocking {
+        val plane = ThalovantControlPlane(apiUrl = "http://control.example.test")
+        val failure = assertFailsWith<ThalovantApiException> {
+            plane.completeNativeSignIn("code", "verifier", "app", "app://auth")
+        }
+        assertTrue(failure.message!!.contains("cleartext"), failure.message!!)
+        // ...and nothing was sent, so no token was stored.
+        assertNull(plane.accessToken)
+    }
+
+    @Test
+    fun `loopback is allowed, because there is no cleartext to observe`() = runBlocking {
+        // Refused for the right reason -- it tried, and failed to connect --
+        // rather than refused by the scheme check.
+        for (host in listOf("http://localhost:8080", "http://127.0.0.1:8080")) {
+            val plane = ThalovantControlPlane(apiUrl = host)
+            val failure = runCatching {
+                plane.completeNativeSignIn("code", "verifier", "app", "app://auth")
+            }.exceptionOrNull()
+            assertTrue(
+                failure == null || !(failure.message ?: "").contains("cleartext"),
+                "loopback was refused by the scheme check: ${failure?.message}",
+            )
+        }
     }
 }

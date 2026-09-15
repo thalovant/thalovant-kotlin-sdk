@@ -63,7 +63,8 @@ public object NativeSignIn {
          * with, or null when it is not an answer to this attempt.
          *
          * Returns null rather than throwing on a state mismatch, a missing
-         * code, or an `error=` response: all three mean "do not continue", and
+         * code, or an `error=` response -- including one that also carries a
+         * code: all of those mean "do not continue", and
          * an app that treats them alike cannot accidentally treat one of them
          * as success.
          */
@@ -74,7 +75,11 @@ public object NativeSignIn {
                 if (index <= 0) return@mapNotNull null
                 decode(pair.substring(0, index)) to decode(pair.substring(index + 1))
             }.toMap()
-            if (parameters["state"] != state) return null
+            // An `error=` response is a refusal, and a refusal that also
+            // carries a code is still a refusal. Checking only for a missing
+            // code accepted that pair and started an exchange on it, which is
+            // the opposite of what the docs above promise.
+            if (parameters["state"] != state || "error" in parameters) return null
             return parameters["code"]?.takeIf { it.isNotEmpty() }
         }
     }
