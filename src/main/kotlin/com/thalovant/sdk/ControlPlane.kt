@@ -488,7 +488,6 @@ public class ThalovantControlPlane(
     ): JsonObject {
         requireSecureTokenExchange()
         val body = buildJsonObject {
-            put("grant_type", "authorization_code")
             put("code", code)
             put("code_verifier", verifier)
             put("client_id", clientId)

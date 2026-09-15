@@ -6,7 +6,7 @@
     },
     "control": {
       "implementation": {
-        "src/main/kotlin/com/thalovant/sdk/ControlPlane.kt": "1dde66bddc9824e6fa56cdd2a5b500c9587458a903a5f09339d394caecb71073",
+        "src/main/kotlin/com/thalovant/sdk/ControlPlane.kt": "ef25d6e730b33c6402b826976e5deb2dfae0322bfdccb99e9120d74829156b6e",
         "src/main/kotlin/com/thalovant/sdk/Hubs.kt": "7f77d01990106a91859e808359c44c1c7b17897bc5b63e81892618281294c244",
         "src/main/kotlin/com/thalovant/sdk/NativeSignIn.kt": "e70368a425b18dfc218a19a2ab76dc59bee9ba6c425fcacfd6c36327332e4384"
       },
@@ -89,7 +89,8 @@
     "8b71292c815a4b7219be7b1a7a5d01e9500faaa23e7c97c6a48683fc0411e1d0",
     "e1a17c218e70eb278e4a06161314076269c6d7f3fd24afc522711e1eedb2c2e8",
     "c1b37fdf37eba918c14fcbd234d02a4c80ffd6a72a55c3db5566cd8ed59e7a5b",
-    "c18d57ee45159a53773222e64586c9d36769ebc55475d1a283dc483296bb9107"
+    "c18d57ee45159a53773222e64586c9d36769ebc55475d1a283dc483296bb9107",
+    "d02b21380724ae606673f1b7e74b57f7962c2dea1b0640fe642856c2f2be97e2"
   ],
   "schema_version": 1
 }
