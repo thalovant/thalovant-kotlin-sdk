@@ -488,7 +488,6 @@ public class ThalovantControlPlane(
     ): JsonObject {
         requireSecureTokenExchange()
         val body = buildJsonObject {
-            put("grant_type", "authorization_code")
             put("code", code)
             put("code_verifier", verifier)
             put("client_id", clientId)
@@ -522,9 +521,7 @@ public class ThalovantControlPlane(
         val uri = runCatching { java.net.URI(apiUrl) }.getOrNull()
             ?: throw ThalovantApiException("Thalovant API URL could not be read: $apiUrl")
         if (uri.scheme.equals("https", ignoreCase = true)) return
-        when (uri.host?.lowercase()) {
-            "localhost", "127.0.0.1", "::1", "[::1]" -> return
-        }
+        if (NativeSignIn.isLoopback(uri.host)) return
         throw ThalovantApiException(
             "Refusing to send an authorization code and PKCE verifier in cleartext to " +
                 "${uri.host ?: apiUrl}. Use https, or a loopback address while developing.",

@@ -57,6 +57,11 @@ public object NativeSignIn {
         public val state: String,
         /** Never send this to the browser. Exchanged with the code, once. */
         public val verifier: String,
+        /**
+         * What this attempt asked the callback to arrive at. One that lands
+         * anywhere else is not this attempt's, however good its state looks.
+         */
+        public val redirectUri: String,
     ) {
         /**
          * The authorization code out of the redirect the browser came back
@@ -69,7 +74,12 @@ public object NativeSignIn {
          * as success.
          */
         public fun codeFrom(redirect: String): String? {
-            val query = runCatching { URI(redirect) }.getOrNull()?.rawQuery ?: return null
+            val uri = runCatching { URI(redirect) }.getOrNull() ?: return null
+            // The callback has to arrive where this attempt asked it to. State
+            // proves the answer belongs to this request; the address proves it
+            // came back to the app that made it.
+            if (!sameTarget(uri, redirectUri)) return null
+            val query = uri.rawQuery ?: return null
             val parameters = query.split("&").mapNotNull { pair ->
                 val index = pair.indexOf('=')
                 if (index <= 0) return@mapNotNull null
@@ -99,6 +109,7 @@ public object NativeSignIn {
     ): Begun {
         require(clientId.isNotBlank()) { "clientId is required" }
         require(redirectUri.isNotBlank()) { "redirectUri is required" }
+        requireSafeDashboard(dashboardUrl)
         val verifier = randomUrlSafe(64)
         val state = randomUrlSafe(24)
         val query = listOf(
@@ -116,6 +127,7 @@ public object NativeSignIn {
             authorizationUrl = "${dashboardUrl.trimEnd('/')}/authorize?$query",
             state = state,
             verifier = verifier,
+            redirectUri = redirectUri.trim(),
         )
     }
 
@@ -136,16 +148,72 @@ public object NativeSignIn {
     public fun isThalovantUrl(url: String): Boolean {
         val uri = runCatching { URI(url) }.getOrNull() ?: return false
         if (!uri.scheme.equals("https", ignoreCase = true)) return false
+        // Reject embedded credentials. `https://evil.test@dash.thalovant.com/`
+        // has a host that passes, and thalovant-android refused it on purpose
+        // before this existed: a URL somebody is about to be sent to should
+        // not read as one host and resolve to another.
+        if (uri.rawUserInfo != null) return false
         val host = uri.host?.lowercase() ?: return false
         return host == "thalovant.com" || host.endsWith(".thalovant.com")
     }
 
+    /**
+     * Whether a callback arrived at the address this attempt asked for.
+     *
+     * Scheme, host and path, with a trailing slash treated as absent: a
+     * browser may add or drop one, and it changes nothing about where the
+     * callback landed. The query is deliberately not compared -- it is the
+     * part carrying the answer.
+     */
+    private fun sameTarget(got: URI, expected: String): Boolean {
+        val want = runCatching { URI(expected) }.getOrNull() ?: return false
+        return got.scheme.equals(want.scheme, ignoreCase = true) &&
+            got.host.equals(want.host, ignoreCase = true) &&
+            got.path.orEmpty().trimEnd('/') == want.path.orEmpty().trimEnd('/')
+    }
+
+    /**
+     * Refuse to hand the authorization request to a dashboard that cannot be
+     * trusted with it.
+     *
+     * The request carries the challenge, the scopes and the state. A caller may
+     * point this at their own dashboard -- a self-hosted control plane is a
+     * real thing -- but not at a cleartext one, and not at one whose address
+     * reads as a different host than it resolves to. Loopback is allowed: it
+     * never leaves the machine.
+     */
+    public fun requireSafeDashboard(dashboardUrl: String) {
+        val uri = runCatching { URI(dashboardUrl) }.getOrNull()
+            ?: throw IllegalArgumentException("dashboardUrl is not a URL: $dashboardUrl")
+        require(uri.rawUserInfo == null) { "dashboardUrl must not carry credentials." }
+        // A query or a fragment breaks the address this builds. "<dash>#x"
+        // becomes "<dash>#x/authorize?client_id=..." -- every parameter lands
+        // in the fragment, which a browser never sends, so the authorize
+        // endpoint receives nothing and says nothing. A query mangles the path
+        // the same way. A plain path is fine: "<dash>/app" works.
+        require(uri.rawQuery == null && uri.rawFragment == null) {
+            "dashboardUrl must not carry a query or a fragment."
+        }
+        if (uri.scheme.equals("https", ignoreCase = true)) return
+        if (uri.scheme.equals("http", ignoreCase = true) && isLoopback(uri.host)) return
+        throw IllegalArgumentException(
+            "dashboardUrl must be https (or a loopback address while developing), not $dashboardUrl",
+        )
+    }
+
+    /** Loopback, in both spellings a URI parser hands back for IPv6. */
+    internal fun isLoopback(host: String?): Boolean =
+        host?.lowercase() in setOf("localhost", "127.0.0.1", "::1", "[::1]")
+
+    /** Random bytes as base64url with no padding, for a verifier or a state. */
     private fun randomUrlSafe(bytes: Int): String =
         base64Url.encodeToString(ByteArray(bytes).also(random::nextBytes))
 
+    /** Percent-encode for a query value, with a space as %20 rather than +. */
     private fun encode(value: String): String =
         java.net.URLEncoder.encode(value, "UTF-8").replace("+", "%20")
 
+    /** Undo [encode]. A value that will not decode is returned as it arrived. */
     private fun decode(value: String): String =
         runCatching { java.net.URLDecoder.decode(value, "UTF-8") }.getOrDefault(value)
 }
