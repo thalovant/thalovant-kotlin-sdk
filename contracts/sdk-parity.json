@@ -7,10 +7,14 @@
         "src/main/kotlin/com/thalovant/sdk/Transport.kt": "98081dcebe8424be8f170a20a575b5086ecdb7e3ad455de92ff0a35376f0b414",
         "src/main/kotlin/com/thalovant/sdk/Wire.kt": "93f94cceadd854cb544c19787b4c1aa11bd0369c358448b94893896505cfd2ad"
       },
-      "reason": "A WIRE-1 decoder including the BINARY branch nothing else implements: the 4-bit payload type and the raw, bit-misaligned clip after it. onBinary delivers them. Tested against frames built by the reference encoder, and against the shared binary vectors.",
+      "reason": "HiveWire.decode branches on BINARY: four bits of payload type, then the clip itself, never parsed or inflated. onBinary() delivers it. Run against the shared binary vectors and against binary-frames.json, which is hivemind-bus-client's own encoder output rather than frames this SDK built for itself.",
       "status": "required",
       "tests": {
-        "src/test/kotlin/com/thalovant/sdk/BinaryFrameTest.kt": "da03185b5c13e0ee258e24930ea8e30cefaad98c3467a2675affb05a1edfdc9a"
+        "src/test/kotlin/com/thalovant/sdk/BinaryFrameTest.kt": "e4882ecf82465810244c690b8dedcead90bd1d359571436c9d0a973d8734ec3a"
+      },
+      "vectors": {
+        "binary-frames.json": "src/test/resources/thalovant/binary-frames.json",
+        "binary-vectors.json": "src/test/resources/thalovant/binary-vectors.json"
       }
     },
     "cli": {
@@ -41,6 +45,9 @@
       "status": "required",
       "tests": {
         "src/test/kotlin/com/thalovant/sdk/ConversationCarryTest.kt": "7b0b2c0b9405db06889ee41e6191b5b3ba0a99ee093b2c84b154b0b872fa19b9"
+      },
+      "vectors": {
+        "conversation-vectors.json": "src/test/resources/thalovant/conversation-vectors.json"
       }
     },
     "identity": {
@@ -63,7 +70,10 @@
       "status": "required",
       "tests": {
         "src/test/kotlin/com/thalovant/sdk/SessionInventoryTest.kt": "8564690078ffb87b9f93ad2c93df7bbef16c5328a2b99be82791c42f19e6073a",
-        "src/test/resources/thalovant/inventory-vectors.json": "4deb456540b8b08aa4b59f8366d4295318b743245e7936febbdb199eb2dcfae0"
+        "src/test/resources/thalovant/inventory-vectors.json": "f631ce993a84b21ae17d43f65ad4e062ebbd997ca7b9c02de4056c11ec73b1d0"
+      },
+      "vectors": {
+        "inventory-vectors.json": "src/test/resources/thalovant/inventory-vectors.json"
       }
     },
     "listing": {
@@ -75,7 +85,10 @@
       "status": "required",
       "tests": {
         "src/test/kotlin/com/thalovant/sdk/ListingTest.kt": "e60a44a679056a45f39a743df7a1f1e7701e626882dffad4d9f5aae58497ec13",
-        "src/test/resources/thalovant/question-vectors.json": "046a163f1340976ae5898da153f080dbdd9326a733c97c4acbe7c2302474286e"
+        "src/test/resources/thalovant/question-vectors.json": "a6ae21cb27eac6a33cf1026677f0c36be50f0e13faa7ce724bedc9a3b8bb8386"
+      },
+      "vectors": {
+        "question-vectors.json": "src/test/resources/thalovant/question-vectors.json"
       }
     },
     "mesh": {
@@ -88,6 +101,9 @@
       "status": "required",
       "tests": {
         "src/test/kotlin/com/thalovant/sdk/ConversationCarryTest.kt": "7b0b2c0b9405db06889ee41e6191b5b3ba0a99ee093b2c84b154b0b872fa19b9"
+      },
+      "vectors": {
+        "mesh-vectors.json": "src/test/resources/thalovant/mesh-vectors.json"
       }
     },
     "runtime": {
@@ -102,7 +118,10 @@
         "src/test/kotlin/com/thalovant/sdk/ReplyClaimsTest.kt": "48215df9f7ceeeb02f59298d22534506a4eb2e4bdf52075782b3cf2e2a3bb205",
         "src/test/kotlin/com/thalovant/sdk/RuntimeTest.kt": "559ff997f458d157cd3937b15429ab236788b073f4c04fc186a3fcb8f4cf3668",
         "src/test/kotlin/com/thalovant/sdk/TransportTest.kt": "cf384231402f3d755ca083077b1c9ec4f3693bd958a73ae7b8a6cf92e1b9bfc8",
-        "src/test/resources/thalovant/reply-claim-vectors.json": "bfcd4a649fa8ecb0cede0ccd495cdbdc1a9881760e4654cd776cf81bed558cb1"
+        "src/test/resources/thalovant/reply-claim-vectors.json": "45f2731589e612d5a849376d94073c57b0fef426a92e1d065c58c48442b1ffdc"
+      },
+      "vectors": {
+        "reply-claim-vectors.json": "src/test/resources/thalovant/reply-claim-vectors.json"
       }
     },
     "session": {
@@ -117,26 +136,10 @@
     }
   },
   "reference_digests": [
-    "1133ac83dca463a5b7c69c980d1b5db46a1314d08151b31508982ad1cf41b6c6",
-    "c13f62bf0c5ff9a8b06808542f89481f961e7c4e24af13928055598b76e2550c",
-    "2440dd10059c468ca5012a3e4e9e057c9bd2df7ef442eba1d5dcdeb4afb3eafd",
-    "4f17f2e999105c5629defd1c1ea71a197ecf725a9b559ff7b3bf9932638645bd",
-    "676e935e66330f8614d6c23cccddd48e1c4577c3af761775f18e1ea0128b8007",
-    "8b71292c815a4b7219be7b1a7a5d01e9500faaa23e7c97c6a48683fc0411e1d0",
-    "e1a17c218e70eb278e4a06161314076269c6d7f3fd24afc522711e1eedb2c2e8",
-    "c1b37fdf37eba918c14fcbd234d02a4c80ffd6a72a55c3db5566cd8ed59e7a5b",
-    "c18d57ee45159a53773222e64586c9d36769ebc55475d1a283dc483296bb9107",
-    "d02b21380724ae606673f1b7e74b57f7962c2dea1b0640fe642856c2f2be97e2",
-    "8c8c6d952c7d86633eb65eee20415f06ee114389b3cd5efc138e59a858ffdbab",
-    "20cc677bf3ca8d61c32f0f2d3fbf6562899cf83f951685d57a2bdd10e8d30a45",
-    "9ef680aa6e5dd5519ade3954b16ac14219117df45a87ca7112dca961fad7486d",
-    "c4973d48241c9f14e0aaf6aab6b4b1c7e798b81099d0c5783079af7b4a138392",
-    "a6fe69439f14c75a2cf37d14a2d2ad1e2426639def8e1757a738a3ec6683af17",
-    "8669034d6987af946303913780cce419efaff2a9181de7d46fbffe7092d7be9e",
-    "c0d883e69ee7fa301c6e4c1b1a5c433ed290d63f79a3e6b397fdb0a988d111fa",
     "49bab2a8922b69b5cd886e7acadf217cdaa78bd94bfb48374e2f4b1cde85dfc0",
     "003cdf02562e53bd24cc58ac8eb44411cc7ac42d06ba3bbfa46e82386ea92ef7",
-    "9af92bcafd77385cd7c9cfede859eeb3586f65d0b24c9dbff36352089e94821c"
+    "9af92bcafd77385cd7c9cfede859eeb3586f65d0b24c9dbff36352089e94821c",
+    "ed8b30df32ee8b385608cee8ebda39ccb04eb5079b73e8ccc23dca0c48d62449"
   ],
   "schema_version": 1
 }

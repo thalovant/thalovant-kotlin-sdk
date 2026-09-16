@@ -49,11 +49,13 @@ class BinaryFrameTest {
         }
     }
 
+    private fun case(name: String): JsonObject =
+        fixture("binary-frames.json")["cases"]!!.jsonArray
+            .map { it.jsonObject }.first { it["name"]!!.jsonPrimitive.content == name }
+
     @Test
     fun `rendered speech carries what was said`() {
-        val tts = fixture("binary-frames.json")["cases"]!!.jsonArray
-            .map { it.jsonObject }.first { it["expected_kind"]!!.jsonPrimitive.content == "tts_audio" }
-        val binary = decode(tts["frame"]!!.jsonPrimitive.content).binary!!
+        val binary = decode(case("rendered speech carries what was said")["frame"]!!.jsonPrimitive.content).binary!!
         assertEquals("Pfffft.", binary.utterance)
         assertEquals("fr-FR", binary.lang)
         assertEquals("prout.wav", binary.fileName)
@@ -63,12 +65,23 @@ class BinaryFrameTest {
     fun `metadata a hub did not send reads as absent`() {
         // An empty name is no name. Rendering it as "" would put a blank
         // filename in front of somebody as though the hub had sent one.
-        val raw = fixture("binary-frames.json")["cases"]!!.jsonArray
-            .map { it.jsonObject }.first { it["expected_kind"]!!.jsonPrimitive.content == "raw_audio" }
-        val binary = decode(raw["frame"]!!.jsonPrimitive.content).binary!!
+        val binary = decode(case("an empty name is no name")["frame"]!!.jsonPrimitive.content).binary!!
         assertNull(binary.utterance)
         assertNull(binary.lang)
         assertNull(binary.fileName)
+    }
+
+    @Test
+    fun `every case the shared vectors describe decodes as it says`() {
+        // The expectations and the frames come from the same reference: the
+        // vectors say what a decoded frame should look like, and the frames are
+        // hivemind-bus-client's own encoder output rather than bytes this SDK
+        // built for itself.
+        val vectors = fixture("binary-vectors.json")["cases"]!!.jsonArray.map { it.jsonObject }
+        for (row in vectors) {
+            val binary = decode(case(row["name"]!!.jsonPrimitive.content)["frame"]!!.jsonPrimitive.content).binary!!
+            assertEquals(row["expected"]!!.jsonObject["kind"]!!.jsonPrimitive.content, binary.kind)
+        }
     }
 
     @Test
@@ -93,8 +106,13 @@ class BinaryFrameTest {
     }
 
     @Test
-    fun `an unnamed payload type still arrives`() {
-        assertEquals("binary:9", HiveWire.nameForPayloadType(9))
+    fun `a payload type nobody named arrives under its number`() {
+        // Only 0-15 can travel: the wire field is four bits. The naming has to
+        // hold for every number all the same -- it is the last thing between a
+        // payload type nobody has named yet and a frame that disappears.
+        for ((wire, name) in fixture("binary-vectors.json")["unnamed_kind_names"]!!.jsonObject) {
+            assertEquals(name.jsonPrimitive.content, HiveWire.nameForPayloadType(wire.toInt()))
+        }
     }
 
     @Test
