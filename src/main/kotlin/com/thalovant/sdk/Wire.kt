@@ -82,6 +82,11 @@ internal object HiveWire {
         // A BINARY frame. The payload type is four bits, and the bytes after it
         // are the clip itself -- never compressed, never parsed.
         val kind = reader.readUInt(4)
+        // The reference encoder pads at the front, so what follows the four-bit
+        // kind lands on a byte boundary. One to seven bits left over means a
+        // malformed frame, and integer division would drop them silently and
+        // hand back the preceding bytes as though they were the whole clip.
+        reader.requireByteAligned()
         val metadata = json(text(metadataBytes, compressed))
         return Frame(
             msgType,
@@ -110,7 +115,15 @@ internal object HiveWire {
             val chunk = ByteArray(8192)
             while (!inflater.finished()) {
                 val read = inflater.inflate(chunk)
-                if (read == 0 && (inflater.needsInput() || inflater.needsDictionary())) break
+                if (read == 0 && (inflater.needsInput() || inflater.needsDictionary())) {
+                    // Truncated: the stream ended mid-block. Returning what had
+                    // accumulated handed back half the metadata, and the JSON
+                    // parse then fell back to an empty object -- so a truncated
+                    // frame was accepted as one carrying no metadata at all.
+                    throw ThalovantRuntimeException(
+                        "Malformed HiveMind binary frame: compressed block ends early.",
+                    )
+                }
                 out.write(chunk, 0, read)
             }
             return out.toByteArray()
@@ -156,6 +169,14 @@ internal object HiveWire {
                 throw ThalovantRuntimeException("Malformed HiveMind binary frame: truncated field.")
             }
             return ByteArray(count) { readUInt(8).toByte() }
+        }
+
+        fun requireByteAligned() {
+            if ((bits - offset) % 8 != 0) {
+                throw ThalovantRuntimeException(
+                    "Malformed HiveMind binary frame: payload is not byte-aligned.",
+                )
+            }
         }
 
         fun readRemainingBytes(): ByteArray = readBytes((bits - offset) / 8)

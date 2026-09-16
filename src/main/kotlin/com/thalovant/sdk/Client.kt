@@ -329,6 +329,15 @@ public class ThalovantClient(
                             // what the conversation now is, and it keeps none of
                             // it for a named session.
                             rememberConversation(effectiveSessionId, event.context)
+                            // And under the id the hub answered with, when it
+                            // differs. A reply's sessionId is the first
+                            // non-empty *event* session id, so a caller that
+                            // passes it to the next ask looked up a key
+                            // nothing was filed under.
+                            val answeredWith = event.sessionId
+                            if (!answeredWith.isNullOrEmpty() && answeredWith != effectiveSessionId) {
+                                rememberConversation(answeredWith, event.context)
+                            }
                             if (emptyStartedAt == null) emptyStartedAt = System.nanoTime()
                             events.add(event); handled.complete(Unit)
                         }

@@ -2,10 +2,10 @@
   "capabilities": {
     "binary": {
       "implementation": {
-        "src/main/kotlin/com/thalovant/sdk/Client.kt": "84ef8a2c95ae0616fdee2a3613c846cd9337a3d6290a0fed7739fc8d91f49aa9",
+        "src/main/kotlin/com/thalovant/sdk/Client.kt": "79efea407a7c7b1c6a3ef595c60b2dd631b6699b3418ad562e3d990588a139a9",
         "src/main/kotlin/com/thalovant/sdk/Events.kt": "d0758e6932ab0ccb610f6e99301ed8c92e5358c7e0958d2c3ffaa067938c0672",
         "src/main/kotlin/com/thalovant/sdk/Transport.kt": "98081dcebe8424be8f170a20a575b5086ecdb7e3ad455de92ff0a35376f0b414",
-        "src/main/kotlin/com/thalovant/sdk/Wire.kt": "93f94cceadd854cb544c19787b4c1aa11bd0369c358448b94893896505cfd2ad"
+        "src/main/kotlin/com/thalovant/sdk/Wire.kt": "272e73d0a8cb8cea83f7d457732485beb892601d07359afa788ca6fe8a79ee5d"
       },
       "reason": "HiveWire.decode branches on BINARY: four bits of payload type, then the clip itself, never parsed or inflated. onBinary() delivers it. Run against the shared binary vectors and against binary-frames.json, which is hivemind-bus-client's own encoder output rather than frames this SDK built for itself.",
       "status": "required",
@@ -38,13 +38,13 @@
     },
     "conversation": {
       "implementation": {
-        "src/main/kotlin/com/thalovant/sdk/Client.kt": "84ef8a2c95ae0616fdee2a3613c846cd9337a3d6290a0fed7739fc8d91f49aa9",
+        "src/main/kotlin/com/thalovant/sdk/Client.kt": "79efea407a7c7b1c6a3ef595c60b2dd631b6699b3418ad562e3d990588a139a9",
         "src/main/kotlin/com/thalovant/sdk/Events.kt": "d0758e6932ab0ccb610f6e99301ed8c92e5358c7e0958d2c3ffaa067938c0672"
       },
       "reason": "carryConversation() and the client's per-session memory, run against the shared conversation vectors.",
       "status": "required",
       "tests": {
-        "src/test/kotlin/com/thalovant/sdk/ConversationCarryTest.kt": "7b0b2c0b9405db06889ee41e6191b5b3ba0a99ee093b2c84b154b0b872fa19b9"
+        "src/test/kotlin/com/thalovant/sdk/ConversationCarryTest.kt": "a97276c0a8620000c5dff96f7f63326562e9208d2a42f39b935456839102531d"
       },
       "vectors": {
         "conversation-vectors.json": "src/test/resources/thalovant/conversation-vectors.json"
@@ -93,14 +93,14 @@
     },
     "mesh": {
       "implementation": {
-        "src/main/kotlin/com/thalovant/sdk/Client.kt": "84ef8a2c95ae0616fdee2a3613c846cd9337a3d6290a0fed7739fc8d91f49aa9",
+        "src/main/kotlin/com/thalovant/sdk/Client.kt": "79efea407a7c7b1c6a3ef595c60b2dd631b6699b3418ad562e3d990588a139a9",
         "src/main/kotlin/com/thalovant/sdk/Events.kt": "d0758e6932ab0ccb610f6e99301ed8c92e5358c7e0958d2c3ffaa067938c0672",
         "src/main/kotlin/com/thalovant/sdk/Transport.kt": "98081dcebe8424be8f170a20a575b5086ecdb7e3ad455de92ff0a35376f0b414"
       },
       "reason": "onHive() over the five hive kinds and propagate/escalate/broadcast, run against the shared mesh vectors.",
       "status": "required",
       "tests": {
-        "src/test/kotlin/com/thalovant/sdk/ConversationCarryTest.kt": "7b0b2c0b9405db06889ee41e6191b5b3ba0a99ee093b2c84b154b0b872fa19b9"
+        "src/test/kotlin/com/thalovant/sdk/ConversationCarryTest.kt": "a97276c0a8620000c5dff96f7f63326562e9208d2a42f39b935456839102531d"
       },
       "vectors": {
         "mesh-vectors.json": "src/test/resources/thalovant/mesh-vectors.json"

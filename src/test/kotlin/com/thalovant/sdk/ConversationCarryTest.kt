@@ -8,6 +8,10 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.put
+import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.coroutines.runBlocking
 
 /**
  * Carrying a conversation between the turns of a named session.
@@ -79,3 +83,51 @@ class ConversationCarryTest {
 
 private fun kotlinx.serialization.json.JsonElement.jsonPrimitiveContent(): String =
     (this as kotlinx.serialization.json.JsonPrimitive).content
+
+/** Captures what the three senders actually put on the wire. */
+private class CapturingHiveTransport : HiveMindRuntimeTransport {
+    val sent = mutableListOf<JsonObject>()
+    override val connected: Boolean = true
+    override val handshakeComplete: Boolean = true
+    override suspend fun sendHiveFrame(message: JsonObject) { sent += message }
+    override suspend fun connect(timeoutMs: Long) {}
+    override suspend fun disconnect() {}
+    override suspend fun emitBus(eventType: String, data: JsonObject, context: JsonObject) {}
+    override fun addBusListener(listener: (ThalovantEvent) -> Unit): ThalovantSubscription =
+        ThalovantSubscription {}
+}
+
+class MeshEnvelopeTest {
+    @Test
+    fun `every sender puts the same nested envelope on the wire`() = runBlocking {
+        // Asserting ThalovantHive.KINDS proves only that the names exist. A
+        // regression in the envelope sendHive builds -- the nested "bus" frame
+        // a hub reads message.payload as, and rewrites the route on -- would
+        // have passed that untouched.
+        val transport = CapturingHiveTransport()
+        val client = ThalovantClient(
+            ThalovantIdentity(
+                ThalovantJson.parseToJsonElement(
+                    """{"access_key":"access","password":"password","site_id":"site","default_master":"wss://hub.example"}"""
+                ).jsonObject,
+            ),
+            transport = transport,
+        )
+
+        client.propagate("thalovant.test", buildJsonObject { put("n", 1) })
+        client.escalate("thalovant.test", buildJsonObject { put("n", 2) })
+        client.broadcast("thalovant.test", buildJsonObject { put("n", 3) })
+
+        assertEquals(listOf("propagate", "escalate", "broadcast"),
+                     transport.sent.map { it["msg_type"]!!.jsonPrimitive.content })
+        transport.sent.forEachIndexed { index, frame ->
+            val inner = frame["payload"]!!.jsonObject
+            // Nested on purpose: a flat frame loses the route a hub rewrites.
+            assertEquals("bus", inner["msg_type"]!!.jsonPrimitive.content)
+            val bus = inner["payload"]!!.jsonObject
+            assertEquals("thalovant.test", bus["type"]!!.jsonPrimitive.content)
+            assertEquals(index + 1, bus["data"]!!.jsonObject["n"]!!.jsonPrimitive.content.toInt())
+            assertTrue("context" in bus, "the envelope carries no context")
+        }
+    }
+}
