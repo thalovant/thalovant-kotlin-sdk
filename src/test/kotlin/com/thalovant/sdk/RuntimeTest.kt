@@ -44,6 +44,50 @@ class RuntimeTest {
         """{"access_key":"access","password":"password","crypto_key":"0123456789abcdef","site_id":"site","default_master":"wss://hub.example"}"""
     ).jsonObject), transport = fake, replySettleMs = 0, emptyReplyWaitMs = 0)
 
+    @Test fun `both session aliases survive a full conversation store`() = runBlocking {
+        // Filed as two entries they aged and were evicted separately, so with
+        // the cache full the second could evict the first and a caller
+        // continuing under the id it sent found no carry.
+        val fake = RuntimeFake(); val sdk = client(fake)
+        val handlers = ThalovantJson.parseToJsonElement("""[{"skill_id":"a"}]""")
+        // The emitted context carries the correlation, so the reply has to be
+        // built on it rather than replacing it.
+        fun answerWith(sessionId: String): (JsonObject) -> Unit = { context ->
+            val session = buildJsonObject {
+                put("session_id", sessionId)
+                put("converse_handlers", handlers)
+            }
+            val next = LinkedHashMap(context); next["session"] = session
+            val reply = JsonObject(next)
+            fake.deliver(ThalovantEvent("speak", buildJsonObject { put("utterance", "x") }, reply))
+            fake.deliver(ThalovantEvent("ovos.utterance.handled", EMPTY_JSON_OBJECT, reply))
+        }
+        repeat(ThalovantClient.MAX_REMEMBERED_CONVERSATIONS) { index ->
+            fake.busAnswer = answerWith("filler-$index")
+            sdk.ask("fill", sessionId = "filler-$index")
+        }
+        // The hub answers this one under a translated id.
+        fake.busAnswer = answerWith("hub:sat-1")
+        sdk.ask("hi", sessionId = "sat-1")
+
+        // One conversation, two names: not two entries that age apart. Asserted
+        // on the store because a behavioural check cannot tell them apart --
+        // the reply-side path files the answering id on its own either way.
+        val bySat = sdk.conversations["sat-1"]
+        val byHub = sdk.conversations["hub:sat-1"]
+        assertTrue(bySat != null && byHub != null, "both ids must reach the conversation")
+        assertTrue(bySat === byHub, "the two ids must reach the SAME entry, not two that evict apart")
+
+        for (id in listOf("sat-1", "hub:sat-1")) {
+            fake.emitted.clear()
+            fake.busAnswer = answerWith(id)
+            sdk.ask("again", sessionId = id)
+            val sent = fake.emitted.first { it.name == "recognizer_loop:utterance" }
+            val session = sent.context["session"].asObjectOrNull()
+            assertTrue(session?.get("converse_handlers") != null, "$id sent no carried state")
+        }
+    }
+
     @Test fun `no bus listener outlives an ask, so a late handled cannot carry`() = runBlocking {
         // The carry question -- can a reply settle before the hub says what the
         // conversation now is? -- was measured on production rather than argued:

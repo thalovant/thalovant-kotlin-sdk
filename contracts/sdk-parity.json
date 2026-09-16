@@ -116,7 +116,7 @@
       "status": "required",
       "tests": {
         "src/test/kotlin/com/thalovant/sdk/ReplyClaimsTest.kt": "48215df9f7ceeeb02f59298d22534506a4eb2e4bdf52075782b3cf2e2a3bb205",
-        "src/test/kotlin/com/thalovant/sdk/RuntimeTest.kt": "1efd423c688f46b6b81c045b596436eb74355a93b296d9cd51fd28dc9a7c911a",
+        "src/test/kotlin/com/thalovant/sdk/RuntimeTest.kt": "ae4cd2c7d8e899b71e1851248ab1df1d7d7a3bb6da6db42f880f15bcbdb967dc",
         "src/test/kotlin/com/thalovant/sdk/TransportTest.kt": "cf384231402f3d755ca083077b1c9ec4f3693bd958a73ae7b8a6cf92e1b9bfc8",
         "src/test/resources/thalovant/reply-claim-vectors.json": "45f2731589e612d5a849376d94073c57b0fef426a92e1d065c58c48442b1ffdc"
       },

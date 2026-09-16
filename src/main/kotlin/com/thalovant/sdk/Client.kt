@@ -8,6 +8,7 @@ import kotlinx.coroutines.selects.select
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 
@@ -55,10 +56,15 @@ public class ThalovantClient(
      */
     /** A satellite runs one session for its whole life; the cap only bounds a
      *  caller that mints session ids faster than it retires them. */
-    private val conversations = object : LinkedHashMap<String?, JsonObject>(16, 0.75f, true) {
-        override fun removeEldestEntry(eldest: Map.Entry<String?, JsonObject>): Boolean =
-            size > 32
-    }
+    /** One conversation, however many session ids reach it. Filed as an entry
+     *  per id they aged and were evicted separately, so a caller continuing
+     *  under the id it sent could lose the carry while one using the hub's
+     *  answering id kept it -- and the cap counted names, not conversations. */
+    internal class ConversationEntry(val group: List<String?>, val kept: JsonObject)
+
+    // internal, not private: the grouping is the property worth asserting,
+    // and both ids reaching one entry is not observable from outside.
+    internal val conversations = LinkedHashMap<String?, ConversationEntry>(16, 0.75f, true)
     private val conversationLock = Any()
 
     private val correlationLock = Any()
@@ -241,25 +247,55 @@ public class ThalovantClient(
     }
 
     /** Keep the session a hub returned, to send with the next utterance. */
-    private fun rememberConversation(sessionId: String?, context: JsonObject) {
+    private fun rememberConversation(sessionIds: List<String?>, context: JsonObject) {
         val session = context["session"].asObjectOrNull() ?: return
         val kept = LinkedHashMap<String, kotlinx.serialization.json.JsonElement>()
         for (field in CONVERSATION_SESSION_FIELDS) {
             val value = session[field] ?: continue
             if (value is JsonArray && value.isEmpty()) continue
             if (value is JsonObject && value.isEmpty()) continue
+            // An empty scalar is not carried state: keeping `response_mode: ""`
+            // spent one of the entries the cap allows on a cleared session, so
+            // eviction could drop a session that still had state.
+            if (value is JsonPrimitive && value.isString && value.content.isEmpty()) continue
             kept[field] = value
         }
+        val keys = sessionIds.distinct().toMutableList()
+        if (keys.isEmpty()) return
         synchronized(conversationLock) {
+            // Take over every id these already reach rather than dropping them:
+            // a turn continued under the hub's id must not forget the id a
+            // satellite still uses for the same conversation.
+            var index = 0
+            while (index < keys.size) {
+                val previous = conversations.remove(keys[index])
+                if (previous != null) {
+                    for (sibling in previous.group) {
+                        conversations.remove(sibling)
+                        if (sibling !in keys) keys.add(sibling)
+                    }
+                }
+                index++
+            }
             // Forgetting is the state, not the absence of one: a turn that ended
             // with nothing active must not leave the old entry to resurrect it.
-            if (kept.isEmpty()) conversations.remove(sessionId) else conversations[sessionId] = JsonObject(kept)
+            if (kept.isEmpty()) return
+            // This turn's ids come first and inherited ones after, so the tail
+            // is the stalest: a hub answering under a fresh translated id
+            // (HIVEMIND-BRIDGE-1 §4) would otherwise grow one group for ever.
+            while (keys.size > MAX_CONVERSATION_ALIASES) keys.removeAt(keys.size - 1)
+            val entry = ConversationEntry(keys.toList(), JsonObject(kept))
+            for (key in keys) conversations[key] = entry
+            while (conversations.values.distinctBy { it }.size > MAX_REMEMBERED_CONVERSATIONS) {
+                val eldest = conversations.entries.first().value
+                for (sibling in eldest.group) conversations.remove(sibling)
+            }
         }
     }
 
     /** Put the last turn's conversation state back into this turn. */
     private fun continueConversation(context: JsonObject, sessionId: String?): JsonObject {
-        val previous = synchronized(conversationLock) { conversations[sessionId] } ?: return context
+        val previous = synchronized(conversationLock) { conversations[sessionId]?.kept } ?: return context
         val session = context["session"].asObjectOrNull() ?: EMPTY_JSON_OBJECT
         val carried = carryConversation(previous, session)
         if (carried == session) return context
@@ -331,14 +367,17 @@ public class ThalovantClient(
                             // The end of the turn is the one place a hub states
                             // what the conversation now is, and it keeps none of
                             // it for a named session.
-                            rememberConversation(effectiveSessionId, event.context)
-                            // And under the id the hub answered with, when it
-                            // differs: a satellite reuses its own id, an
-                            // ordinary caller is handed the reply's.
+                            // Both ids in one call: a satellite reuses its own,
+                            // an ordinary caller is handed the reply's. Filed
+                            // separately they aged and were evicted separately,
+                            // so with the cache full the second could evict the
+                            // first and the next turn found no carry.
                             val answeredWith = event.sessionId
+                            val keys = mutableListOf(effectiveSessionId)
                             if (!answeredWith.isNullOrBlank() && answeredWith != effectiveSessionId) {
-                                rememberConversation(answeredWith, event.context)
+                                keys.add(answeredWith)
                             }
+                            rememberConversation(keys, event.context)
                             handledContext = event.context
                             if (emptyStartedAt == null) emptyStartedAt = System.nanoTime()
                             events.add(event); handled.complete(Unit)
@@ -402,7 +441,7 @@ public class ThalovantClient(
                     val replySessionId = responseSessionId ?: effectiveSessionId
                     handledContext?.let { context ->
                         if (replySessionId != effectiveSessionId) {
-                            rememberConversation(replySessionId, context)
+                            rememberConversation(listOf(replySessionId), context)
                         }
                     }
                     return ThalovantReply(fragments.joinToString(" "), fragments.toList(), failure == null, failure == null,
@@ -453,6 +492,14 @@ public class ThalovantClient(
     ): List<IntentDefinition> = describeIntentRegistrations(skillId, intentName, lang, options)
 
     public companion object {
+        /** Concurrent conversations one client remembers. */
+        internal const val MAX_REMEMBERED_CONVERSATIONS = 32
+
+        /** Session ids one conversation answers to. The cap above counts a
+         *  group once, so without this a hub that re-translates the id every
+         *  turn could grow a single group without limit. */
+        internal const val MAX_CONVERSATION_ALIASES = 8
+
         public fun fromIdentityFile(path: Path, protocol: HubProtocol? = null): ThalovantClient =
             ThalovantClient(ThalovantIdentity.fromFile(path), protocol = protocol)
 
