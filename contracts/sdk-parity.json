@@ -2,7 +2,7 @@
   "capabilities": {
     "binary": {
       "implementation": {
-        "src/main/kotlin/com/thalovant/sdk/Client.kt": "bf6860f9c0d0507870910f7e7cb09f341fcc8825f24ecb24798337b11d0ee9d7",
+        "src/main/kotlin/com/thalovant/sdk/Client.kt": "7253a4c335240846d9e2532525d474f45a6e201f977202bd3731e162e3acefab",
         "src/main/kotlin/com/thalovant/sdk/Events.kt": "d0758e6932ab0ccb610f6e99301ed8c92e5358c7e0958d2c3ffaa067938c0672",
         "src/main/kotlin/com/thalovant/sdk/Transport.kt": "98081dcebe8424be8f170a20a575b5086ecdb7e3ad455de92ff0a35376f0b414",
         "src/main/kotlin/com/thalovant/sdk/Wire.kt": "9df50d1cc0435667e45add571f75e94dead3fe584590a4007d9ef1235d7c847e"
@@ -38,7 +38,7 @@
     },
     "conversation": {
       "implementation": {
-        "src/main/kotlin/com/thalovant/sdk/Client.kt": "bf6860f9c0d0507870910f7e7cb09f341fcc8825f24ecb24798337b11d0ee9d7",
+        "src/main/kotlin/com/thalovant/sdk/Client.kt": "7253a4c335240846d9e2532525d474f45a6e201f977202bd3731e162e3acefab",
         "src/main/kotlin/com/thalovant/sdk/Events.kt": "d0758e6932ab0ccb610f6e99301ed8c92e5358c7e0958d2c3ffaa067938c0672"
       },
       "reason": "carryConversation() and the client's per-session memory, run against the shared conversation vectors.",
@@ -93,7 +93,7 @@
     },
     "mesh": {
       "implementation": {
-        "src/main/kotlin/com/thalovant/sdk/Client.kt": "bf6860f9c0d0507870910f7e7cb09f341fcc8825f24ecb24798337b11d0ee9d7",
+        "src/main/kotlin/com/thalovant/sdk/Client.kt": "7253a4c335240846d9e2532525d474f45a6e201f977202bd3731e162e3acefab",
         "src/main/kotlin/com/thalovant/sdk/Events.kt": "d0758e6932ab0ccb610f6e99301ed8c92e5358c7e0958d2c3ffaa067938c0672",
         "src/main/kotlin/com/thalovant/sdk/Transport.kt": "98081dcebe8424be8f170a20a575b5086ecdb7e3ad455de92ff0a35376f0b414"
       },
