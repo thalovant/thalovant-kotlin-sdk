@@ -107,7 +107,10 @@ internal object HiveWire {
         (if (compressed) inflate(bytes) else bytes).toString(Charsets.UTF_8)
 
     private fun inflate(bytes: ByteArray): ByteArray {
-        if (bytes.isEmpty()) return bytes
+        // No early return for an empty input: a frame that says it is
+        // compressed and then carries nothing is a truncated stream, not empty
+        // metadata, and the loop below is what says so. Returning here let an
+        // incomplete stream decode to {}.
         val inflater = Inflater()
         try {
             inflater.setInput(bytes)
