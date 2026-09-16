@@ -3,6 +3,8 @@ package com.thalovant.sdk
 import java.nio.file.Files
 import java.nio.file.LinkOption.NOFOLLOW_LINKS
 import java.nio.file.Path
+import java.nio.file.Paths
+import java.nio.file.StandardCopyOption
 import java.nio.file.StandardOpenOption
 import java.nio.file.attribute.PosixFilePermissions
 import java.security.MessageDigest
@@ -57,12 +59,49 @@ public class HiveMindNoiseStore(public val directory: Path = defaultDirectory())
                 while (bytes.hasRemaining()) channel.write(bytes)
                 channel.force(true)
             }
-            // Hard-link publication is atomic and never replaces an existing key.
-            // Other processes can see only the complete, durable winner. A filesystem
-            // lacking hard links fails closed rather than publishing partial state.
-            Files.createLink(file, temporary)
+            publish(temporary, file)
         } finally { Files.deleteIfExists(temporary) }
     }
+    /**
+     * Put the finished temporary file in place under its real name.
+     *
+     * Hard-link publication is preferred: it is atomic, and it never replaces
+     * an existing key, so concurrent writers cannot destroy each other's and
+     * other processes see only the complete, durable winner.
+     *
+     * **Android refuses it.** `link(2)` is not permitted on app-private
+     * storage, so `createLink` raises `AccessDeniedException` and this store
+     * -- which failed closed rather than publish partial state -- made the
+     * whole v3 WSS transport unusable on a phone. Measured on an emulator on
+     * 2026-09-16: the temporary file is created, written and fsynced, and
+     * only the link is refused. The class note above already said to pass an
+     * app-private directory on Android; that is necessary and was not
+     * sufficient.
+     *
+     * So where linking is refused, fall back to an atomic rename, guarded by
+     * a check that nothing is there yet. `rename(2)` *would* replace an
+     * existing key, which is the property the link was chosen for, and the
+     * check narrows but does not close that window. It is sound in the place
+     * that needs it -- Android runs one process per app -- and both callers
+     * already re-read the file afterwards and adopt whichever key is really
+     * on disk, so a writer that loses the race ends up agreeing rather than
+     * corrupting. Not connecting at all was the worse answer.
+     */
+    private fun publish(temporary: Path, file: Path) {
+        try {
+            Files.createLink(file, temporary)
+            return
+        } catch (refused: Exception) {
+            if (refused !is UnsupportedOperationException && refused !is java.nio.file.AccessDeniedException) {
+                throw refused
+            }
+        }
+        // Same answer createLink gives for a name already taken, and both
+        // callers already treat it as "somebody else got there first".
+        if (Files.exists(file, NOFOLLOW_LINKS)) throw java.nio.file.FileAlreadyExistsException(file.toString())
+        Files.move(temporary, file, StandardCopyOption.ATOMIC_MOVE)
+    }
+
     private fun readKey(file: Path): ByteArray {
         require(Files.isRegularFile(file, NOFOLLOW_LINKS)) { "Noise state must be a regular file, not a symbolic link." }
         try {
@@ -71,10 +110,19 @@ public class HiveMindNoiseStore(public val directory: Path = defaultDirectory())
             }
         } catch (_: UnsupportedOperationException) { }
         require(Files.size(file) == 64L) { "Invalid stored Noise key length." }
-        return Noise.unhex(Files.readString(file)).also { require(it.size == 32) }
+        // Not Files.readString: that is Java 11 and Android's core-oj does
+        // not carry it, so it raises NoSuchMethodError -- on the socket
+        // callback, on the main thread, killing the app outright the moment a
+        // hub answered. readAllBytes has been there since java.nio.file
+        // arrived on Android. Measured on an emulator, 2026-09-16.
+        return Noise.unhex(String(Files.readAllBytes(file), Charsets.UTF_8)).also { require(it.size == 32) }
     }
     public companion object {
         private val lock = Any()
-        public fun defaultDirectory(): Path = Path.of(System.getProperty("user.home"), ".config", "thalovant-kotlin", "noise")
+        // Paths.get rather than Path.of for the same reason readKey avoids
+        // readString: the Java 11 spelling is not on every Android this
+        // supports, and the old one means exactly the same thing.
+        public fun defaultDirectory(): Path =
+            Paths.get(System.getProperty("user.home"), ".config", "thalovant-kotlin", "noise")
     }
 }
