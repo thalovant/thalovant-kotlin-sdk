@@ -656,6 +656,33 @@ public class ThalovantControlPlane(
      *
      * Requires a token with the `clients:write` scope.
      */
+    /**
+     * The clients on this account, newest page first, via `GET /v1/clients`.
+     *
+     * The `clients:read` scope existed with nothing to spend it on: an app
+     * could create a connection and delete one it had just made, but could
+     * not *find* one. That gap is why a phone whose app was reinstalled had
+     * no way to recognise the connection it had made before, and a plan
+     * allowing one connection then refused it -- with the only way out being
+     * to find the row in a dashboard and delete it by hand.
+     *
+     * [hubId] filters to one hub. Each row carries `id`, `name`, `hub_id` and
+     * the `etag` that [deleteClient] requires, so a caller can go straight
+     * from finding a connection to replacing it.
+     *
+     * Requires a token with `clients:read` or `clients:write`.
+     */
+    public suspend fun listClients(
+        hubId: String? = null,
+        limit: Int = 100,
+        cursor: String? = null,
+    ): JsonObject {
+        val query = linkedMapOf("limit" to limit.toString())
+        hubId?.takeIf { it.isNotEmpty() }?.let { query["hub_id"] = it }
+        cursor?.takeIf { it.isNotEmpty() }?.let { query["cursor"] = it }
+        return request("GET", "/v1/clients", query = query)
+    }
+
     public suspend fun deleteClient(clientId: String, etag: String) {
         request("DELETE", "/v1/clients/${encodePathSegment(clientId)}", headers = mapOf("If-Match" to etag))
     }
