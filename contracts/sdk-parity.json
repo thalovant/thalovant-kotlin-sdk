@@ -1,10 +1,17 @@
 {
   "capabilities": {
     "binary": {
-      "implementation": {},
-      "reason": "Not yet implemented: a BINARY frame is WIRE-1 bitstring-encoded and this transport decodes only UTF-8 JSON. No hub emits one today (hivemind-core listen never wires the audio protocol), so this is future work, recorded here rather than hidden.",
-      "status": "planned",
-      "tests": {}
+      "implementation": {
+        "src/main/kotlin/com/thalovant/sdk/Client.kt": "84ef8a2c95ae0616fdee2a3613c846cd9337a3d6290a0fed7739fc8d91f49aa9",
+        "src/main/kotlin/com/thalovant/sdk/Events.kt": "d0758e6932ab0ccb610f6e99301ed8c92e5358c7e0958d2c3ffaa067938c0672",
+        "src/main/kotlin/com/thalovant/sdk/Transport.kt": "98081dcebe8424be8f170a20a575b5086ecdb7e3ad455de92ff0a35376f0b414",
+        "src/main/kotlin/com/thalovant/sdk/Wire.kt": "93f94cceadd854cb544c19787b4c1aa11bd0369c358448b94893896505cfd2ad"
+      },
+      "reason": "A WIRE-1 decoder including the BINARY branch nothing else implements: the 4-bit payload type and the raw, bit-misaligned clip after it. onBinary delivers them. Tested against frames built by the reference encoder, and against the shared binary vectors.",
+      "status": "required",
+      "tests": {
+        "src/test/kotlin/com/thalovant/sdk/BinaryFrameTest.kt": "da03185b5c13e0ee258e24930ea8e30cefaad98c3467a2675affb05a1edfdc9a"
+      }
     },
     "cli": {
       "reason": "Python command line entry point; consumers expose idiomatic language APIs or MCP tools.",
@@ -27,8 +34,8 @@
     },
     "conversation": {
       "implementation": {
-        "src/main/kotlin/com/thalovant/sdk/Client.kt": "6a68cabcc048a7dfc2877ddfccb0bfde64417322702e0b28907bd3b0b49566ae",
-        "src/main/kotlin/com/thalovant/sdk/Events.kt": "5a20deeae48cc6f68329333cc8b1e126cf65e38fb947a317b409b18fded4e9a7"
+        "src/main/kotlin/com/thalovant/sdk/Client.kt": "84ef8a2c95ae0616fdee2a3613c846cd9337a3d6290a0fed7739fc8d91f49aa9",
+        "src/main/kotlin/com/thalovant/sdk/Events.kt": "d0758e6932ab0ccb610f6e99301ed8c92e5358c7e0958d2c3ffaa067938c0672"
       },
       "reason": "carryConversation() and the client's per-session memory, run against the shared conversation vectors.",
       "status": "required",
@@ -73,9 +80,9 @@
     },
     "mesh": {
       "implementation": {
-        "src/main/kotlin/com/thalovant/sdk/Client.kt": "6a68cabcc048a7dfc2877ddfccb0bfde64417322702e0b28907bd3b0b49566ae",
-        "src/main/kotlin/com/thalovant/sdk/Events.kt": "5a20deeae48cc6f68329333cc8b1e126cf65e38fb947a317b409b18fded4e9a7",
-        "src/main/kotlin/com/thalovant/sdk/Transport.kt": "4900c607b41e963ae1bb29db6e8bae24ef22dd7116979de3b0aaf4cb54623329"
+        "src/main/kotlin/com/thalovant/sdk/Client.kt": "84ef8a2c95ae0616fdee2a3613c846cd9337a3d6290a0fed7739fc8d91f49aa9",
+        "src/main/kotlin/com/thalovant/sdk/Events.kt": "d0758e6932ab0ccb610f6e99301ed8c92e5358c7e0958d2c3ffaa067938c0672",
+        "src/main/kotlin/com/thalovant/sdk/Transport.kt": "98081dcebe8424be8f170a20a575b5086ecdb7e3ad455de92ff0a35376f0b414"
       },
       "reason": "onHive() over the five hive kinds and propagate/escalate/broadcast, run against the shared mesh vectors.",
       "status": "required",
@@ -85,9 +92,9 @@
     },
     "runtime": {
       "implementation": {
-        "src/main/kotlin/com/thalovant/sdk/Events.kt": "5a20deeae48cc6f68329333cc8b1e126cf65e38fb947a317b409b18fded4e9a7",
+        "src/main/kotlin/com/thalovant/sdk/Events.kt": "d0758e6932ab0ccb610f6e99301ed8c92e5358c7e0958d2c3ffaa067938c0672",
         "src/main/kotlin/com/thalovant/sdk/Runtime.kt": "4d366a4d8338c8e3d114d9b0e55f749c7c22dee51c1e571d50eff373b53516aa",
-        "src/main/kotlin/com/thalovant/sdk/Transport.kt": "4900c607b41e963ae1bb29db6e8bae24ef22dd7116979de3b0aaf4cb54623329"
+        "src/main/kotlin/com/thalovant/sdk/Transport.kt": "98081dcebe8424be8f170a20a575b5086ecdb7e3ad455de92ff0a35376f0b414"
       },
       "reason": "Applicable public behavior is implemented and exercised by the named regression suites and shared fixtures. HiveMind #251/#252 only changes the Python upstream client dispatcher; this consumer uses native single-dispatch transports (MCP delegates to the Node SDK), or caller-owned frame parsing in embedded C. No Python HiveMind bus dependency or slave-protocol reinjection exists here. Python now requires fixed upstream 1.1.9a1 and removes its identity-based suppression; equal independent native frames remain distinct. Reply claim metadata follows the Python string-ID contract, with first-seen ordering, case-sensitive fallback stages and legacy unstamped success. Invalid non-string stamps are ignored. Embedded C exposes bounded extraction and claim classification while its caller retains ordered IDs.",
       "status": "required",

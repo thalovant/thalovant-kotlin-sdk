@@ -159,6 +159,25 @@ public class ThalovantClient(
         }
     }
 
+    /**
+     * Listen for binary frames: speech a hub rendered, and files.
+     *
+     * This is what a hub sends back for `speak:synth` -- the audio itself, so a
+     * client with no synthesiser can still speak -- and how it hands over a
+     * file. Returns a subscription that stops it.
+     *
+     * Delivered by subscription and not on a reply, because a binary frame
+     * carries no request id: it cannot be attributed to one `ask`. Its
+     * [ThalovantBinary.utterance] is the only thread back to a turn.
+     */
+    public fun onBinary(listener: (ThalovantBinary) -> Unit): ThalovantSubscription {
+        val wss = transport as? HiveMindWssTransport
+            ?: throw ThalovantUnsupportedProtocolException(
+                "This transport does not carry HiveMind binary frames.",
+            )
+        return wss.addBinaryListener(listener)
+    }
+
     /** Send an event across the hive; every node sees it once. */
     public suspend fun propagate(
         eventType: String,
