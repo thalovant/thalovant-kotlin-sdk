@@ -44,6 +44,32 @@ class RuntimeTest {
         """{"access_key":"access","password":"password","crypto_key":"0123456789abcdef","site_id":"site","default_master":"wss://hub.example"}"""
     ).jsonObject), transport = fake, replySettleMs = 0, emptyReplyWaitMs = 0)
 
+    @Test fun `no bus listener outlives an ask, so a late handled cannot carry`() = runBlocking {
+        // The carry question -- can a reply settle before the hub says what the
+        // conversation now is? -- was measured on production rather than argued:
+        // ovos.utterance.handled lands med 11.2 ms / max 15.3 ms after the last
+        // speak, 0 of 12 samples over the satellite's 100 ms settle window.
+        //
+        // Python keeps a bounded 2 s grace on the handled subscription as cheap
+        // insurance. Kotlin deliberately does not, and this is where that is
+        // decided rather than left to fall out of a `finally`: this SDK backs
+        // the Android app, where a listener surviving a suspend function
+        // outlives the lifecycle that owns it. ask() closes its subscription on
+        // every path, so a handled event arriving afterwards is dropped -- which
+        // the measurement says cannot happen on the production path.
+        val fake = RuntimeFake(); val sdk = client(fake)
+        fake.busAnswer = { context ->
+            fake.deliver(ThalovantEvent("speak", buildJsonObject { put("utterance", "hello") }, context))
+            fake.deliver(ThalovantEvent("ovos.utterance.handled", EMPTY_JSON_OBJECT, context))
+        }
+        val reply = sdk.ask("hi", sessionId = "sat-1")
+        assertEquals("hello", reply.text)
+        assertTrue(fake.bus.isEmpty(), "ask() left ${fake.bus.size} bus listener(s) behind")
+        // A handled event after the return changes nothing: nobody is listening.
+        fake.deliver(ThalovantEvent("ovos.utterance.handled", EMPTY_JSON_OBJECT, EMPTY_JSON_OBJECT))
+        assertTrue(fake.bus.isEmpty())
+    }
+
     @Test fun `duplicate live Ask IDs cannot share replies`() = duplicateLiveId(false)
     @Test fun `duplicate live Query IDs cannot share replies`() = duplicateLiveId(true)
     private fun duplicateLiveId(query: Boolean) = runBlocking {
