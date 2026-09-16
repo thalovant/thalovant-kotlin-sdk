@@ -114,6 +114,48 @@ class RuntimeTest {
         }
     }
 
+    @Test fun `the carry is filed under the session id ask returns`() = runBlocking {
+        // `responseSessionId` is the first non-blank id from *any* event, so a
+        // speak carrying one and a handled event carrying another -- or none --
+        // returned an id nothing had been filed under, and the next ask() with
+        // it sent no carried state at all.
+        for (handledId in listOf("hub-handled", null)) {
+            val fake = RuntimeFake(); val sdk = client(fake)
+            val handlers = buildJsonObject {
+                put("converse_handlers", kotlinx.serialization.json.buildJsonArray {
+                    add(buildJsonObject { put("skill_id", "fart"); put("activated_at", 1.0) })
+                })
+            }
+            fake.busAnswer = { context ->
+                fake.deliver(ThalovantEvent(ThalovantEvents.SPEAK,
+                    buildJsonObject { put("utterance", "Pfffft.") },
+                    contextWithCorrelation(context, sessionId = "hub-speak")))
+                val handledContext = buildJsonObject {
+                    context.forEach { (key, value) -> if (key != "session") put(key, value) }
+                    put("session", buildJsonObject {
+                        handlers.forEach { (key, value) -> put(key, value) }
+                        if (handledId != null) put("session_id", handledId)
+                    })
+                }
+                fake.deliver(ThalovantEvent(ThalovantEvents.UTTERANCE_HANDLED,
+                    EMPTY_JSON_OBJECT, handledContext))
+            }
+            val reply = withTimeout(2000) {
+                sdk.ask("Fais un prout", sessionId = "sat-1", replySettleMs = 0, emptyReplyWaitMs = 0)
+            }
+            assertEquals("hub-speak", reply.sessionId, "handledId=$handledId")
+
+            // The caller does the natural thing with what the reply handed back.
+            withTimeout(2000) {
+                sdk.ask("Encore un", sessionId = reply.sessionId,
+                        replySettleMs = 0, emptyReplyWaitMs = 0)
+            }
+            val sentSession = fake.emitted.last().context["session"]?.jsonObject
+            assertTrue(sentSession?.containsKey("converse_handlers") == true,
+                       "handledId=$handledId: the second turn carried $sentSession")
+        }
+    }
+
     @Test fun `ask freezes hard failures and ignores all subsequent speech`() = runBlocking {
         for (partial in listOf(false, true)) {
             val fake = RuntimeFake(); val sdk = client(fake)

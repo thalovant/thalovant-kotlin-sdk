@@ -2,7 +2,7 @@
   "capabilities": {
     "binary": {
       "implementation": {
-        "src/main/kotlin/com/thalovant/sdk/Client.kt": "79efea407a7c7b1c6a3ef595c60b2dd631b6699b3418ad562e3d990588a139a9",
+        "src/main/kotlin/com/thalovant/sdk/Client.kt": "bf6860f9c0d0507870910f7e7cb09f341fcc8825f24ecb24798337b11d0ee9d7",
         "src/main/kotlin/com/thalovant/sdk/Events.kt": "d0758e6932ab0ccb610f6e99301ed8c92e5358c7e0958d2c3ffaa067938c0672",
         "src/main/kotlin/com/thalovant/sdk/Transport.kt": "98081dcebe8424be8f170a20a575b5086ecdb7e3ad455de92ff0a35376f0b414",
         "src/main/kotlin/com/thalovant/sdk/Wire.kt": "272e73d0a8cb8cea83f7d457732485beb892601d07359afa788ca6fe8a79ee5d"
@@ -38,7 +38,7 @@
     },
     "conversation": {
       "implementation": {
-        "src/main/kotlin/com/thalovant/sdk/Client.kt": "79efea407a7c7b1c6a3ef595c60b2dd631b6699b3418ad562e3d990588a139a9",
+        "src/main/kotlin/com/thalovant/sdk/Client.kt": "bf6860f9c0d0507870910f7e7cb09f341fcc8825f24ecb24798337b11d0ee9d7",
         "src/main/kotlin/com/thalovant/sdk/Events.kt": "d0758e6932ab0ccb610f6e99301ed8c92e5358c7e0958d2c3ffaa067938c0672"
       },
       "reason": "carryConversation() and the client's per-session memory, run against the shared conversation vectors.",
@@ -93,7 +93,7 @@
     },
     "mesh": {
       "implementation": {
-        "src/main/kotlin/com/thalovant/sdk/Client.kt": "79efea407a7c7b1c6a3ef595c60b2dd631b6699b3418ad562e3d990588a139a9",
+        "src/main/kotlin/com/thalovant/sdk/Client.kt": "bf6860f9c0d0507870910f7e7cb09f341fcc8825f24ecb24798337b11d0ee9d7",
         "src/main/kotlin/com/thalovant/sdk/Events.kt": "d0758e6932ab0ccb610f6e99301ed8c92e5358c7e0958d2c3ffaa067938c0672",
         "src/main/kotlin/com/thalovant/sdk/Transport.kt": "98081dcebe8424be8f170a20a575b5086ecdb7e3ad455de92ff0a35376f0b414"
       },
@@ -116,7 +116,7 @@
       "status": "required",
       "tests": {
         "src/test/kotlin/com/thalovant/sdk/ReplyClaimsTest.kt": "48215df9f7ceeeb02f59298d22534506a4eb2e4bdf52075782b3cf2e2a3bb205",
-        "src/test/kotlin/com/thalovant/sdk/RuntimeTest.kt": "559ff997f458d157cd3937b15429ab236788b073f4c04fc186a3fcb8f4cf3668",
+        "src/test/kotlin/com/thalovant/sdk/RuntimeTest.kt": "1efd423c688f46b6b81c045b596436eb74355a93b296d9cd51fd28dc9a7c911a",
         "src/test/kotlin/com/thalovant/sdk/TransportTest.kt": "cf384231402f3d755ca083077b1c9ec4f3693bd958a73ae7b8a6cf92e1b9bfc8",
         "src/test/resources/thalovant/reply-claim-vectors.json": "45f2731589e612d5a849376d94073c57b0fef426a92e1d065c58c48442b1ffdc"
       },
@@ -141,7 +141,8 @@
     "9af92bcafd77385cd7c9cfede859eeb3586f65d0b24c9dbff36352089e94821c",
     "ed8b30df32ee8b385608cee8ebda39ccb04eb5079b73e8ccc23dca0c48d62449",
     "083b2da8b256cd970b3050218d8d51f13e7355633913d086c9f4147d8790165b",
-    "1e8b76b34b755207bb754e5f4c7364334f14476dee70fce1d2687bfdc1545f30"
+    "1e8b76b34b755207bb754e5f4c7364334f14476dee70fce1d2687bfdc1545f30",
+    "f6a74ead44d53658228da3f4457334f3e922b67dd1e33b43c3ba8b6f7c066bf9"
   ],
   "schema_version": 1
 }

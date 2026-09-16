@@ -301,6 +301,9 @@ public class ThalovantClient(
             var softFailureEvent: ThalovantEvent? = null
             var operationFailure: Exception? = null
             var responseSessionId: String? = null
+            // What the handled turn said the conversation is, kept so the reply
+            // can file it under the id the caller is handed.
+            var handledContext: JsonObject? = null
             var firstSpeechAt: Long? = null
             var emptyStartedAt: Long? = null
             fun phaseRemaining(window: Long, since: Long?): Long = minOf(remaining(),
@@ -330,14 +333,13 @@ public class ThalovantClient(
                             // it for a named session.
                             rememberConversation(effectiveSessionId, event.context)
                             // And under the id the hub answered with, when it
-                            // differs. A reply's sessionId is the first
-                            // non-empty *event* session id, so a caller that
-                            // passes it to the next ask looked up a key
-                            // nothing was filed under.
+                            // differs: a satellite reuses its own id, an
+                            // ordinary caller is handed the reply's.
                             val answeredWith = event.sessionId
-                            if (!answeredWith.isNullOrEmpty() && answeredWith != effectiveSessionId) {
+                            if (!answeredWith.isNullOrBlank() && answeredWith != effectiveSessionId) {
                                 rememberConversation(answeredWith, event.context)
                             }
+                            handledContext = event.context
                             if (emptyStartedAt == null) emptyStartedAt = System.nanoTime()
                             events.add(event); handled.complete(Unit)
                         }
@@ -391,8 +393,20 @@ public class ThalovantClient(
                     val failure = failureEvent ?: if (fragments.isEmpty()) softFailureEvent else null
                     if (failure == null && fragments.isEmpty()) throw ThalovantTimeoutException("Hub handled the utterance without a speak reply within the request budget.")
                     if (failure != null && fragments.isEmpty()) throw ThalovantRuntimeException(failure.text.ifEmpty { "Hub reported ${failure.name}." })
+                    // And under exactly the id `ask()` is about to return.
+                    // `responseSessionId` is the first non-blank id from *any*
+                    // event, so a speak carrying one and a handled event
+                    // carrying another -- or none -- returned an id nothing had
+                    // been filed under, and the next ask() with it sent no
+                    // carried state at all.
+                    val replySessionId = responseSessionId ?: effectiveSessionId
+                    handledContext?.let { context ->
+                        if (replySessionId != effectiveSessionId) {
+                            rememberConversation(replySessionId, context)
+                        }
+                    }
                     return ThalovantReply(fragments.joinToString(" "), fragments.toList(), failure == null, failure == null,
-                        responseSessionId ?: effectiveSessionId, effectiveRequestId, events.toList(), failure, mediaBudget.dropped)
+                        replySessionId, effectiveRequestId, events.toList(), failure, mediaBudget.dropped)
                 }
             } finally { operation.cancel(); subscription.close() }
         } finally { correlation.close() }
