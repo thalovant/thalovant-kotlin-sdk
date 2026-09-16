@@ -61,4 +61,25 @@ class NoiseStoreAndroidTest {
         store.verifyOrPin("node-a", key)
         assertContentEquals(key, store.pin("node-a"))
     }
+
+    @Test
+    fun `publishing never replaces a key that is already there`() {
+        // The property hard-link publication was chosen for, and the reason
+        // the fallback is a plain move rather than ATOMIC_MOVE: a rename
+        // replaces, and replacing somebody else's published key is how two
+        // writers end up disagreeing with the hub about which one is real.
+        //
+        // Exercised through verifyOrPin, which writes, expects to lose when
+        // the name is taken, and then reads back whoever won. A second key
+        // for the same node must therefore be refused rather than accepted.
+        val directory = Files.createTempDirectory("noise-no-clobber")
+        val store = HiveMindNoiseStore(directory)
+        val first = ByteArray(32) { 1 }
+        val second = ByteArray(32) { 2 }
+        store.verifyOrPin("node-a", first)
+
+        val rejected = runCatching { store.verifyOrPin("node-a", second) }
+        assertTrue(rejected.isFailure, "the second key overwrote the first")
+        assertContentEquals(first, store.pin("node-a"), "the first key did not survive")
+    }
 }

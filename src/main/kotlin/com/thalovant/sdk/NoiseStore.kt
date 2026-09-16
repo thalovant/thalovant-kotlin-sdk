@@ -4,7 +4,6 @@ import java.nio.file.Files
 import java.nio.file.LinkOption.NOFOLLOW_LINKS
 import java.nio.file.Path
 import java.nio.file.Paths
-import java.nio.file.StandardCopyOption
 import java.nio.file.StandardOpenOption
 import java.nio.file.attribute.PosixFilePermissions
 import java.security.MessageDigest
@@ -78,14 +77,18 @@ public class HiveMindNoiseStore(public val directory: Path = defaultDirectory())
      * app-private directory on Android; that is necessary and was not
      * sufficient.
      *
-     * So where linking is refused, fall back to an atomic rename, guarded by
-     * a check that nothing is there yet. `rename(2)` *would* replace an
-     * existing key, which is the property the link was chosen for, and the
-     * check narrows but does not close that window. It is sound in the place
-     * that needs it -- Android runs one process per app -- and both callers
-     * already re-read the file afterwards and adopt whichever key is really
-     * on disk, so a writer that loses the race ends up agreeing rather than
-     * corrupting. Not connecting at all was the worse answer.
+     * So where linking is refused, fall back to a plain move, which is
+     * specified to fail when the target already exists -- the same answer
+     * createLink gives, and the same `FileAlreadyExistsException` both
+     * callers already read as "somebody got there first" before re-reading
+     * the winner.
+     *
+     * Deliberately *not* `ATOMIC_MOVE`: that is a rename, and a rename
+     * replaces, which is the one property the link was chosen for. Holding
+     * it off with an `exists()` check first only narrows the window and
+     * still lets a racing writer clobber a key somebody else published. The
+     * check belongs to the platform, which can make it against the real
+     * directory; this cannot.
      */
     private fun publish(temporary: Path, file: Path) {
         try {
@@ -96,10 +99,20 @@ public class HiveMindNoiseStore(public val directory: Path = defaultDirectory())
                 throw refused
             }
         }
-        // Same answer createLink gives for a name already taken, and both
-        // callers already treat it as "somebody else got there first".
-        if (Files.exists(file, NOFOLLOW_LINKS)) throw java.nio.file.FileAlreadyExistsException(file.toString())
-        Files.move(temporary, file, StandardCopyOption.ATOMIC_MOVE)
+        // No ATOMIC_MOVE, and no existence check of our own.
+        //
+        // ATOMIC_MOVE is a rename, and a rename replaces -- which is the one
+        // property createLink was chosen for. Guarding it with an exists()
+        // first only narrows that window, and leaves the racing writer to
+        // clobber a key somebody else had already published.
+        //
+        // A plain move is specified to fail when the target exists, which is
+        // exactly what createLink does, raising the same
+        // FileAlreadyExistsException that both callers already read as
+        // "somebody got there first" before re-reading the winner. The check
+        // belongs to the platform, which can make it against the real
+        // directory, rather than to this, which cannot.
+        Files.move(temporary, file)
     }
 
     private fun readKey(file: Path): ByteArray {
