@@ -138,6 +138,126 @@ public class ThalovantReply @JvmOverloads constructor(
     public val mediaEvents: List<ThalovantEvent> get() = events.filter { it.isAudio || it.name in listOf(ThalovantEvents.SPEAK, ThalovantEvents.OVOS_UTTERANCE_SPEAK) }
 }
 
+/**
+ * A binary frame a hub sent this client.
+ *
+ * This is how a hub answers `speak:synth`: it renders the utterance and sends
+ * the audio back rather than text, so a client with no synthesiser of its own
+ * can still speak. Files arrive the same way.
+ *
+ * It is *not* tied to a request. A binary frame carries no request id -- only
+ * the metadata below -- so it cannot be correlated to one `ask` and is
+ * delivered by subscription instead. Match it on [utterance] if a turn needs
+ * to claim it.
+ */
+public data class ThalovantBinary(
+    /**
+     * `tts_audio`, `file`, or `binary:<n>` for a wire type this SDK does not
+     * name yet -- unknown is still delivered, never dropped.
+     */
+    public val kind: String,
+    public val data: ByteArray,
+    public val metadata: JsonObject,
+) {
+    /** What was spoken, for rendered speech. The hub sends it beside the sound. */
+    public val utterance: String? get() = text("utterance")
+
+    public val lang: String? get() = text("lang")
+
+    /**
+     * The hub's own name for the bytes.
+     *
+     * Remote text naming a remote file: a hint, never a path to write to. A
+     * caller that saves this owes it the same care as any untrusted filename.
+     */
+    public val fileName: String? get() = text("file_name")
+
+    private fun text(key: String): String? =
+        (metadata[key] as? kotlinx.serialization.json.JsonPrimitive)
+            ?.takeIf { it.isString }?.content?.takeIf(String::isNotEmpty)
+
+    // ByteArray compares by identity, which inside a data class makes two
+    // equal frames unequal -- a trap worth closing where it is written.
+    override fun equals(other: Any?): Boolean =
+        this === other || (other is ThalovantBinary && kind == other.kind &&
+            data.contentEquals(other.data) && metadata == other.metadata)
+
+    override fun hashCode(): Int =
+        (kind.hashCode() * 31 + data.contentHashCode()) * 31 + metadata.hashCode()
+}
+
+/** The hive's own frame kinds, which a client may subscribe to. */
+public object ThalovantHive {
+    /** Aimed down at every child of a hub. */
+    public const val BROADCAST: String = "broadcast"
+
+    /** Walked across the whole hive, once per node. */
+    public const val PROPAGATE: String = "propagate"
+
+    /** Sent up to the parent. */
+    public const val ESCALATE: String = "escalate"
+
+    /** Addressed node to node. */
+    public const val INTERCOM: String = "intercom"
+
+    /** The mailbox peers use to find each other through NAT. */
+    public const val RENDEZVOUS: String = "rendezvous"
+
+    /**
+     * Every kind `onHive` accepts.
+     *
+     * `query` and `cascade` are deliberately absent: they are this client's own
+     * request/response traffic and `ask()` already owns them, so subscribing
+     * to one would quietly compete for the same replies.
+     */
+    public val KINDS: List<String> = listOf(BROADCAST, PROPAGATE, ESCALATE, INTERCOM, RENDEZVOUS)
+}
+
+/**
+ * Session fields a client carries from one turn of a conversation to the next.
+ *
+ * A hub keeps nothing for a *named* session: OVOS-SESSION-2 §2.2 makes the
+ * orchestrator stateless for those, so the carrier a client sends is the whole
+ * snapshot and whatever the last turn activated is discarded the moment it
+ * ends. Without `converse_handlers` the converse pipeline has no skill to poll
+ * and every follow-up -- "encore un", "another one" -- falls past it to the
+ * fallback.
+ *
+ * An allow-list, not a deny-list: a hub field nobody here has considered must
+ * not start replaying itself into later turns. Two groups are deliberately
+ * absent -- the caller's own per-turn settings (`lang`, `pipeline`, `site_id`),
+ * because a satellite decides the language per utterance from what it heard and
+ * a remembered one would silently outrank it; and the live device flags
+ * (`is_speaking`, `is_recording`), which describe a moment that has passed.
+ */
+public val CONVERSATION_SESSION_FIELDS: List<String> = listOf(
+    "converse_handlers",
+    "active_handlers",
+    "active_skills",
+    "context",
+    "utterance_states",
+    "response_mode",
+)
+
+/**
+ * Fill the conversation fields of [session] from the hub's last reply.
+ *
+ * This turn's own values win: a field the caller set is never overwritten, only
+ * one it left out is taken from the turn before.
+ */
+public fun carryConversation(previous: JsonObject?, session: JsonObject): JsonObject {
+    if (previous == null || previous.isEmpty()) return session
+    val carried = LinkedHashMap<String, kotlinx.serialization.json.JsonElement>(session)
+    for (field in CONVERSATION_SESSION_FIELDS) {
+        val value = previous[field] ?: continue
+        if (field in carried) continue
+        if (value is JsonArray && value.isEmpty()) continue
+        if (value is JsonObject && value.isEmpty()) continue
+        carried[field] = value
+    }
+    return JsonObject(carried)
+}
+
 public fun newSessionId(): String = "thalovant-session-" + UUID.randomUUID().toString().replace("-", "")
 
 public fun newRequestId(): String = "thalovant-request-" + UUID.randomUUID().toString().replace("-", "")

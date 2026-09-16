@@ -44,6 +44,76 @@ class RuntimeTest {
         """{"access_key":"access","password":"password","crypto_key":"0123456789abcdef","site_id":"site","default_master":"wss://hub.example"}"""
     ).jsonObject), transport = fake, replySettleMs = 0, emptyReplyWaitMs = 0)
 
+    @Test fun `both session aliases survive a full conversation store`() = runBlocking {
+        // Filed as two entries they aged and were evicted separately, so with
+        // the cache full the second could evict the first and a caller
+        // continuing under the id it sent found no carry.
+        val fake = RuntimeFake(); val sdk = client(fake)
+        val handlers = ThalovantJson.parseToJsonElement("""[{"skill_id":"a"}]""")
+        // The emitted context carries the correlation, so the reply has to be
+        // built on it rather than replacing it.
+        fun answerWith(sessionId: String): (JsonObject) -> Unit = { context ->
+            val session = buildJsonObject {
+                put("session_id", sessionId)
+                put("converse_handlers", handlers)
+            }
+            val next = LinkedHashMap(context); next["session"] = session
+            val reply = JsonObject(next)
+            fake.deliver(ThalovantEvent("speak", buildJsonObject { put("utterance", "x") }, reply))
+            fake.deliver(ThalovantEvent("ovos.utterance.handled", EMPTY_JSON_OBJECT, reply))
+        }
+        repeat(ThalovantClient.MAX_REMEMBERED_CONVERSATIONS) { index ->
+            fake.busAnswer = answerWith("filler-$index")
+            sdk.ask("fill", sessionId = "filler-$index")
+        }
+        // The hub answers this one under a translated id.
+        fake.busAnswer = answerWith("hub:sat-1")
+        sdk.ask("hi", sessionId = "sat-1")
+
+        // One conversation, two names: not two entries that age apart. Asserted
+        // on the store because a behavioural check cannot tell them apart --
+        // the reply-side path files the answering id on its own either way.
+        val bySat = sdk.conversations["sat-1"]
+        val byHub = sdk.conversations["hub:sat-1"]
+        assertTrue(bySat != null && byHub != null, "both ids must reach the conversation")
+        assertTrue(bySat === byHub, "the two ids must reach the SAME entry, not two that evict apart")
+
+        for (id in listOf("sat-1", "hub:sat-1")) {
+            fake.emitted.clear()
+            fake.busAnswer = answerWith(id)
+            sdk.ask("again", sessionId = id)
+            val sent = fake.emitted.first { it.name == "recognizer_loop:utterance" }
+            val session = sent.context["session"].asObjectOrNull()
+            assertTrue(session?.get("converse_handlers") != null, "$id sent no carried state")
+        }
+    }
+
+    @Test fun `no bus listener outlives an ask, so a late handled cannot carry`() = runBlocking {
+        // The carry question -- can a reply settle before the hub says what the
+        // conversation now is? -- was measured on production rather than argued:
+        // ovos.utterance.handled lands med 11.2 ms / max 15.3 ms after the last
+        // speak, 0 of 12 samples over the satellite's 100 ms settle window.
+        //
+        // Python keeps a bounded 2 s grace on the handled subscription as cheap
+        // insurance. Kotlin deliberately does not, and this is where that is
+        // decided rather than left to fall out of a `finally`: this SDK backs
+        // the Android app, where a listener surviving a suspend function
+        // outlives the lifecycle that owns it. ask() closes its subscription on
+        // every path, so a handled event arriving afterwards is dropped -- which
+        // the measurement says cannot happen on the production path.
+        val fake = RuntimeFake(); val sdk = client(fake)
+        fake.busAnswer = { context ->
+            fake.deliver(ThalovantEvent("speak", buildJsonObject { put("utterance", "hello") }, context))
+            fake.deliver(ThalovantEvent("ovos.utterance.handled", EMPTY_JSON_OBJECT, context))
+        }
+        val reply = sdk.ask("hi", sessionId = "sat-1")
+        assertEquals("hello", reply.text)
+        assertTrue(fake.bus.isEmpty(), "ask() left ${fake.bus.size} bus listener(s) behind")
+        // A handled event after the return changes nothing: nobody is listening.
+        fake.deliver(ThalovantEvent("ovos.utterance.handled", EMPTY_JSON_OBJECT, EMPTY_JSON_OBJECT))
+        assertTrue(fake.bus.isEmpty())
+    }
+
     @Test fun `duplicate live Ask IDs cannot share replies`() = duplicateLiveId(false)
     @Test fun `duplicate live Query IDs cannot share replies`() = duplicateLiveId(true)
     private fun duplicateLiveId(query: Boolean) = runBlocking {
@@ -111,6 +181,48 @@ class RuntimeTest {
                 else assertFailsWith<ThalovantTimeoutException> { sdk.ask("test", timeoutMs = 250, emptyReplyWaitMs = 60000) }
             }
             assertTrue(fake.bus.isEmpty())
+        }
+    }
+
+    @Test fun `the carry is filed under the session id ask returns`() = runBlocking {
+        // `responseSessionId` is the first non-blank id from *any* event, so a
+        // speak carrying one and a handled event carrying another -- or none --
+        // returned an id nothing had been filed under, and the next ask() with
+        // it sent no carried state at all.
+        for (handledId in listOf("hub-handled", null)) {
+            val fake = RuntimeFake(); val sdk = client(fake)
+            val handlers = buildJsonObject {
+                put("converse_handlers", kotlinx.serialization.json.buildJsonArray {
+                    add(buildJsonObject { put("skill_id", "fart"); put("activated_at", 1.0) })
+                })
+            }
+            fake.busAnswer = { context ->
+                fake.deliver(ThalovantEvent(ThalovantEvents.SPEAK,
+                    buildJsonObject { put("utterance", "Pfffft.") },
+                    contextWithCorrelation(context, sessionId = "hub-speak")))
+                val handledContext = buildJsonObject {
+                    context.forEach { (key, value) -> if (key != "session") put(key, value) }
+                    put("session", buildJsonObject {
+                        handlers.forEach { (key, value) -> put(key, value) }
+                        if (handledId != null) put("session_id", handledId)
+                    })
+                }
+                fake.deliver(ThalovantEvent(ThalovantEvents.UTTERANCE_HANDLED,
+                    EMPTY_JSON_OBJECT, handledContext))
+            }
+            val reply = withTimeout(2000) {
+                sdk.ask("Fais un prout", sessionId = "sat-1", replySettleMs = 0, emptyReplyWaitMs = 0)
+            }
+            assertEquals("hub-speak", reply.sessionId, "handledId=$handledId")
+
+            // The caller does the natural thing with what the reply handed back.
+            withTimeout(2000) {
+                sdk.ask("Encore un", sessionId = reply.sessionId,
+                        replySettleMs = 0, emptyReplyWaitMs = 0)
+            }
+            val sentSession = fake.emitted.last().context["session"]?.jsonObject
+            assertTrue(sentSession?.containsKey("converse_handlers") == true,
+                       "handledId=$handledId: the second turn carried $sentSession")
         }
     }
 

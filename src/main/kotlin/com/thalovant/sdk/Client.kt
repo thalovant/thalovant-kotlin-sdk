@@ -6,7 +6,11 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.selects.select
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 
 /**
  * Data-plane client for talking to a Thalovant hub with a client identity.
@@ -41,6 +45,27 @@ public class ThalovantClient(
         transport.disconnect()
         connected = false
     }
+
+    /**
+     * The conversation each session id is in the middle of.
+     *
+     * A hub is stateless for a named session, so what the last turn activated
+     * comes back on `ovos.utterance.handled` and has to be sent again with the
+     * next utterance or it is gone. Bounded: a long-lived client handed a
+     * fresh session id per turn must not accumulate one entry per turn.
+     */
+    /** A satellite runs one session for its whole life; the cap only bounds a
+     *  caller that mints session ids faster than it retires them. */
+    /** One conversation, however many session ids reach it. Filed as an entry
+     *  per id they aged and were evicted separately, so a caller continuing
+     *  under the id it sent could lose the carry while one using the hub's
+     *  answering id kept it -- and the cap counted names, not conversations. */
+    internal class ConversationEntry(val group: List<String?>, val kept: JsonObject)
+
+    // internal, not private: the grouping is the property worth asserting,
+    // and both ids reaching one entry is not observable from outside.
+    internal val conversations = LinkedHashMap<String?, ConversationEntry>(16, 0.75f, true)
+    private val conversationLock = Any()
 
     private val correlationLock = Any()
     private val activeAskIds = mutableSetOf<String>()
@@ -118,6 +143,167 @@ public class ThalovantClient(
      * [emptyReplyWaitMs] for a late reply, then settles [replySettleMs] to catch
      * trailing fragments.
      */
+    /**
+     * Listen to one of the hive's own frame kinds.
+     *
+     * A hub relays more than this client's conversation: `broadcast` is aimed
+     * down at every child, `propagate` walks the whole hive, `escalate` goes up
+     * to the parent, `intercom` is addressed node to node, and `rendezvous` is
+     * the mailbox peers use to find each other through NAT.
+     *
+     * The frame arrives as the hub sent it, so nothing is lost in a shape this
+     * SDK does not model yet.
+     */
+    public fun onHive(kind: String, listener: (JsonObject) -> Unit): ThalovantSubscription {
+        require(kind in ThalovantHive.KINDS) {
+            // Named rather than silently never firing: subscribing to "bus" or
+            // to a typo is the kind of mistake that looks like a quiet hub.
+            "$kind is not a hive frame kind; expected one of ${ThalovantHive.KINDS.joinToString(", ")}"
+        }
+        return transport.addHiveMessageListener { frame ->
+            if (frame.optionalString("msg_type") == kind) listener(frame)
+        }
+    }
+
+    /**
+     * Listen for binary frames: speech a hub rendered, and files.
+     *
+     * This is what a hub sends back for `speak:synth` -- the audio itself, so a
+     * client with no synthesiser can still speak -- and how it hands over a
+     * file. Returns a subscription that stops it.
+     *
+     * Delivered by subscription and not on a reply, because a binary frame
+     * carries no request id: it cannot be attributed to one `ask`. Its
+     * [ThalovantBinary.utterance] is the only thread back to a turn.
+     */
+    public fun onBinary(listener: (ThalovantBinary) -> Unit): ThalovantSubscription {
+        val wss = transport as? HiveMindWssTransport
+            ?: throw ThalovantUnsupportedProtocolException(
+                "This transport does not carry HiveMind binary frames.",
+            )
+        return wss.addBinaryListener(listener)
+    }
+
+    /** Send an event across the hive; every node sees it once. */
+    public suspend fun propagate(
+        eventType: String,
+        data: JsonObject = EMPTY_JSON_OBJECT,
+        context: JsonObject = EMPTY_JSON_OBJECT,
+    ): Unit = sendHive(ThalovantHive.PROPAGATE, eventType, data, context)
+
+    /** Send an event up to the parent node. */
+    public suspend fun escalate(
+        eventType: String,
+        data: JsonObject = EMPTY_JSON_OBJECT,
+        context: JsonObject = EMPTY_JSON_OBJECT,
+    ): Unit = sendHive(ThalovantHive.ESCALATE, eventType, data, context)
+
+    /**
+     * Send an event down to every child of this hub. **Admin only.**
+     *
+     * A hub requires both admin standing and the `can_broadcast` grant, and a
+     * client that sends one without them is not answered with an error -- it is
+     * disconnected for misbehaviour. The same is true of `propagate` and
+     * `escalate` where an operator has revoked their grants, which are on by
+     * default.
+     *
+     * Nothing here can check first: a hub's HELLO carries its public key, its
+     * peer name and its node id, and says nothing about what this client may
+     * do. So a refusal arrives as a closed socket on the next read, not as an
+     * exception from this call.
+     */
+    public suspend fun broadcast(
+        eventType: String,
+        data: JsonObject = EMPTY_JSON_OBJECT,
+        context: JsonObject = EMPTY_JSON_OBJECT,
+    ): Unit = sendHive(ThalovantHive.BROADCAST, eventType, data, context)
+
+    /**
+     * Wrap a bus event in a hive frame and send it.
+     *
+     * The envelope is nested on purpose: a hub reads `message.payload` of a mesh
+     * frame as a HiveMessage of its own and re-stamps its route on it before
+     * forwarding, so a flat frame would lose the route.
+     */
+    private suspend fun sendHive(kind: String, eventType: String, data: JsonObject, context: JsonObject) {
+        val type = eventType.trim()
+        require(type.isNotEmpty()) { "A hive frame needs a non-empty event type." }
+        connect(12000)
+        transport.sendHiveFrame(buildJsonObject {
+            put("msg_type", kind)
+            put("payload", buildJsonObject {
+                put("msg_type", "bus")
+                put("payload", buildJsonObject {
+                    put("type", type)
+                    put("data", data)
+                    put("context", contextWithCorrelation(context, siteId = identity.siteId))
+                })
+                put("metadata", EMPTY_JSON_OBJECT)
+                put("route", JsonArray(emptyList()))
+            })
+            put("metadata", EMPTY_JSON_OBJECT)
+            put("route", JsonArray(emptyList()))
+        })
+    }
+
+    /** Keep the session a hub returned, to send with the next utterance. */
+    private fun rememberConversation(sessionIds: List<String?>, context: JsonObject) {
+        val session = context["session"].asObjectOrNull() ?: return
+        val kept = LinkedHashMap<String, kotlinx.serialization.json.JsonElement>()
+        for (field in CONVERSATION_SESSION_FIELDS) {
+            val value = session[field] ?: continue
+            if (value is JsonArray && value.isEmpty()) continue
+            if (value is JsonObject && value.isEmpty()) continue
+            // An empty scalar is not carried state: keeping `response_mode: ""`
+            // spent one of the entries the cap allows on a cleared session, so
+            // eviction could drop a session that still had state.
+            if (value is JsonPrimitive && value.isString && value.content.isEmpty()) continue
+            kept[field] = value
+        }
+        val keys = sessionIds.distinct().toMutableList()
+        if (keys.isEmpty()) return
+        synchronized(conversationLock) {
+            // Take over every id these already reach rather than dropping them:
+            // a turn continued under the hub's id must not forget the id a
+            // satellite still uses for the same conversation.
+            var index = 0
+            while (index < keys.size) {
+                val previous = conversations.remove(keys[index])
+                if (previous != null) {
+                    for (sibling in previous.group) {
+                        conversations.remove(sibling)
+                        if (sibling !in keys) keys.add(sibling)
+                    }
+                }
+                index++
+            }
+            // Forgetting is the state, not the absence of one: a turn that ended
+            // with nothing active must not leave the old entry to resurrect it.
+            if (kept.isEmpty()) return
+            // This turn's ids come first and inherited ones after, so the tail
+            // is the stalest: a hub answering under a fresh translated id
+            // (HIVEMIND-BRIDGE-1 §4) would otherwise grow one group for ever.
+            while (keys.size > MAX_CONVERSATION_ALIASES) keys.removeAt(keys.size - 1)
+            val entry = ConversationEntry(keys.toList(), JsonObject(kept))
+            for (key in keys) conversations[key] = entry
+            while (conversations.values.distinctBy { it }.size > MAX_REMEMBERED_CONVERSATIONS) {
+                val eldest = conversations.entries.first().value
+                for (sibling in eldest.group) conversations.remove(sibling)
+            }
+        }
+    }
+
+    /** Put the last turn's conversation state back into this turn. */
+    private fun continueConversation(context: JsonObject, sessionId: String?): JsonObject {
+        val previous = synchronized(conversationLock) { conversations[sessionId]?.kept } ?: return context
+        val session = context["session"].asObjectOrNull() ?: EMPTY_JSON_OBJECT
+        val carried = carryConversation(previous, session)
+        if (carried == session) return context
+        val next = LinkedHashMap<String, kotlinx.serialization.json.JsonElement>(context)
+        next["session"] = carried
+        return JsonObject(next)
+    }
+
     public suspend fun ask(
         text: String,
         timeoutMs: Long = 12000,
@@ -141,7 +327,8 @@ public class ThalovantClient(
         val correlation = reserveRuntimeId(effectiveRequestId, query = false)
         try {
             val effectiveSessionId = sessionId ?: newSessionId()
-            val fullContext = contextWithCorrelation(context, effectiveSessionId, identity.siteId, lang, effectiveRequestId)
+            val continued = continueConversation(context, effectiveSessionId)
+            val fullContext = contextWithCorrelation(continued, effectiveSessionId, identity.siteId, lang, effectiveRequestId)
             val lock = Any()
             val fragments = mutableListOf<String>()
             val events = mutableListOf<ThalovantEvent>()
@@ -150,6 +337,9 @@ public class ThalovantClient(
             var softFailureEvent: ThalovantEvent? = null
             var operationFailure: Exception? = null
             var responseSessionId: String? = null
+            // What the handled turn said the conversation is, kept so the reply
+            // can file it under the id the caller is handed.
+            var handledContext: JsonObject? = null
             var firstSpeechAt: Long? = null
             var emptyStartedAt: Long? = null
             fun phaseRemaining(window: Long, since: Long?): Long = minOf(remaining(),
@@ -174,6 +364,21 @@ public class ThalovantClient(
                             events.add(event)
                         }
                         ThalovantEvents.UTTERANCE_HANDLED -> {
+                            // The end of the turn is the one place a hub states
+                            // what the conversation now is, and it keeps none of
+                            // it for a named session.
+                            // Both ids in one call: a satellite reuses its own,
+                            // an ordinary caller is handed the reply's. Filed
+                            // separately they aged and were evicted separately,
+                            // so with the cache full the second could evict the
+                            // first and the next turn found no carry.
+                            val answeredWith = event.sessionId
+                            val keys = mutableListOf(effectiveSessionId)
+                            if (!answeredWith.isNullOrBlank() && answeredWith != effectiveSessionId) {
+                                keys.add(answeredWith)
+                            }
+                            rememberConversation(keys, event.context)
+                            handledContext = event.context
                             if (emptyStartedAt == null) emptyStartedAt = System.nanoTime()
                             events.add(event); handled.complete(Unit)
                         }
@@ -227,8 +432,20 @@ public class ThalovantClient(
                     val failure = failureEvent ?: if (fragments.isEmpty()) softFailureEvent else null
                     if (failure == null && fragments.isEmpty()) throw ThalovantTimeoutException("Hub handled the utterance without a speak reply within the request budget.")
                     if (failure != null && fragments.isEmpty()) throw ThalovantRuntimeException(failure.text.ifEmpty { "Hub reported ${failure.name}." })
+                    // And under exactly the id `ask()` is about to return.
+                    // `responseSessionId` is the first non-blank id from *any*
+                    // event, so a speak carrying one and a handled event
+                    // carrying another -- or none -- returned an id nothing had
+                    // been filed under, and the next ask() with it sent no
+                    // carried state at all.
+                    val replySessionId = responseSessionId ?: effectiveSessionId
+                    handledContext?.let { context ->
+                        if (replySessionId != effectiveSessionId) {
+                            rememberConversation(listOf(replySessionId), context)
+                        }
+                    }
                     return ThalovantReply(fragments.joinToString(" "), fragments.toList(), failure == null, failure == null,
-                        responseSessionId ?: effectiveSessionId, effectiveRequestId, events.toList(), failure, mediaBudget.dropped)
+                        replySessionId, effectiveRequestId, events.toList(), failure, mediaBudget.dropped)
                 }
             } finally { operation.cancel(); subscription.close() }
         } finally { correlation.close() }
@@ -275,6 +492,14 @@ public class ThalovantClient(
     ): List<IntentDefinition> = describeIntentRegistrations(skillId, intentName, lang, options)
 
     public companion object {
+        /** Concurrent conversations one client remembers. */
+        internal const val MAX_REMEMBERED_CONVERSATIONS = 32
+
+        /** Session ids one conversation answers to. The cap above counts a
+         *  group once, so without this a hub that re-translates the id every
+         *  turn could grow a single group without limit. */
+        internal const val MAX_CONVERSATION_ALIASES = 8
+
         public fun fromIdentityFile(path: Path, protocol: HubProtocol? = null): ThalovantClient =
             ThalovantClient(ThalovantIdentity.fromFile(path), protocol = protocol)
 
@@ -313,4 +538,5 @@ private fun transportForProtocol(
     HubProtocol.MQTT -> throw ThalovantUnsupportedProtocolException(
         "The MQTT transport is not supported by thalovant-kotlin-sdk. Use wss.",
     )
+
 }

@@ -56,6 +56,12 @@ public class HiveMindWssTransport(
     private val client: OkHttpClient = httpClient ?: defaultClient
     private val listeners = CopyOnWriteArrayList<(ThalovantEvent) -> Unit>()
     private val hiveListeners = CopyOnWriteArrayList<(JsonObject) -> Unit>()
+
+    /**
+     * Held on the transport and not on a connection, so a reconnect -- which
+     * replaces the socket -- keeps its subscribers.
+     */
+    private val binaryListeners = CopyOnWriteArrayList<(ThalovantBinary) -> Unit>()
     private var connectStartedNs: Long? = null
     private var connectDurationMs: Double? = null
     private var phase = "idle"
@@ -65,6 +71,12 @@ public class HiveMindWssTransport(
     override fun addHiveMessageListener(listener: (JsonObject) -> Unit): ThalovantSubscription {
         hiveListeners.add(listener)
         return ThalovantSubscription { hiveListeners.remove(listener) }
+    }
+
+    /** Listen for binary frames: speech a hub rendered, and files. */
+    public fun addBinaryListener(listener: (ThalovantBinary) -> Unit): ThalovantSubscription {
+        binaryListeners.add(listener)
+        return ThalovantSubscription { binaryListeners.remove(listener) }
     }
     override suspend fun sendHiveFrame(message: JsonObject) {
         val caller = kotlinx.coroutines.currentCoroutineContext()
@@ -345,7 +357,22 @@ public class HiveMindWssTransport(
             val session = noiseSession ?: error("Binary frame received before Noise authentication.")
             val frame = session.decrypt(bytes.toByteArray()) ?: return@receive emptyList()
             check(frame.second) { "Binary HiveMind payloads were not negotiated." }
-            handleRawMessage(frame.first.toString(Charsets.UTF_8), authenticated = true)
+            val decrypted = frame.first
+            // Text first, because that is what almost every frame is; a
+            // WIRE-1 frame is not valid JSON and falls through to the codec.
+            // Reading it as UTF-8 regardless is what silently lost a hub's
+            // rendered speech: the bytes are a clip, not a document.
+            val text = runCatching { decrypted.toString(Charsets.UTF_8) }.getOrNull()
+            if (text != null && text.trimStart().startsWith("{")) {
+                return@receive handleRawMessage(text, authenticated = true)
+            }
+            val decoded = runCatching { HiveWire.decode(decrypted) }.getOrNull()
+                ?: return@receive handleRawMessage(text ?: "", authenticated = true)
+            val binary = decoded.binary
+            if (binary != null) {
+                return@receive binaryListeners.toList().map { listener -> { listener(binary) } }
+            }
+            handleRawMessage(decoded.text ?: "", authenticated = true)
         }
         override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) = receive {
             // OkHttp/interceptor failures can contain the authorized request
