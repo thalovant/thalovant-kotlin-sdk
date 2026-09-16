@@ -1,5 +1,11 @@
 {
   "capabilities": {
+    "binary": {
+      "implementation": {},
+      "reason": "Not yet implemented: a BINARY frame is WIRE-1 bitstring-encoded and this transport decodes only UTF-8 JSON. No hub emits one today (hivemind-core listen never wires the audio protocol), so this is future work, recorded here rather than hidden.",
+      "status": "planned",
+      "tests": {}
+    },
     "cli": {
       "reason": "Python command line entry point; consumers expose idiomatic language APIs or MCP tools.",
       "status": "not-applicable"
@@ -17,6 +23,17 @@
         "src/test/kotlin/com/thalovant/sdk/HubSkillsTest.kt": "8950dfd274888338586289b92f6bb72a9eb6ca0a36d0113123c9f7f7f6a4f21e",
         "src/test/kotlin/com/thalovant/sdk/NativeSignInTest.kt": "97913b83a97354c571463dd3512f57740d85fb2b952d7eb4cecd894ef8b92bcc",
         "src/test/kotlin/com/thalovant/sdk/SdkGapsTest.kt": "6bb55aac24057f94e91b05657a906240c4222b8bd8010576e934b6ecea7d5364"
+      }
+    },
+    "conversation": {
+      "implementation": {
+        "src/main/kotlin/com/thalovant/sdk/Client.kt": "6a68cabcc048a7dfc2877ddfccb0bfde64417322702e0b28907bd3b0b49566ae",
+        "src/main/kotlin/com/thalovant/sdk/Events.kt": "5a20deeae48cc6f68329333cc8b1e126cf65e38fb947a317b409b18fded4e9a7"
+      },
+      "reason": "carryConversation() and the client's per-session memory, run against the shared conversation vectors.",
+      "status": "required",
+      "tests": {
+        "src/test/kotlin/com/thalovant/sdk/ConversationCarryTest.kt": "7b0b2c0b9405db06889ee41e6191b5b3ba0a99ee093b2c84b154b0b872fa19b9"
       }
     },
     "identity": {
@@ -54,9 +71,21 @@
         "src/test/resources/thalovant/question-vectors.json": "046a163f1340976ae5898da153f080dbdd9326a733c97c4acbe7c2302474286e"
       }
     },
+    "mesh": {
+      "implementation": {
+        "src/main/kotlin/com/thalovant/sdk/Client.kt": "6a68cabcc048a7dfc2877ddfccb0bfde64417322702e0b28907bd3b0b49566ae",
+        "src/main/kotlin/com/thalovant/sdk/Events.kt": "5a20deeae48cc6f68329333cc8b1e126cf65e38fb947a317b409b18fded4e9a7",
+        "src/main/kotlin/com/thalovant/sdk/Transport.kt": "4900c607b41e963ae1bb29db6e8bae24ef22dd7116979de3b0aaf4cb54623329"
+      },
+      "reason": "onHive() over the five hive kinds and propagate/escalate/broadcast, run against the shared mesh vectors.",
+      "status": "required",
+      "tests": {
+        "src/test/kotlin/com/thalovant/sdk/ConversationCarryTest.kt": "7b0b2c0b9405db06889ee41e6191b5b3ba0a99ee093b2c84b154b0b872fa19b9"
+      }
+    },
     "runtime": {
       "implementation": {
-        "src/main/kotlin/com/thalovant/sdk/Events.kt": "adf73f4b2d76a4f7546189d41e7cb68e1918c20e8607ca34a4f3b1e754a58764",
+        "src/main/kotlin/com/thalovant/sdk/Events.kt": "5a20deeae48cc6f68329333cc8b1e126cf65e38fb947a317b409b18fded4e9a7",
         "src/main/kotlin/com/thalovant/sdk/Runtime.kt": "4d366a4d8338c8e3d114d9b0e55f749c7c22dee51c1e571d50eff373b53516aa",
         "src/main/kotlin/com/thalovant/sdk/Transport.kt": "4900c607b41e963ae1bb29db6e8bae24ef22dd7116979de3b0aaf4cb54623329"
       },
@@ -99,7 +128,8 @@
     "8669034d6987af946303913780cce419efaff2a9181de7d46fbffe7092d7be9e",
     "c0d883e69ee7fa301c6e4c1b1a5c433ed290d63f79a3e6b397fdb0a988d111fa",
     "49bab2a8922b69b5cd886e7acadf217cdaa78bd94bfb48374e2f4b1cde85dfc0",
-    "003cdf02562e53bd24cc58ac8eb44411cc7ac42d06ba3bbfa46e82386ea92ef7"
+    "003cdf02562e53bd24cc58ac8eb44411cc7ac42d06ba3bbfa46e82386ea92ef7",
+    "9af92bcafd77385cd7c9cfede859eeb3586f65d0b24c9dbff36352089e94821c"
   ],
   "schema_version": 1
 }
