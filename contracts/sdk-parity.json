@@ -30,7 +30,7 @@
       "reason": "Applicable public behavior is implemented and exercised by the named regression suites and shared fixtures. The authorization-code grant with PKCE is covered here alongside the device grant: the challenge is checked to be S256 of the verifier, the verifier never to reach the browser, a redirect answering a different attempt or carrying error= to be refused, and the token exchange to refuse cleartext to a non-loopback host.",
       "status": "required",
       "tests": {
-        "src/test/kotlin/com/thalovant/sdk/ControlPlaneTest.kt": "fb012a33d771ccdc5f01cb6350d8fc3cf63ffeb68cc06c6a6ce8b2cffc05cb4c",
+        "src/test/kotlin/com/thalovant/sdk/ControlPlaneTest.kt": "5bc784fcb1ac1aef4ae04cd41e6303ef524f7abcbf14e874c38cd9dc050c0a1d",
         "src/test/kotlin/com/thalovant/sdk/HubSkillsTest.kt": "8950dfd274888338586289b92f6bb72a9eb6ca0a36d0113123c9f7f7f6a4f21e",
         "src/test/kotlin/com/thalovant/sdk/NativeSignInTest.kt": "97913b83a97354c571463dd3512f57740d85fb2b952d7eb4cecd894ef8b92bcc",
         "src/test/kotlin/com/thalovant/sdk/SdkGapsTest.kt": "6bb55aac24057f94e91b05657a906240c4222b8bd8010576e934b6ecea7d5364"

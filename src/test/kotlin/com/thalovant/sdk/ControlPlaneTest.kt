@@ -81,6 +81,46 @@ class ControlPlaneTest {
     }
 
     @Test
+    fun `the native token exchange posts the code and verifier, unauthenticated`() = runBlocking {
+        // CodeRabbit on #23: completeNativeSignIn had no test caller at all, so
+        // a regression in the path, the body, the missing bearer header or the
+        // stored token would have gone unnoticed.
+        enqueueJson(200, """{"access_token":"issued","expires_in":3600}""")
+        val api = api()
+
+        api.completeNativeSignIn("the-code", "the-verifier", "app", "app://auth")
+
+        val request = server.takeRequest()
+        assertEquals("POST", request.method)
+        assertEquals("/api/v1/auth/native/token", request.path)
+        // The exchange is what issues the token; sending one would be circular.
+        assertNull(request.getHeader("Authorization"))
+        val body = bodyJson(request)
+        assertEquals("the-code", body["code"]?.jsonPrimitive?.content)
+        assertEquals("the-verifier", body["code_verifier"]?.jsonPrimitive?.content)
+        assertEquals("app", body["client_id"]?.jsonPrimitive?.content)
+        assertEquals("app://auth", body["redirect_uri"]?.jsonPrimitive?.content)
+        assertEquals("issued", api.accessToken)
+    }
+
+    @Test
+    fun `a token response with nothing usable in it leaves the stored token alone`() = runBlocking {
+        // A client that "succeeded" with an unusable token fails on its next
+        // request instead of here, where the cause is still visible.
+        enqueueJson(200, """{"access_token":"issued"}""")
+        val api = api()
+        api.completeNativeSignIn("the-code", "the-verifier", "app", "app://auth")
+
+        for (answer in listOf("{}", """{"access_token":""}""", """{"access_token":42}""", """{"access_token":null}""")) {
+            enqueueJson(200, answer)
+            assertFailsWith<ThalovantApiException>(answer) {
+                runBlocking { api.completeNativeSignIn("the-code", "the-verifier", "app", "app://auth") }
+            }
+            assertEquals("issued", api.accessToken, answer)
+        }
+    }
+
+    @Test
     fun `login sends MFA codes only when provided`() = runBlocking {
         repeat(3) { enqueueJson(200, """{"access_token":"token","expires_in":3600}""") }
         val api = api()
