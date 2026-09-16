@@ -38,6 +38,13 @@ class ConversationCarryTest {
         val spec = vectors("conversation-vectors.json")
         for (case in spec["cases"]!!.jsonArray.map { it.jsonObject }) {
             val carried = carryConversation(case["previous"]!!.jsonObject, case["session"]!!.jsonObject)
+            // Recorded before the assert: what this SDK produced, not a
+            // restatement of what the vector says it should have.
+            ConformanceRecord.record(
+                "conversation-vectors.json",
+                case["name"]!!.jsonPrimitive.content,
+                carried,
+            )
             assertEquals(case["expected"]!!.jsonObject, carried, case["name"].toString())
         }
     }

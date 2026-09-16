@@ -10,6 +10,10 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 
 /**
  * Decoding the frames a hub sends when it renders speech.
@@ -80,6 +84,19 @@ class BinaryFrameTest {
         val vectors = fixture("binary-vectors.json")["cases"]!!.jsonArray.map { it.jsonObject }
         for (row in vectors) {
             val binary = decode(case(row["name"]!!.jsonPrimitive.content)["frame"]!!.jsonPrimitive.content).binary!!
+            // Recorded before the assert, for the same reason as the carry.
+            // Absent is null here as it is in the vectors, so nothing has to be
+            // translated the way the Go recorder translates its empty strings.
+            ConformanceRecord.record(
+                "binary-vectors.json",
+                row["name"]!!.jsonPrimitive.content,
+                buildJsonObject {
+                    put("kind", JsonPrimitive(binary.kind))
+                    put("utterance", binary.utterance?.let { JsonPrimitive(it) } ?: JsonNull)
+                    put("lang", binary.lang?.let { JsonPrimitive(it) } ?: JsonNull)
+                    put("file_name", binary.fileName?.let { JsonPrimitive(it) } ?: JsonNull)
+                },
+            )
             assertEquals(row["expected"]!!.jsonObject["kind"]!!.jsonPrimitive.content, binary.kind)
         }
     }
