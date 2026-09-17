@@ -65,16 +65,30 @@ internal object ConformanceRecord {
             }
     }
 
-    /** Spell a whole number the way every other language spells it. */
+    /**
+     * Spell a whole number the way every other language spells it.
+     *
+     * Through `BigDecimal`, not `Double`: a double loses integer precision
+     * above 2^53 and `toLong()` clamps rather than failing, so 
+     * 9223372036854775808.0 would be recorded as 9223372036854775807 -- a
+     * digest for a value nobody produced.
+     *
+     * Anything not whole is refused rather than passed through. Only a whole
+     * number is written the same way by every language here; 1.5 and 1e-7
+     * have per-language spellings. No vector contains one, and if one ever
+     * does this should stop rather than lie.
+     */
     private fun wholeNumber(content: String): String {
         if (content == "true" || content == "false") return content
-        val number = content.toDoubleOrNull() ?: return content
-        return if (content.toLongOrNull() == null && number == Math.floor(number) &&
-            !number.isInfinite()
-        ) {
-            number.toLong().toString()
-        } else {
-            content
+        val decimal = content.toBigDecimalOrNull()
+            ?: error("conformance: cannot canonicalise $content: not a number")
+        return try {
+            decimal.toBigIntegerExact().toString()
+        } catch (_: ArithmeticException) {
+            error(
+                "conformance: cannot canonicalise $content: only whole numbers are " +
+                    "spelled the same way in every language",
+            )
         }
     }
 

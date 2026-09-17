@@ -10,7 +10,8 @@
       "reason": "HiveWire.decode branches on BINARY: four bits of payload type, then the clip itself, never parsed or inflated. onBinary() delivers it. Run against the shared binary vectors and against binary-frames.json, which is hivemind-bus-client's own encoder output rather than frames this SDK built for itself.",
       "status": "required",
       "tests": {
-        "src/test/kotlin/com/thalovant/sdk/BinaryFrameTest.kt": "a47fbd74ae197d24393b8de56594fbbb3e647ca930f9cb3016933160cd980251"
+        "src/test/kotlin/com/thalovant/sdk/BinaryFrameTest.kt": "a47fbd74ae197d24393b8de56594fbbb3e647ca930f9cb3016933160cd980251",
+        "src/test/kotlin/com/thalovant/sdk/ConformanceRecord.kt": "fd4497be06ce8928f83d7d41c8c3dcbd272fdb6f293fe6987eb09e75bef6b11d"
       },
       "vectors": {
         "binary-frames.json": "src/test/resources/thalovant/binary-frames.json",
@@ -44,6 +45,7 @@
       "reason": "carryConversation() and the client's per-session memory, run against the shared conversation vectors.",
       "status": "required",
       "tests": {
+        "src/test/kotlin/com/thalovant/sdk/ConformanceRecord.kt": "fd4497be06ce8928f83d7d41c8c3dcbd272fdb6f293fe6987eb09e75bef6b11d",
         "src/test/kotlin/com/thalovant/sdk/ConversationCarryTest.kt": "1347036db46f247b665cc47877deb5ef2e0652cb4a62b1568c0ab5f6b013bee9"
       },
       "vectors": {
@@ -100,6 +102,7 @@
       "reason": "onHive() over the five hive kinds and propagate/escalate/broadcast, run against the shared mesh vectors.",
       "status": "required",
       "tests": {
+        "src/test/kotlin/com/thalovant/sdk/ConformanceRecord.kt": "fd4497be06ce8928f83d7d41c8c3dcbd272fdb6f293fe6987eb09e75bef6b11d",
         "src/test/kotlin/com/thalovant/sdk/ConversationCarryTest.kt": "1347036db46f247b665cc47877deb5ef2e0652cb4a62b1568c0ab5f6b013bee9"
       },
       "vectors": {
