@@ -357,6 +357,162 @@ class TransportTest {
     }
 
     @Test
+    fun `ask fails at once on a policy denial the hub cannot correlate`(): Unit = runBlocking {
+        // hivemind-core builds hive.policy.denied with only source and
+        // destination context (_send_denied), so it carries no request id.
+        // The listener dropped every uncorrelated event, so the refusal was
+        // discarded and the ask waited out its whole deadline instead --
+        // production showed pairs of denials 13.4s apart behind "your hub did
+        // not answer in time", about a message the hub had already refused
+        // and said so.
+        startHub()
+        val client = ThalovantClient(identity(), noiseStore = HiveMindNoiseStore(stateDir), protocol = HubProtocol.WSS, replySettleMs = 250)
+        client.connect(5000)
+        try {
+            awaitMessage() // hello
+            val started = System.nanoTime()
+            val reply = async(Dispatchers.Default) {
+                runCatching { client.ask("what is up?", timeoutMs = 10_000, sessionId = "sess-1", requestId = "req-1") }
+            }
+            awaitMessage() // the utterance
+
+            sendBus(
+                ThalovantEvents.POLICY_DENIED,
+                buildJsonObject {
+                    put("denied_type", ThalovantEvents.RECOGNIZER_LOOP_UTTERANCE)
+                    put("code", "acl_disallowed_type")
+                    put("reason", "recognizer_loop:utterance not in allowed_types")
+                },
+                // No request id, exactly as the hub sends it.
+                buildJsonObject { put("source", "hivemind-core") },
+            )
+
+            val error = reply.await().exceptionOrNull()
+            val elapsedMs = (System.nanoTime() - started) / 1_000_000
+            assertNotNull(error)
+            // The point is the speed: it must not have waited out the deadline.
+            assertTrue(elapsedMs < 5_000, "took ${elapsedMs}ms; the denial should end the ask at once")
+            assertTrue(
+                error.toString().contains("recognizer_loop:utterance"),
+                "the error should name the type the hub refused, got: $error",
+            )
+        } finally {
+            client.close()
+        }
+    }
+
+    @Test
+    fun `a spent quota arrives with the numbers behind it`(): Unit = runBlocking {
+        // The hub sends which counter ran out, what it allows, how much was
+        // used and when it resets. Dropping them leaves a caller able to say
+        // only "refused", which is what an app told somebody who had simply
+        // used up the day.
+        startHub()
+        val client = ThalovantClient(identity(), noiseStore = HiveMindNoiseStore(stateDir), protocol = HubProtocol.WSS, replySettleMs = 250)
+        client.connect(5000)
+        try {
+            awaitMessage() // hello
+            val reply = async(Dispatchers.Default) {
+                runCatching { client.ask("what is up?", timeoutMs = 10_000, sessionId = "sess-1", requestId = "req-1") }
+            }
+            awaitMessage() // the utterance
+
+            sendBus(
+                ThalovantEvents.POLICY_DENIED,
+                buildJsonObject {
+                    put("denied_type", ThalovantEvents.RECOGNIZER_LOOP_UTTERANCE)
+                    put("code", "intent_quota_exceeded")
+                    put("reason", "daily intent quota exceeded")
+                    put(
+                        "data",
+                        buildJsonObject {
+                            put("period", "daily")
+                            put("limit", 25)
+                            put("used", 25)
+                            put("reset_after", 7200)
+                        },
+                    )
+                },
+                buildJsonObject { put("source", "hivemind-core") },
+            )
+
+            val error = reply.await().exceptionOrNull()
+            val denial = error as? ThalovantPolicyDeniedException
+            assertNotNull(denial, "a quota refusal should arrive as a policy denial, got: $error")
+            val quota = denial.quota
+            assertNotNull(quota, "the quota numbers should survive the trip")
+            assertEquals("daily", quota.period)
+            assertEquals(25, quota.limit)
+            assertEquals(25, quota.used)
+            assertEquals(7200L, quota.resetAfterSeconds)
+        } finally {
+            client.close()
+        }
+    }
+
+    @Test
+    fun `an allow-list refusal carries no quota`(): Unit = runBlocking {
+        // Only a quota refusal has quota numbers; inventing them for an
+        // allow-list denial would have an app offering an upgrade for a
+        // message type nobody had granted.
+        startHub()
+        val client = ThalovantClient(identity(), noiseStore = HiveMindNoiseStore(stateDir), protocol = HubProtocol.WSS, replySettleMs = 250)
+        client.connect(5000)
+        try {
+            awaitMessage() // hello
+            val reply = async(Dispatchers.Default) {
+                runCatching { client.ask("what is up?", timeoutMs = 10_000, sessionId = "sess-1", requestId = "req-1") }
+            }
+            awaitMessage()
+            sendBus(
+                ThalovantEvents.POLICY_DENIED,
+                buildJsonObject {
+                    put("denied_type", ThalovantEvents.RECOGNIZER_LOOP_UTTERANCE)
+                    put("code", "acl_disallowed_type")
+                    put("reason", "recognizer_loop:utterance not in allowed_types")
+                },
+                buildJsonObject { put("source", "hivemind-core") },
+            )
+            val denial = reply.await().exceptionOrNull() as? ThalovantPolicyDeniedException
+            assertNotNull(denial)
+            assertEquals(null, denial.quota)
+        } finally {
+            client.close()
+        }
+    }
+
+    @Test
+    fun `ask still ignores an uncorrelated denial for another type`(): Unit = runBlocking {
+        // The gate is relaxed for this ask's own type, not for every denial:
+        // a refusal of something else in flight on the same connection must
+        // not fail a question that is still perfectly good.
+        startHub()
+        val client = ThalovantClient(identity(), noiseStore = HiveMindNoiseStore(stateDir), protocol = HubProtocol.WSS, replySettleMs = 250)
+        client.connect(5000)
+        try {
+            awaitMessage() // hello
+            val reply = async(Dispatchers.Default) {
+                runCatching { client.ask("what is up?", sessionId = "sess-1", requestId = "req-1") }
+            }
+            val envelope = ThalovantJson.parseToJsonElement(awaitMessage()).jsonObject
+            val context = envelope["payload"]?.jsonObject?.get("context")?.jsonObject
+            assertNotNull(context)
+
+            sendBus(
+                ThalovantEvents.POLICY_DENIED,
+                buildJsonObject { put("denied_type", "ovos.skills.fallback.list") },
+                buildJsonObject { put("source", "hivemind-core") },
+            )
+            sendBus("speak", buildJsonObject { put("utterance", "Right reply") }, context)
+            sendBus("ovos.utterance.handled", EMPTY_JSON_OBJECT, context)
+
+            assertEquals("Right reply", reply.await().getOrThrow().text)
+        } finally {
+            client.close()
+        }
+    }
+
+    @Test
     fun `ask surfaces hive failures as runtime errors`(): Unit = runBlocking {
         startHub()
         val client = ThalovantClient(identity(), noiseStore = HiveMindNoiseStore(stateDir), protocol = HubProtocol.WSS, replySettleMs = 0)

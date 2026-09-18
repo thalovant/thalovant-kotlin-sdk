@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.7.9
+
+- A policy denial now ends an `ask` at once instead of letting it run to the
+  deadline. The hub sends `hive.policy.denied` the instant it refuses, but
+  builds it with only source and destination context, so it carries no request
+  id and the reply listener -- which drops every uncorrelated event -- threw it
+  away. Production showed pairs of denials 13.4s apart behind an app saying
+  "your hub did not answer in time" about a question the hub had refused
+  immediately and explained. The denial is now matched on the message type the
+  ask published, which is the one thing it does carry.
+- A refusal raises `ThalovantPolicyDeniedException` rather than the bare
+  `ThalovantRuntimeException("Hub reported hive.policy.denied.")`. The richer
+  type already existed, with a message naming the type and what to allow, and
+  nothing was throwing it.
+- `ThalovantPolicyDeniedException.quota` carries the numbers behind a spent
+  allowance: which counter ran out, its limit, how much was used, and how long
+  until it resets. The intent-quota policy sends all four; a caller could
+  previously only report "refused", which is what an app told somebody who had
+  simply used up the day.
+
 ## 0.7.8
 
 - Automated patch release of the unreleased changes on `main` since v0.7.7.

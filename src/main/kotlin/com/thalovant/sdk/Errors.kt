@@ -34,7 +34,35 @@ public class ThalovantPolicyDeniedException(
     public val reason: String = "",
     public val allowed: List<String> = emptyList(),
 ) : ThalovantRuntimeException(policyDeniedMessage(deniedType, code, reason)) {
+    /**
+     * What the hub said about the quota, when the refusal was a quota.
+     *
+     * The intent-quota policy denies with `intent_quota_exceeded` and sends
+     * the numbers with it: which counter ran out, what it allows, how much of
+     * it was used, and how long until it resets. Without these a caller can
+     * only say "refused", which is what an app showed a person who had simply
+     * used up the day.
+     */
+    public data class Quota(
+        /** The counter that ran out, as the hub names it: `daily`, `monthly`. */
+        public val period: String,
+        /** What that counter allows in its period. */
+        public val limit: Int,
+        /** How much of it was used. */
+        public val used: Int,
+        /** Seconds until the counter resets, or 0 when the hub did not say. */
+        public val resetAfterSeconds: Long,
+    )
+
+    /** The quota detail when [code] is `intent_quota_exceeded`, else null. */
+    public val quota: Quota? get() = quotaDetail
+
+    internal var quotaDetail: Quota? = null
+
     public companion object {
+        /** The hub's code for a refusal that is a spent quota, not a policy. */
+        public const val QUOTA_EXCEEDED: String = "intent_quota_exceeded"
+
         /** Builds the exception from a `hive.policy.denied` bus event. */
         public fun fromEvent(event: ThalovantEvent): ThalovantPolicyDeniedException {
             val inner = event.data["data"].asObjectOrNull()
@@ -44,12 +72,22 @@ public class ThalovantPolicyDeniedException(
             val allowed = (inner?.get("allowed") as? JsonArray)
                 ?.mapNotNull { (it as? JsonPrimitive)?.takeIf { entry -> entry.isString }?.content }
                 ?: emptyList()
-            return ThalovantPolicyDeniedException(
+            val code = event.data.optionalString("code") ?: ""
+            val denial = ThalovantPolicyDeniedException(
                 deniedType = event.data.optionalString("denied_type") ?: "",
-                code = event.data.optionalString("code") ?: "",
+                code = code,
                 reason = event.data.optionalString("reason") ?: "",
                 allowed = allowed,
             )
+            if (code == QUOTA_EXCEEDED && inner != null) {
+                denial.quotaDetail = Quota(
+                    period = (inner["period"] as? JsonPrimitive)?.takeIf { it.isString }?.content.orEmpty(),
+                    limit = (inner["limit"] as? JsonPrimitive)?.content?.toIntOrNull() ?: 0,
+                    used = (inner["used"] as? JsonPrimitive)?.content?.toIntOrNull() ?: 0,
+                    resetAfterSeconds = (inner["reset_after"] as? JsonPrimitive)?.content?.toLongOrNull() ?: 0L,
+                )
+            }
+            return denial
         }
     }
 }
