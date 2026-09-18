@@ -349,7 +349,20 @@ public class ThalovantClient(
             val terminal = CompletableDeferred<Unit>()
             val whitespace = Regex("\\s+")
             val subscription = transport.addBusListener { event ->
-                if (event.requestId != effectiveRequestId) return@addBusListener
+                // A policy denial is the one event the hub cannot correlate.
+                // hivemind-core builds it with only source and destination
+                // context (_send_denied), so it carries no request id, and
+                // this gate discarded it: a refusal the hub reported the
+                // instant it made it became a full timeout instead. Seen in
+                // production as pairs of denials 13.4s apart -- the 12s
+                // deadline plus a retry -- behind "Your hub did not answer in
+                // time", about a message the hub had already refused and said
+                // so. Correlated on the type this ask published, which is the
+                // one thing the denial does carry.
+                val deniedThisAsk = event.name == ThalovantEvents.POLICY_DENIED &&
+                    event.data.optionalString("denied_type") ==
+                    ThalovantEvents.RECOGNIZER_LOOP_UTTERANCE
+                if (event.requestId != effectiveRequestId && !deniedThisAsk) return@addBusListener
                 synchronized(lock) {
                     if (failureEvent != null || operationFailure != null) return@addBusListener
                     if (!mediaBudget.accept(event)) return@addBusListener
@@ -431,7 +444,27 @@ public class ThalovantClient(
                     operationFailure?.let { throw it }
                     val failure = failureEvent ?: if (fragments.isEmpty()) softFailureEvent else null
                     if (failure == null && fragments.isEmpty()) throw ThalovantTimeoutException("Hub handled the utterance without a speak reply within the request budget.")
-                    if (failure != null && fragments.isEmpty()) throw ThalovantRuntimeException(failure.text.ifEmpty { "Hub reported ${failure.name}." })
+                    if (failure != null && fragments.isEmpty()) {
+                        // A denial already names the type and what to allow;
+                        // ThalovantPolicyDeniedException exists to say so and
+                        // was going unused here, so a refusal surfaced as the
+                        // bare "Hub reported hive.policy.denied." and the
+                        // caller learned nothing it could act on.
+                        if (failure.name == ThalovantEvents.POLICY_DENIED) {
+                            throw ThalovantPolicyDeniedException.fromEvent(failure)
+                        }
+                        // Nothing went wrong here: the hub understood and has
+                        // no skill for it. Flattened into a runtime error, a
+                        // caller could only say something failed, so a person
+                        // asking for something their hub simply cannot do was
+                        // told it "would not do that".
+                        if (failure.name == ThalovantEvents.INTENT_UNMATCHED ||
+                            failure.name == ThalovantEvents.INTENT_FAILURE
+                        ) {
+                            throw ThalovantUnansweredException(failure.text)
+                        }
+                        throw ThalovantRuntimeException(failure.text.ifEmpty { "Hub reported ${failure.name}." })
+                    }
                     // And under exactly the id `ask()` is about to return.
                     // `responseSessionId` is the first non-blank id from *any*
                     // event, so a speak carrying one and a handled event
