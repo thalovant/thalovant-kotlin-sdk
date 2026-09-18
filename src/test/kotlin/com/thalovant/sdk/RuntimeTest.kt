@@ -39,6 +39,9 @@ private class RuntimeFake : HiveMindRuntimeTransport {
     }
 }
 
+/** Long enough for handled to follow speak on another thread; production uses 100. */
+private const val CARRY_SETTLE_MS = 200L
+
 class RuntimeTest {
     private fun client(fake: RuntimeFake) = ThalovantClient(ThalovantIdentity(ThalovantJson.parseToJsonElement(
         """{"access_key":"access","password":"password","crypto_key":"0123456789abcdef","site_id":"site","default_master":"wss://hub.example"}"""
@@ -167,6 +170,31 @@ class RuntimeTest {
         assertEquals("ask-only", ask.await().text); assertEquals("query-only", query.await().text); assertEquals("other-only", remote.await().text)
     }
 
+    @Test fun `an uncorrelated denial does not fail an ask while a query is out`() = runBlocking {
+        // A query publishes an utterance too, so with one out a denial that
+        // names only its type could be the query's. The ask must not take it:
+        // it keeps waiting, and gets its own answer. (CodeRabbit on #38.)
+        val fake = RuntimeFake(); val sdk = client(fake)
+        val query = async { runCatching { sdk.query("query", queryId = "q-1", timeoutMs = 5000) } }
+        withTimeout(2000) { while (fake.sent.size != 1) yield() }
+        val ask = async { sdk.ask("ask", requestId = "a-1", timeoutMs = 5000, replySettleMs = 0) }
+        withTimeout(2000) { while (fake.emitted.size != 1) yield() }
+
+        fake.deliver(ThalovantEvent(ThalovantEvents.POLICY_DENIED,
+            buildJsonObject {
+                put("denied_type", ThalovantEvents.RECOGNIZER_LOOP_UTTERANCE)
+                put("code", "intent_quota_exceeded")
+            },
+            buildJsonObject { put("source", "hivemind-core") }))
+        val context = contextWithCorrelation(EMPTY_JSON_OBJECT, requestId = "a-1")
+        fake.deliver(ThalovantEvent("speak", buildJsonObject { put("utterance", "ask-only") }, context))
+        fake.deliver(ThalovantEvent(ThalovantEvents.UTTERANCE_HANDLED, EMPTY_JSON_OBJECT, context))
+
+        assertEquals("ask-only", ask.await().text)
+        assertTrue(query.isActive, "the query is still out, and was never answered")
+        query.cancel()
+    }
+
     @Test fun `ask budget includes connect send empty wait and settle`() = runBlocking {
         for (phase in listOf("connect", "send", "empty", "settle", "no_speech")) {
             val fake = RuntimeFake(); val sdk = client(fake)
@@ -210,15 +238,24 @@ class RuntimeTest {
                 fake.deliver(ThalovantEvent(ThalovantEvents.UTTERANCE_HANDLED,
                     EMPTY_JSON_OBJECT, handledContext))
             }
+            // A settle window above zero, as every caller that keeps the
+            // conversation has. The fake delivers speak and then handled from
+            // the transport's I/O worker, while ask() waits on its own thread:
+            // at zero, the first speech closes the reply, and whether handled
+            // -- the one event carrying the conversation -- has been read by
+            // then is a race between two threads. It lost on a loaded two-core
+            // runner and turned main red. At zero that loss is the documented
+            // behaviour, not a fault; production's window is 100 ms against a
+            // handled measured ~8 ms after the last speak.
             val reply = withTimeout(2000) {
-                sdk.ask("Fais un prout", sessionId = "sat-1", replySettleMs = 0, emptyReplyWaitMs = 0)
+                sdk.ask("Fais un prout", sessionId = "sat-1", replySettleMs = CARRY_SETTLE_MS, emptyReplyWaitMs = 0)
             }
             assertEquals("hub-speak", reply.sessionId, "handledId=$handledId")
 
             // The caller does the natural thing with what the reply handed back.
             withTimeout(2000) {
                 sdk.ask("Encore un", sessionId = reply.sessionId,
-                        replySettleMs = 0, emptyReplyWaitMs = 0)
+                        replySettleMs = CARRY_SETTLE_MS, emptyReplyWaitMs = 0)
             }
             val sentSession = fake.emitted.last().context["session"]?.jsonObject
             assertTrue(sentSession?.containsKey("converse_handlers") == true,
