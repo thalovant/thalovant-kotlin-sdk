@@ -170,6 +170,31 @@ class RuntimeTest {
         assertEquals("ask-only", ask.await().text); assertEquals("query-only", query.await().text); assertEquals("other-only", remote.await().text)
     }
 
+    @Test fun `an uncorrelated denial does not fail an ask while a query is out`() = runBlocking {
+        // A query publishes an utterance too, so with one out a denial that
+        // names only its type could be the query's. The ask must not take it:
+        // it keeps waiting, and gets its own answer. (CodeRabbit on #38.)
+        val fake = RuntimeFake(); val sdk = client(fake)
+        val query = async { runCatching { sdk.query("query", queryId = "q-1", timeoutMs = 5000) } }
+        withTimeout(2000) { while (fake.sent.size != 1) yield() }
+        val ask = async { sdk.ask("ask", requestId = "a-1", timeoutMs = 5000, replySettleMs = 0) }
+        withTimeout(2000) { while (fake.emitted.size != 1) yield() }
+
+        fake.deliver(ThalovantEvent(ThalovantEvents.POLICY_DENIED,
+            buildJsonObject {
+                put("denied_type", ThalovantEvents.RECOGNIZER_LOOP_UTTERANCE)
+                put("code", "intent_quota_exceeded")
+            },
+            buildJsonObject { put("source", "hivemind-core") }))
+        val context = contextWithCorrelation(EMPTY_JSON_OBJECT, requestId = "a-1")
+        fake.deliver(ThalovantEvent("speak", buildJsonObject { put("utterance", "ask-only") }, context))
+        fake.deliver(ThalovantEvent(ThalovantEvents.UTTERANCE_HANDLED, EMPTY_JSON_OBJECT, context))
+
+        assertEquals("ask-only", ask.await().text)
+        assertTrue(query.isActive, "the query is still out, and was never answered")
+        query.cancel()
+    }
+
     @Test fun `ask budget includes connect send empty wait and settle`() = runBlocking {
         for (phase in listOf("connect", "send", "empty", "settle", "no_speech")) {
             val fake = RuntimeFake(); val sdk = client(fake)
