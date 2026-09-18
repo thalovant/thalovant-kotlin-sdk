@@ -482,6 +482,36 @@ class TransportTest {
     }
 
     @Test
+    fun `an intent nothing handles is not reported as a failure`(): Unit = runBlocking {
+        // The hub understood and has no skill for it. Flattened into a bare
+        // runtime error, a caller could only say something went wrong, and an
+        // app told somebody their hub "would not do that" about a question it
+        // simply cannot answer.
+        startHub()
+        val client = ThalovantClient(identity(), noiseStore = HiveMindNoiseStore(stateDir), protocol = HubProtocol.WSS, replySettleMs = 0)
+        client.connect(5000)
+        try {
+            awaitMessage() // hello
+            val reply = async(Dispatchers.Default) {
+                runCatching { client.ask("play me a song", timeoutMs = 10_000, sessionId = "sess-1", requestId = "req-1") }
+            }
+            val envelope = ThalovantJson.parseToJsonElement(awaitMessage()).jsonObject
+            val context = envelope["payload"]?.jsonObject?.get("context")?.jsonObject
+            assertNotNull(context)
+
+            sendBus(ThalovantEvents.INTENT_UNMATCHED, EMPTY_JSON_OBJECT, context)
+
+            val error = reply.await().exceptionOrNull()
+            assertTrue(
+                error is ThalovantUnansweredException,
+                "an unmatched intent should be its own thing, got: $error",
+            )
+        } finally {
+            client.close()
+        }
+    }
+
+    @Test
     fun `ask still ignores an uncorrelated denial for another type`(): Unit = runBlocking {
         // The gate is relaxed for this ask's own type, not for every denial:
         // a refusal of something else in flight on the same connection must

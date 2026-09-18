@@ -20,6 +20,28 @@ public class ThalovantTimeoutException(message: String) : ThalovantException(mes
 public open class ThalovantRuntimeException(message: String) : ThalovantException(message)
 
 /**
+ * The hub heard the question and no skill answered it.
+ *
+ * `ovos.intent.unmatched` (and `complete_intent_failure` from older hubs) is
+ * the hub saying it understood it was asked something and has nothing
+ * installed that handles it. That is a different thing from being refused, and
+ * a very different thing from not answering: nothing is wrong, the question is
+ * simply outside what this hub can do.
+ *
+ * It arrived as a bare [ThalovantRuntimeException], which a caller could only
+ * render as something went wrong -- so somebody asking a hub a question it has
+ * no skill for was told the hub "would not do that", as though it had refused.
+ * Carried separately so a caller can say so, and point at what the hub *can*
+ * be asked.
+ */
+public class ThalovantUnansweredException(
+    /** The hub's own words, when it sent any. */
+    public val spoken: String = "",
+) : ThalovantRuntimeException(
+    spoken.ifEmpty { "No skill on this hub answered that." },
+)
+
+/**
  * The hub refused a message type this connection may not publish.
  *
  * The hub answers `hive.policy.denied` at once, naming the type ([deniedType])

@@ -453,6 +453,16 @@ public class ThalovantClient(
                         if (failure.name == ThalovantEvents.POLICY_DENIED) {
                             throw ThalovantPolicyDeniedException.fromEvent(failure)
                         }
+                        // Nothing went wrong here: the hub understood and has
+                        // no skill for it. Flattened into a runtime error, a
+                        // caller could only say something failed, so a person
+                        // asking for something their hub simply cannot do was
+                        // told it "would not do that".
+                        if (failure.name == ThalovantEvents.INTENT_UNMATCHED ||
+                            failure.name == ThalovantEvents.INTENT_FAILURE
+                        ) {
+                            throw ThalovantUnansweredException(failure.text)
+                        }
                         throw ThalovantRuntimeException(failure.text.ifEmpty { "Hub reported ${failure.name}." })
                     }
                     // And under exactly the id `ask()` is about to return.

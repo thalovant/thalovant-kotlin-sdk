@@ -14,6 +14,12 @@
   `ThalovantRuntimeException("Hub reported hive.policy.denied.")`. The richer
   type already existed, with a message naming the type and what to allow, and
   nothing was throwing it.
+- An intent nothing handles raises `ThalovantUnansweredException` rather than a
+  bare `ThalovantRuntimeException`. `ovos.intent.unmatched` is the hub saying it
+  understood and has no skill for this, which is neither a refusal nor a
+  failure; flattened into a runtime error a caller could only report that
+  something went wrong, so an app told somebody their hub "would not do that"
+  about a question it simply cannot answer.
 - `ThalovantPolicyDeniedException.quota` carries the numbers behind a spent
   allowance: which counter ran out, its limit, how much was used, and how long
   until it resets. The intent-quota policy sends all four; a caller could
