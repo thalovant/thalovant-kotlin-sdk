@@ -79,22 +79,9 @@ public class ThalovantClient(
         return ThalovantSubscription { synchronized(correlationLock) { active.remove(id) } }
     }
 
-    /**
-     * Whether [id] is the only ask or query this client has in flight.
-     *
-     * A `hive.policy.denied` names the message type it refused and nothing
-     * that says which message: hivemind-core builds it with source and
-     * destination context only. With one utterance in flight that is enough
-     * to know whose it was. With two it is not, and attributing it to either
-     * would end an ask the hub never refused -- so both fall back to what an
-     * uncorrelated denial always did, and wait out their own deadline.
-     *
-     * `sendCode()` publishes utterances too but tracks nothing: it is
-     * fire-and-forget, so a refusal of it was never observable and is not
-     * counted here.
-     */
-    internal fun soleUtteranceInFlight(id: String): Boolean = synchronized(correlationLock) {
-        activeQueryIds.isEmpty() && activeAskIds.size == 1 && id in activeAskIds
+    /** How many asks and queries this client has out, for a denial with no request id. */
+    internal fun utterancesInFlight(): Pair<Int, Int> = synchronized(correlationLock) {
+        activeAskIds.size to activeQueryIds.size
     }
 
     /**
@@ -377,11 +364,17 @@ public class ThalovantClient(
                 // time", about a message the hub had already refused and said
                 // so. Correlated on the type this ask published, which is the
                 // one thing the denial does carry.
-                val deniedThisAsk = event.name == ThalovantEvents.POLICY_DENIED &&
-                    event.data.optionalString("denied_type") ==
-                    ThalovantEvents.RECOGNIZER_LOOP_UTTERANCE &&
-                    soleUtteranceInFlight(effectiveRequestId)
-                if (event.requestId != effectiveRequestId && !deniedThisAsk) return@addBusListener
+                if (event.name == ThalovantEvents.POLICY_DENIED) {
+                    // A denial with another ask's request id is never this
+                    // ask's, even with nothing else in flight -- which 0.7.9
+                    // and 0.7.10 got wrong. refusalBelongsToAsk() is the rule
+                    // the shared refusal vectors pin.
+                    val (asks, queries) = utterancesInFlight()
+                    if (!refusalBelongsToAsk(event.requestId, effectiveRequestId,
+                            event.data.optionalString("denied_type"), asks, queries)) return@addBusListener
+                } else if (event.requestId != effectiveRequestId) {
+                    return@addBusListener
+                }
                 synchronized(lock) {
                     if (failureEvent != null || operationFailure != null) return@addBusListener
                     if (!mediaBudget.accept(event)) return@addBusListener
@@ -464,25 +457,9 @@ public class ThalovantClient(
                     val failure = failureEvent ?: if (fragments.isEmpty()) softFailureEvent else null
                     if (failure == null && fragments.isEmpty()) throw ThalovantTimeoutException("Hub handled the utterance without a speak reply within the request budget.")
                     if (failure != null && fragments.isEmpty()) {
-                        // A denial already names the type and what to allow;
-                        // ThalovantPolicyDeniedException exists to say so and
-                        // was going unused here, so a refusal surfaced as the
-                        // bare "Hub reported hive.policy.denied." and the
-                        // caller learned nothing it could act on.
-                        if (failure.name == ThalovantEvents.POLICY_DENIED) {
-                            throw ThalovantPolicyDeniedException.fromEvent(failure)
-                        }
-                        // Nothing went wrong here: the hub understood and has
-                        // no skill for it. Flattened into a runtime error, a
-                        // caller could only say something failed, so a person
-                        // asking for something their hub simply cannot do was
-                        // told it "would not do that".
-                        if (failure.name == ThalovantEvents.INTENT_UNMATCHED ||
-                            failure.name == ThalovantEvents.INTENT_FAILURE
-                        ) {
-                            throw ThalovantUnansweredException(failure.text)
-                        }
-                        throw ThalovantRuntimeException(failure.text.ifEmpty { "Hub reported ${failure.name}." })
+                        // Typed: a refusal, a question the hub has nothing
+                        // for, and a fault need three different sentences.
+                        throw failureError(failure)
                     }
                     // And under exactly the id `ask()` is about to return.
                     // `responseSessionId` is the first non-blank id from *any*

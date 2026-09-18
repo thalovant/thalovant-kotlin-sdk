@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.7.11
+
+- The refusal behaviour 0.7.9 introduced is now the parity contract's `refusal` capability, held to the Python reference's shared `refusal-vectors.json`. Two of its cases found this SDK wrong:
+  - **A denial carrying another ask's request id ended this ask** when nothing else was in flight. The request id is the one thing that does say whose a denial is; `refusalBelongsToAsk()` now judges a denial by it whenever it is there, and falls back to the sole-utterance rule only when it is not.
+  - **`allowed` kept blank and untrimmed entries.** A message type an operator is told to allow is now a non-blank, trimmed string, as the reference already had it.
+- `ThalovantPolicyDeniedException`'s message fits the refusal. It told everybody to "allow this connection to publish `recognizer_loop:utterance` in the dashboard" -- the fix for an allow-list, and no help for a spent quota or for `backend_unavailable`, a hub whose assistant is down, which arrives under the same event. `BACKEND_UNAVAILABLE` names that code.
+- The constructor takes `quota` (defaulted, so existing calls compile), and a quota refusal whose numbers are missing is still a quota, with zeros, rather than none.
+
 ## 0.7.10
 
 - A denial the hub cannot correlate now ends an `ask` only when that ask is

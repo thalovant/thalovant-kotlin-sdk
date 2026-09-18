@@ -42,20 +42,28 @@ public class ThalovantUnansweredException(
 )
 
 /**
- * The hub refused a message type this connection may not publish.
+ * The hub refused a message, the instant it did.
  *
- * The hub answers `hive.policy.denied` at once, naming the type ([deniedType])
- * and the types it does allow ([allowed]); throwing here saves the caller a
- * timeout and tells the operator exactly what to add to the connection's
- * allow-list. [code] is the hub's reason code (`acl_disallowed_type`) and
- * [reason] its human-readable text.
+ * The hub sends `hive.policy.denied` as soon as it refuses, naming the type
+ * ([deniedType]). Three different things arrive under that one name, and each
+ * needs something different said about it:
+ *
+ * - an allow-list refusal (`acl_disallowed_type`) -- ask whoever manages the
+ *   connection to allow the type; [allowed] lists what it may send;
+ * - a spent allowance ([QUOTA_EXCEEDED]) -- wait, or raise the limit; [quota]
+ *   carries the numbers;
+ * - a hub whose agent bus is down ([BACKEND_UNAVAILABLE]) -- nothing the caller
+ *   can fix; try again later.
+ *
+ * [code] is the hub's reason code and [reason] its human-readable text.
  */
 public class ThalovantPolicyDeniedException(
     public val deniedType: String,
     public val code: String = "",
     public val reason: String = "",
     public val allowed: List<String> = emptyList(),
-) : ThalovantRuntimeException(policyDeniedMessage(deniedType, code, reason)) {
+    quota: Quota? = null,
+) : ThalovantRuntimeException(policyDeniedMessage(deniedType, code, reason, quota)) {
     /**
      * What the hub said about the quota, when the refusal was a quota.
      *
@@ -77,47 +85,113 @@ public class ThalovantPolicyDeniedException(
     )
 
     /** The quota detail when [code] is `intent_quota_exceeded`, else null. */
-    public val quota: Quota? get() = quotaDetail
-
-    internal var quotaDetail: Quota? = null
+    public val quota: Quota? = quota
 
     public companion object {
         /** The hub's code for a refusal that is a spent quota, not a policy. */
         public const val QUOTA_EXCEEDED: String = "intent_quota_exceeded"
 
+        /** The hub's code for a refusal because its own agent bus is down. */
+        public const val BACKEND_UNAVAILABLE: String = "backend_unavailable"
+
         /** Builds the exception from a `hive.policy.denied` bus event. */
         public fun fromEvent(event: ThalovantEvent): ThalovantPolicyDeniedException {
-            val inner = event.data["data"].asObjectOrNull()
-            // Only strings: a number or a null in the list is not a message
-            // type, and stringifying one would put "3" or "null" in front of
-            // an operator reading which types to allow.
-            val allowed = (inner?.get("allowed") as? JsonArray)
-                ?.mapNotNull { (it as? JsonPrimitive)?.takeIf { entry -> entry.isString }?.content }
+            // The policy's own detail rides nested under data.data
+            // (hivemind-core _send_policy_denied: "data": verdict.data).
+            // Missing reads as empty, so a quota refusal whose numbers were
+            // lost is still a quota, with zeros -- as the shared vectors say.
+            val inner = event.data["data"].asObjectOrNull() ?: JsonObject(emptyMap())
+            // Only non-blank strings, trimmed: a number, a null or a blank in
+            // the list is not a message type, and stringifying one would put
+            // "3" or "null" in front of an operator reading what to allow.
+            val allowed = (inner["allowed"] as? JsonArray)
+                ?.mapNotNull { (it as? JsonPrimitive)?.takeIf { entry -> entry.isString }?.content?.trim() }
+                ?.filter { it.isNotEmpty() }
                 ?: emptyList()
             val code = event.data.optionalString("code") ?: ""
-            val denial = ThalovantPolicyDeniedException(
+            val quota = if (code == QUOTA_EXCEEDED) {
+                Quota(
+                    period = (inner["period"] as? JsonPrimitive)?.takeIf { it.isString }?.content.orEmpty(),
+                    limit = inner["limit"].count().toInt(),
+                    used = inner["used"].count().toInt(),
+                    resetAfterSeconds = inner["reset_after"].count(),
+                )
+            } else {
+                null
+            }
+            return ThalovantPolicyDeniedException(
                 deniedType = event.data.optionalString("denied_type") ?: "",
                 code = code,
                 reason = event.data.optionalString("reason") ?: "",
                 allowed = allowed,
+                quota = quota,
             )
-            if (code == QUOTA_EXCEEDED && inner != null) {
-                denial.quotaDetail = Quota(
-                    period = (inner["period"] as? JsonPrimitive)?.takeIf { it.isString }?.content.orEmpty(),
-                    limit = (inner["limit"] as? JsonPrimitive)?.content?.toIntOrNull() ?: 0,
-                    used = (inner["used"] as? JsonPrimitive)?.content?.toIntOrNull() ?: 0,
-                    resetAfterSeconds = (inner["reset_after"] as? JsonPrimitive)?.content?.toLongOrNull() ?: 0L,
-                )
-            }
-            return denial
         }
     }
 }
 
-private fun policyDeniedMessage(deniedType: String, code: String, reason: String): String {
+/** A whole count from the wire, or 0: never a boolean, never a guess. */
+private fun kotlinx.serialization.json.JsonElement?.count(): Long {
+    val primitive = this as? JsonPrimitive ?: return 0
+    if (!primitive.isString && (primitive.content == "true" || primitive.content == "false")) return 0
+    return primitive.content.trim().toLongOrNull() ?: 0
+}
+
+private fun policyDeniedMessage(
+    deniedType: String,
+    code: String,
+    reason: String,
+    quota: ThalovantPolicyDeniedException.Quota?,
+): String {
+    // Advice follows the kind of refusal. Telling somebody who used up their
+    // day to "allow this connection to publish recognizer_loop:utterance" sent
+    // them to a settings page that could not help.
+    if (quota != null) {
+        val used = if (quota.limit > 0) "${quota.used} of ${quota.limit}" else "all"
+        val period = if (quota.period.isNotEmpty()) " ${quota.period}" else ""
+        val resets = if (quota.resetAfterSeconds > 0) "; it resets in ${quota.resetAfterSeconds}s" else ""
+        return "The hub refused '$deniedType': $used$period questions used$resets."
+    }
+    if (code == ThalovantPolicyDeniedException.BACKEND_UNAVAILABLE) {
+        val detail = if (reason.isNotEmpty()) ": $reason" else ""
+        return "The hub could not reach its assistant$detail. Try again shortly."
+    }
     val detail = reason.ifEmpty { code.ifEmpty { "refused by the hub's policy" } }
     return "The hub refused '$deniedType': $detail. Allow this connection to publish " +
         "'$deniedType' in the dashboard's connection settings."
+}
+
+/**
+ * The typed error an ask throws for the failure event it ended on.
+ *
+ * A refusal, a question the hub has nothing for, and a fault need three
+ * different sentences, and a bare runtime error allowed only one.
+ */
+internal fun failureError(event: ThalovantEvent): ThalovantException = when (event.name) {
+    ThalovantEvents.POLICY_DENIED -> ThalovantPolicyDeniedException.fromEvent(event)
+    ThalovantEvents.INTENT_UNMATCHED, ThalovantEvents.INTENT_FAILURE -> ThalovantUnansweredException(event.text)
+    else -> ThalovantRuntimeException(event.text.ifEmpty { "Hub reported ${event.name}." })
+}
+
+/**
+ * Whether a `hive.policy.denied` is this ask's to throw.
+ *
+ * A denial carrying a request id is judged by it, like any reply. The hub
+ * builds its denials with source and destination context only, so the usual
+ * one carries none and names the refused type instead: enough when this ask is
+ * the only utterance the client has out, a guess otherwise -- and a wrong
+ * guess ends a question the hub never refused. The shared refusal vectors pin
+ * every case.
+ */
+internal fun refusalBelongsToAsk(
+    requestId: String?,
+    ownRequestId: String,
+    deniedType: String?,
+    asksInFlight: Int,
+    queriesInFlight: Int,
+): Boolean {
+    if (!requestId.isNullOrEmpty()) return requestId == ownRequestId
+    return deniedType == ThalovantEvents.RECOGNIZER_LOOP_UTTERANCE && asksInFlight == 1 && queriesInFlight == 0
 }
 
 /**
