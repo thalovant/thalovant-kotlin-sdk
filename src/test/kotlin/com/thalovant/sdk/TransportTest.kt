@@ -543,6 +543,50 @@ class TransportTest {
     }
 
     @Test
+    fun `an uncorrelated denial fails no ask when two are in flight`(): Unit = runBlocking {
+        // A denial names the type it refused and nothing that says which
+        // message. With one ask in flight that is enough; with two it is a
+        // guess, and a wrong guess ends a question the hub never refused. So
+        // neither takes it: each is left to its own reply, or its own deadline.
+        startHub()
+        val client = ThalovantClient(identity(), noiseStore = HiveMindNoiseStore(stateDir), protocol = HubProtocol.WSS, replySettleMs = 250)
+        client.connect(5000)
+        try {
+            awaitMessage() // hello
+            val first = async(Dispatchers.Default) {
+                runCatching { client.ask("first", timeoutMs = 10_000, sessionId = "sess-1", requestId = "req-1") }
+            }
+            val firstContext = ThalovantJson.parseToJsonElement(awaitMessage()).jsonObject["payload"]
+                ?.jsonObject?.get("context")?.jsonObject
+            val second = async(Dispatchers.Default) {
+                runCatching { client.ask("second", timeoutMs = 10_000, sessionId = "sess-2", requestId = "req-2") }
+            }
+            val secondContext = ThalovantJson.parseToJsonElement(awaitMessage()).jsonObject["payload"]
+                ?.jsonObject?.get("context")?.jsonObject
+            assertNotNull(firstContext); assertNotNull(secondContext)
+
+            sendBus(
+                ThalovantEvents.POLICY_DENIED,
+                buildJsonObject {
+                    put("denied_type", ThalovantEvents.RECOGNIZER_LOOP_UTTERANCE)
+                    put("code", "intent_quota_exceeded")
+                },
+                buildJsonObject { put("source", "hivemind-core") },
+            )
+            // Both are still good questions, and both get their own answers.
+            sendBus("speak", buildJsonObject { put("utterance", "First reply") }, firstContext)
+            sendBus("ovos.utterance.handled", EMPTY_JSON_OBJECT, firstContext)
+            sendBus("speak", buildJsonObject { put("utterance", "Second reply") }, secondContext)
+            sendBus("ovos.utterance.handled", EMPTY_JSON_OBJECT, secondContext)
+
+            assertEquals("First reply", first.await().getOrThrow().text)
+            assertEquals("Second reply", second.await().getOrThrow().text)
+        } finally {
+            client.close()
+        }
+    }
+
+    @Test
     fun `ask surfaces hive failures as runtime errors`(): Unit = runBlocking {
         startHub()
         val client = ThalovantClient(identity(), noiseStore = HiveMindNoiseStore(stateDir), protocol = HubProtocol.WSS, replySettleMs = 0)

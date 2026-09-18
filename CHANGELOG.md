@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.7.10
+
+- A denial the hub cannot correlate now ends an `ask` only when that ask is
+  the one utterance this client has in flight. A `hive.policy.denied` names the
+  type it refused and nothing that says which message, so with two asks
+  waiting, 0.7.9 would end whichever read it first -- a question the hub never
+  refused. With more than one in flight neither takes it, and each is left to
+  its own reply or its own deadline, which is what every uncorrelated denial
+  did before 0.7.9. `sendCode()` is fire-and-forget and still not counted: a
+  refusal of it was never observable.
+- `RuntimeTest.the carry is filed under the session id ask returns` asked with
+  a settle window of zero, where the first speech closes the reply and whether
+  `ovos.utterance.handled` -- the event that carries the conversation -- has
+  been read yet is a race between the transport's I/O worker and the caller's
+  thread. That is the documented behaviour at zero, not a fault, and it lost on
+  a loaded runner and turned `main` red after 0.7.9 merged. The test now uses a
+  window above zero, as every caller that keeps a conversation does; widening
+  the race on purpose fails the old test every time and passes the new one.
+
 ## 0.7.9
 
 - A policy denial now ends an `ask` at once instead of letting it run to the

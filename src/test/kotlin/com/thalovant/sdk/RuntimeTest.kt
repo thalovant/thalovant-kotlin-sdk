@@ -39,6 +39,9 @@ private class RuntimeFake : HiveMindRuntimeTransport {
     }
 }
 
+/** Long enough for handled to follow speak on another thread; production uses 100. */
+private const val CARRY_SETTLE_MS = 200L
+
 class RuntimeTest {
     private fun client(fake: RuntimeFake) = ThalovantClient(ThalovantIdentity(ThalovantJson.parseToJsonElement(
         """{"access_key":"access","password":"password","crypto_key":"0123456789abcdef","site_id":"site","default_master":"wss://hub.example"}"""
@@ -210,15 +213,24 @@ class RuntimeTest {
                 fake.deliver(ThalovantEvent(ThalovantEvents.UTTERANCE_HANDLED,
                     EMPTY_JSON_OBJECT, handledContext))
             }
+            // A settle window above zero, as every caller that keeps the
+            // conversation has. The fake delivers speak and then handled from
+            // the transport's I/O worker, while ask() waits on its own thread:
+            // at zero, the first speech closes the reply, and whether handled
+            // -- the one event carrying the conversation -- has been read by
+            // then is a race between two threads. It lost on a loaded two-core
+            // runner and turned main red. At zero that loss is the documented
+            // behaviour, not a fault; production's window is 100 ms against a
+            // handled measured ~8 ms after the last speak.
             val reply = withTimeout(2000) {
-                sdk.ask("Fais un prout", sessionId = "sat-1", replySettleMs = 0, emptyReplyWaitMs = 0)
+                sdk.ask("Fais un prout", sessionId = "sat-1", replySettleMs = CARRY_SETTLE_MS, emptyReplyWaitMs = 0)
             }
             assertEquals("hub-speak", reply.sessionId, "handledId=$handledId")
 
             // The caller does the natural thing with what the reply handed back.
             withTimeout(2000) {
                 sdk.ask("Encore un", sessionId = reply.sessionId,
-                        replySettleMs = 0, emptyReplyWaitMs = 0)
+                        replySettleMs = CARRY_SETTLE_MS, emptyReplyWaitMs = 0)
             }
             val sentSession = fake.emitted.last().context["session"]?.jsonObject
             assertTrue(sentSession?.containsKey("converse_handlers") == true,

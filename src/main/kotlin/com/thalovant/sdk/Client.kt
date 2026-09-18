@@ -80,6 +80,24 @@ public class ThalovantClient(
     }
 
     /**
+     * Whether [id] is the only ask or query this client has in flight.
+     *
+     * A `hive.policy.denied` names the message type it refused and nothing
+     * that says which message: hivemind-core builds it with source and
+     * destination context only. With one utterance in flight that is enough
+     * to know whose it was. With two it is not, and attributing it to either
+     * would end an ask the hub never refused -- so both fall back to what an
+     * uncorrelated denial always did, and wait out their own deadline.
+     *
+     * `sendCode()` publishes utterances too but tracks nothing: it is
+     * fire-and-forget, so a refusal of it was never observable and is not
+     * counted here.
+     */
+    internal fun soleUtteranceInFlight(id: String): Boolean = synchronized(correlationLock) {
+        activeQueryIds.isEmpty() && activeAskIds.size == 1 && id in activeAskIds
+    }
+
+    /**
      * Registers a bus event listener. When [sessionId] or [requestId] are given,
      * events carrying a different correlation id are filtered out (events without
      * one still pass, matching the other SDKs).
@@ -361,7 +379,8 @@ public class ThalovantClient(
                 // one thing the denial does carry.
                 val deniedThisAsk = event.name == ThalovantEvents.POLICY_DENIED &&
                     event.data.optionalString("denied_type") ==
-                    ThalovantEvents.RECOGNIZER_LOOP_UTTERANCE
+                    ThalovantEvents.RECOGNIZER_LOOP_UTTERANCE &&
+                    soleUtteranceInFlight(effectiveRequestId)
                 if (event.requestId != effectiveRequestId && !deniedThisAsk) return@addBusListener
                 synchronized(lock) {
                     if (failureEvent != null || operationFailure != null) return@addBusListener
