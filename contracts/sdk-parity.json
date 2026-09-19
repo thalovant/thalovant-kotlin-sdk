@@ -112,7 +112,7 @@
     "refusal": {
       "implementation": {
         "src/main/kotlin/com/thalovant/sdk/Client.kt": "ee77a037313f0360fb961a7518ff28db4b66a948ae03ccf473b58ea0f9a3fb90",
-        "src/main/kotlin/com/thalovant/sdk/Errors.kt": "1fcb9f4cb769a9b14f04fa9afbec82347b91f5c4e290745b47bf2f91b7be6f0c"
+        "src/main/kotlin/com/thalovant/sdk/Errors.kt": "67d5dbf7968c7510eead5d3a2e85af04bb779ff986612a8cb755ad1749db0874"
       },
       "reason": "failureError() and refusalBelongsToAsk() in Errors.kt, used by ask() in Client.kt, which counts asks, queries and fire-and-forget utterances inside the shared grace window -- recorded once connected and immediately before the publish, and kept when the publish throws. Run against the shared refusal vectors; TransportTest drives denials over the real transport and RuntimeTest covers an ask beside a query and beside a fire-and-forget send.",
       "status": "required",
@@ -120,7 +120,7 @@
         "src/test/kotlin/com/thalovant/sdk/RefusalVectorsTest.kt": "29cfa1696ca39a9ea468815b002645807f601312281f8b0aeafa2f6b3748e6e8",
         "src/test/kotlin/com/thalovant/sdk/RuntimeTest.kt": "123dafcb80e50a4b9f80e9f88788ff59f5cd87073abee79f642de9a0dc95c939",
         "src/test/kotlin/com/thalovant/sdk/TransportTest.kt": "44a6c350b3df5551fcf5846be448bb90b8c3f3c39252e4aeecdbb40446758770",
-        "src/test/resources/thalovant/refusal-vectors.json": "253f75186765ef78a6c1daef9e9238ab9cc6337cdc57e66898fff8a77dd031d2"
+        "src/test/resources/thalovant/refusal-vectors.json": "6b0f4128f1cc9fd8a54944410ce93c6515bac6cde9257284e313a4fea825bfcb"
       },
       "vectors": {
         "refusal-vectors.json": "src/test/resources/thalovant/refusal-vectors.json"
@@ -164,7 +164,7 @@
     "1e8b76b34b755207bb754e5f4c7364334f14476dee70fce1d2687bfdc1545f30",
     "f6a74ead44d53658228da3f4457334f3e922b67dd1e33b43c3ba8b6f7c066bf9",
     "6f5f697b07eb86da6877faf8aa27138430f886495ac965d08a28fba780e411cd",
-    "5e1d6547780bb2cba69223a8010b7746d8c2b41af0496e1acd61c8ba33ae7983"
+    "2377330566e575bb3fda77998d943667bf0795940f9d569a5b8bc7f4f0e5e486"
   ],
   "schema_version": 1
 }

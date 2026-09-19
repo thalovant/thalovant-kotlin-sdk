@@ -136,10 +136,20 @@ public class ThalovantPolicyDeniedException(
  * guess. A negative limit, usage or reset time is not something a policy can
  * mean, and passing one through would have an app say "-1 of -5 questions used".
  */
+/**
+ * The largest count the wire can carry, being the largest whole number every
+ * JSON decoder holds exactly. Above it a decoder backed by a double can no
+ * longer tell one whole number from the next, so two SDKs would report
+ * different allowances for the same denial -- and a count nobody can agree on
+ * is worse than none.
+ */
+internal const val MAX_COUNT: Long = (1L shl 53) - 1
+
 private fun kotlinx.serialization.json.JsonElement?.count(): Long {
     val primitive = this as? JsonPrimitive ?: return 0
     if (!primitive.isString && (primitive.content == "true" || primitive.content == "false")) return 0
-    return (primitive.content.trim().toLongOrNull() ?: 0).coerceAtLeast(0)
+    val whole = primitive.content.trim().toLongOrNull() ?: 0
+    return if (whole in 0..MAX_COUNT) whole else 0
 }
 
 private fun policyDeniedMessage(
