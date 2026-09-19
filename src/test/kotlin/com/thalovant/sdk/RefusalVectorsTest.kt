@@ -52,7 +52,9 @@ class RefusalVectorsTest {
             val expect = case["expect"]!!.jsonObject
             val error = failureError(eventOf(case))
             if (expect["kind"]!!.jsonPrimitive.content == "unanswered") {
-                assertIs<ThalovantUnansweredException>(error, name)
+                val unanswered = assertIs<ThalovantUnansweredException>(error, name)
+                // What the person said, which is what a caller shows.
+                assertEquals(expect["said"]!!.jsonPrimitive.content, unanswered.spoken, name)
                 continue
             }
             val refused = assertIs<ThalovantPolicyDeniedException>(error, name)

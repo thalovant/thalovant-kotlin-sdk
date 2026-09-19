@@ -151,6 +151,11 @@ private fun policyDeniedMessage(
     // day to "allow this connection to publish recognizer_loop:utterance" sent
     // them to a settings page that could not help.
     if (quota != null) {
+        if (quota.limit == 0 && quota.used == 0 && quota.resetAfterSeconds == 0L && quota.period.isEmpty()) {
+            // Refused on a quota, with none of the numbers. "All questions
+            // used" would be inventing one.
+            return "The hub refused '$deniedType': a quota has run out."
+        }
         val used = if (quota.limit > 0) "${quota.used} of ${quota.limit}" else "all"
         val period = if (quota.period.isNotEmpty()) " ${quota.period}" else ""
         val resets = if (quota.resetAfterSeconds > 0) "; it resets in ${quota.resetAfterSeconds}s" else ""

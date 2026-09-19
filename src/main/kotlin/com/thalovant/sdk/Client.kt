@@ -126,13 +126,26 @@ public class ThalovantClient(
         data: JsonObject = EMPTY_JSON_OBJECT,
         context: JsonObject = EMPTY_JSON_OBJECT,
     ) {
-        if (eventType == ThalovantEvents.RECOGNIZER_LOOP_UTTERANCE) {
-            // A fire-and-forget utterance: nothing will wait on it, but the
-            // hub may refuse it, and that refusal carries no request id.
-            synchronized(correlationLock) { untrackedSends.addLast(System.nanoTime()) }
+        if (eventType != ThalovantEvents.RECOGNIZER_LOOP_UTTERANCE) {
+            connect()
+            transport.emitBus(eventType, data, context)
+            return
         }
-        connect()
-        transport.emitBus(eventType, data, context)
+        // A fire-and-forget utterance: nothing will wait on it, but the hub may
+        // refuse it, and that refusal carries no request id. Recorded before
+        // the publish so a denial cannot beat the record, and dropped again if
+        // the publish never happened -- a send that failed to leave leaves
+        // nothing for the hub to refuse, and a phantom would suppress a real
+        // refusal for the whole grace window.
+        val sentAt = System.nanoTime()
+        synchronized(correlationLock) { untrackedSends.addLast(sentAt) }
+        try {
+            connect()
+            transport.emitBus(eventType, data, context)
+        } catch (error: Throwable) {
+            synchronized(correlationLock) { untrackedSends.remove(sentAt) }
+            throw error
+        }
     }
 
     /** Sends a fire-and-forget utterance with fresh correlation ids. */
