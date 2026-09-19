@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.7.11
+
+- The refusal behaviour 0.7.9 introduced is now the parity contract's `refusal` capability, held to the Python reference's shared `refusal-vectors.json`. Two of its cases found this SDK wrong:
+  - **A denial carrying another ask's request id ended this ask** when nothing else was in flight. The request id is the one thing that does say whose a denial is; `refusalBelongsToAsk()` now judges a denial by it whenever it is there, and falls back to the sole-utterance rule only when it is not.
+  - **`allowed` kept blank and untrimmed entries.** A message type an operator is told to allow is now a non-blank, trimmed string, as the reference already had it.
+- `ThalovantPolicyDeniedException`'s message fits the refusal. It told everybody to "allow this connection to publish `recognizer_loop:utterance` in the dashboard" -- the fix for an allow-list, and no help for a spent quota or for `backend_unavailable`, a hub whose assistant is down, which arrives under the same event. `BACKEND_UNAVAILABLE` names that code.
+- A fire-and-forget utterance -- `sendUtterance()`, `sendCode()`, or `emit()` of `recognizer_loop:utterance` -- counts as in flight for 10 s after it is sent, so a refusal of it cannot end an unrelated ask. 0.7.9 and 0.7.10 did not count them.
+- A fire-and-forget utterance is recorded once the connection is up and immediately before the publish, so the grace window is not spent on a handshake; a connect that fails records nothing, and a publish that throws keeps its record, because a transport can fail after the hub already holds the frame. The deque is pruned as entries are added, so a client that only ever sends does not keep them for its lifetime.
+- `Quota.limit` and `Quota.used` are `Long`: a hub may allow more than an `Int` holds, and the conversion wrapped such a limit negative.
+- A refusal on a quota the hub sent no numbers for says a quota has run out, rather than claiming "all questions used".
+- Quota counts are never negative and never past a signed 64-bit integer.
+- The constructor takes `quota` (defaulted, so existing calls compile), and a quota refusal whose numbers are missing is still a quota, with zeros, rather than none.
+
 ## 0.7.10
 
 - A denial the hub cannot correlate now ends an `ask` only when that ask is
