@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.12
+
+- Automated patch release of the unreleased changes on `main` since v0.7.11.
+
 ## 0.7.11
 
 - The refusal behaviour 0.7.9 introduced is now the parity contract's `refusal` capability, held to the Python reference's shared `refusal-vectors.json`. Two of its cases found this SDK wrong:
