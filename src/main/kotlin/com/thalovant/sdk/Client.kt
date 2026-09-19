@@ -83,16 +83,31 @@ public class ThalovantClient(
     private val untrackedSends = ArrayDeque<Long>()
 
     /**
+     * Notes a fire-and-forget utterance, pruning as it goes: a client that
+     * only ever sends and never asks would otherwise keep one entry per send
+     * for as long as it lives.
+     */
+    private fun recordUntrackedSend() = synchronized(correlationLock) {
+        untrackedSends.addLast(System.nanoTime())
+        pruneUntrackedSends()
+    }
+
+    /** Drops what is past the grace window, and any excess beyond the cap. */
+    private fun pruneUntrackedSends() {
+        val now = System.nanoTime()
+        while (untrackedSends.isNotEmpty() &&
+            (now - untrackedSends.first()) / 1_000_000 > UNTRACKED_UTTERANCE_GRACE_MS) untrackedSends.removeFirst()
+        while (untrackedSends.size > 1024) untrackedSends.removeFirst()
+    }
+
+    /**
      * How many utterances this client may still have refused, for a denial
      * with no request id: asks and queries while they wait, and a
      * fire-and-forget utterance for [UNTRACKED_UTTERANCE_GRACE_MS] after it
      * was sent -- its refusal could land while an ask is waiting.
      */
     internal fun utterancesInFlight(): Triple<Int, Int, Int> = synchronized(correlationLock) {
-        val now = System.nanoTime()
-        while (untrackedSends.isNotEmpty() &&
-            (now - untrackedSends.first()) / 1_000_000 > UNTRACKED_UTTERANCE_GRACE_MS) untrackedSends.removeFirst()
-        while (untrackedSends.size > 1024) untrackedSends.removeFirst()
+        pruneUntrackedSends()
         Triple(activeAskIds.size, activeQueryIds.size, untrackedSends.size)
     }
 
@@ -132,20 +147,22 @@ public class ThalovantClient(
             return
         }
         // A fire-and-forget utterance: nothing will wait on it, but the hub may
-        // refuse it, and that refusal carries no request id. Recorded before
-        // the publish so a denial cannot beat the record, and dropped again if
-        // the publish never happened -- a send that failed to leave leaves
-        // nothing for the hub to refuse, and a phantom would suppress a real
-        // refusal for the whole grace window.
-        val sentAt = System.nanoTime()
-        synchronized(correlationLock) { untrackedSends.addLast(sentAt) }
-        try {
-            connect()
-            transport.emitBus(eventType, data, context)
-        } catch (error: Throwable) {
-            synchronized(correlationLock) { untrackedSends.remove(sentAt) }
-            throw error
-        }
+        // refuse it, and that refusal carries no request id.
+        //
+        // Recorded once the connection is up and immediately before the
+        // publish. Connecting can wait seconds for a transport and its
+        // handshake, and starting the window there would spend the grace on it
+        // -- leaving a denial to land after it, where an unrelated ask would
+        // take it. A connect that fails publishes nothing, so it records
+        // nothing.
+        //
+        // A publish that throws keeps its record: a transport can fail after
+        // the hub already holds the frame, and the hub refuses what it holds.
+        // A record that need not have been there costs an ask its deadline; a
+        // missing one ends a question the hub never refused.
+        connect()
+        recordUntrackedSend()
+        transport.emitBus(eventType, data, context)
     }
 
     /** Sends a fire-and-forget utterance with fresh correlation ids. */

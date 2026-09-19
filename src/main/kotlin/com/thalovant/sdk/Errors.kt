@@ -76,10 +76,11 @@ public class ThalovantPolicyDeniedException(
     public data class Quota(
         /** The counter that ran out, as the hub names it: `daily`, `monthly`. */
         public val period: String,
-        /** What that counter allows in its period. */
-        public val limit: Int,
+        /** What that counter allows in its period. A hub may allow more than
+         *  an Int holds, so these are the whole range the wire can carry. */
+        public val limit: Long,
         /** How much of it was used. */
-        public val used: Int,
+        public val used: Long,
         /** Seconds until the counter resets, or 0 when the hub did not say. */
         public val resetAfterSeconds: Long,
     )
@@ -112,8 +113,8 @@ public class ThalovantPolicyDeniedException(
             val quota = if (code == QUOTA_EXCEEDED) {
                 Quota(
                     period = (inner["period"] as? JsonPrimitive)?.takeIf { it.isString }?.content.orEmpty(),
-                    limit = inner["limit"].count().toInt(),
-                    used = inner["used"].count().toInt(),
+                    limit = inner["limit"].count(),
+                    used = inner["used"].count(),
                     resetAfterSeconds = inner["reset_after"].count(),
                 )
             } else {
@@ -151,12 +152,12 @@ private fun policyDeniedMessage(
     // day to "allow this connection to publish recognizer_loop:utterance" sent
     // them to a settings page that could not help.
     if (quota != null) {
-        if (quota.limit == 0 && quota.used == 0 && quota.resetAfterSeconds == 0L && quota.period.isEmpty()) {
+        if (quota.limit == 0L && quota.used == 0L && quota.resetAfterSeconds == 0L && quota.period.isEmpty()) {
             // Refused on a quota, with none of the numbers. "All questions
             // used" would be inventing one.
             return "The hub refused '$deniedType': a quota has run out."
         }
-        val used = if (quota.limit > 0) "${quota.used} of ${quota.limit}" else "all"
+        val used = if (quota.limit > 0L) "${quota.used} of ${quota.limit}" else "all"
         val period = if (quota.period.isNotEmpty()) " ${quota.period}" else ""
         val resets = if (quota.resetAfterSeconds > 0) "; it resets in ${quota.resetAfterSeconds}s" else ""
         return "The hub refused '$deniedType': $used$period questions used$resets."

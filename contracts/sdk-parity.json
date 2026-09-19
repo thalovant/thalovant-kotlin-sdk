@@ -2,7 +2,7 @@
   "capabilities": {
     "binary": {
       "implementation": {
-        "src/main/kotlin/com/thalovant/sdk/Client.kt": "0d3e7def7a771e7dba7788e0b8766e790603632e7fa71d07f237c5ed11049e14",
+        "src/main/kotlin/com/thalovant/sdk/Client.kt": "ee77a037313f0360fb961a7518ff28db4b66a948ae03ccf473b58ea0f9a3fb90",
         "src/main/kotlin/com/thalovant/sdk/Events.kt": "d0758e6932ab0ccb610f6e99301ed8c92e5358c7e0958d2c3ffaa067938c0672",
         "src/main/kotlin/com/thalovant/sdk/Transport.kt": "98081dcebe8424be8f170a20a575b5086ecdb7e3ad455de92ff0a35376f0b414",
         "src/main/kotlin/com/thalovant/sdk/Wire.kt": "9df50d1cc0435667e45add571f75e94dead3fe584590a4007d9ef1235d7c847e"
@@ -39,7 +39,7 @@
     },
     "conversation": {
       "implementation": {
-        "src/main/kotlin/com/thalovant/sdk/Client.kt": "0d3e7def7a771e7dba7788e0b8766e790603632e7fa71d07f237c5ed11049e14",
+        "src/main/kotlin/com/thalovant/sdk/Client.kt": "ee77a037313f0360fb961a7518ff28db4b66a948ae03ccf473b58ea0f9a3fb90",
         "src/main/kotlin/com/thalovant/sdk/Events.kt": "d0758e6932ab0ccb610f6e99301ed8c92e5358c7e0958d2c3ffaa067938c0672"
       },
       "reason": "carryConversation() and the client's per-session memory, run against the shared conversation vectors.",
@@ -95,7 +95,7 @@
     },
     "mesh": {
       "implementation": {
-        "src/main/kotlin/com/thalovant/sdk/Client.kt": "0d3e7def7a771e7dba7788e0b8766e790603632e7fa71d07f237c5ed11049e14",
+        "src/main/kotlin/com/thalovant/sdk/Client.kt": "ee77a037313f0360fb961a7518ff28db4b66a948ae03ccf473b58ea0f9a3fb90",
         "src/main/kotlin/com/thalovant/sdk/Events.kt": "d0758e6932ab0ccb610f6e99301ed8c92e5358c7e0958d2c3ffaa067938c0672",
         "src/main/kotlin/com/thalovant/sdk/Transport.kt": "98081dcebe8424be8f170a20a575b5086ecdb7e3ad455de92ff0a35376f0b414"
       },
@@ -111,16 +111,16 @@
     },
     "refusal": {
       "implementation": {
-        "src/main/kotlin/com/thalovant/sdk/Client.kt": "0d3e7def7a771e7dba7788e0b8766e790603632e7fa71d07f237c5ed11049e14",
-        "src/main/kotlin/com/thalovant/sdk/Errors.kt": "68bfc2d1cff83a5d87d4ccf04fc48cd09479b125560a9eca80cc32df85272b98"
+        "src/main/kotlin/com/thalovant/sdk/Client.kt": "ee77a037313f0360fb961a7518ff28db4b66a948ae03ccf473b58ea0f9a3fb90",
+        "src/main/kotlin/com/thalovant/sdk/Errors.kt": "1fcb9f4cb769a9b14f04fa9afbec82347b91f5c4e290745b47bf2f91b7be6f0c"
       },
-      "reason": "failureError() and refusalBelongsToAsk() in Errors.kt, used by ask() in Client.kt, which counts asks, queries and fire-and-forget utterances inside the shared grace window and drops a send whose publish never happened; run against the shared refusal vectors. TransportTest drives denials over the real transport and RuntimeTest covers an ask beside a query and beside a fire-and-forget send.",
+      "reason": "failureError() and refusalBelongsToAsk() in Errors.kt, used by ask() in Client.kt, which counts asks, queries and fire-and-forget utterances inside the shared grace window -- recorded once connected and immediately before the publish, and kept when the publish throws. Run against the shared refusal vectors; TransportTest drives denials over the real transport and RuntimeTest covers an ask beside a query and beside a fire-and-forget send.",
       "status": "required",
       "tests": {
         "src/test/kotlin/com/thalovant/sdk/RefusalVectorsTest.kt": "29cfa1696ca39a9ea468815b002645807f601312281f8b0aeafa2f6b3748e6e8",
         "src/test/kotlin/com/thalovant/sdk/RuntimeTest.kt": "123dafcb80e50a4b9f80e9f88788ff59f5cd87073abee79f642de9a0dc95c939",
         "src/test/kotlin/com/thalovant/sdk/TransportTest.kt": "44a6c350b3df5551fcf5846be448bb90b8c3f3c39252e4aeecdbb40446758770",
-        "src/test/resources/thalovant/refusal-vectors.json": "8795fcd9d8b5ac790176c13ea077b701a5dc1fd584a717ed08744bcab8d21c82"
+        "src/test/resources/thalovant/refusal-vectors.json": "253f75186765ef78a6c1daef9e9238ab9cc6337cdc57e66898fff8a77dd031d2"
       },
       "vectors": {
         "refusal-vectors.json": "src/test/resources/thalovant/refusal-vectors.json"
@@ -164,7 +164,7 @@
     "1e8b76b34b755207bb754e5f4c7364334f14476dee70fce1d2687bfdc1545f30",
     "f6a74ead44d53658228da3f4457334f3e922b67dd1e33b43c3ba8b6f7c066bf9",
     "6f5f697b07eb86da6877faf8aa27138430f886495ac965d08a28fba780e411cd",
-    "4c7780ced5bb3e011d10a0ac502bba61c08eaebfd27de6c827c5d47351ac2b4e"
+    "5e1d6547780bb2cba69223a8010b7746d8c2b41af0496e1acd61c8ba33ae7983"
   ],
   "schema_version": 1
 }
