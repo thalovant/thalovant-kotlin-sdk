@@ -57,7 +57,26 @@ public class ListingRules(data: JsonObject? = listingResource("listing.json")) {
     private fun tag(lang: String?): String? = lang?.takeIf { it.isNotEmpty() }?.let { closestLanguage(it,languages.keys) }
     public fun languageData(lang: String?): JsonObject = tag(lang)?.let { Json.parseToJsonElement(languages.getValue(it).toString()).jsonObject } ?: JsonObject(emptyMap())
     private fun wordSet(lang: String?, key: String): Set<String> = (if (lang.isNullOrEmpty()) languages.values.map { it.jsonObject } else listOf(languageData(lang))).flatMap { values(it,key) }.map { it.lowercase() }.toSet()
-    private fun words(text: String): List<String> = text.splitToSequence(Regex("(?U)\\s+")).filter { it.isNotEmpty() }.toList()
+    // Split by hand, not with `(?U)\\s+`. Android's regex engine is ICU, which
+    // rejects the `(?U)` flag outright: every listing on every Android phone
+    // threw PatternSyntaxException here, and the JVM this SDK is tested on
+    // accepts the flag, so nothing but a phone could ever have shown it.
+    private fun words(text: String): List<String> {
+        val found = mutableListOf<String>()
+        val word = StringBuilder()
+        var i = 0
+        while (i < text.length) {
+            val point = text.codePointAt(i)
+            if (isListingSpace(point)) {
+                if (word.isNotEmpty()) { found += word.toString(); word.setLength(0) }
+            } else {
+                word.appendCodePoint(point)
+            }
+            i += Character.charCount(point)
+        }
+        if (word.isNotEmpty()) found += word.toString()
+        return found
+    }
     public fun dangling(text: String,lang: String? = null): Boolean {
         var end = text.length
         while (end > 0) {
@@ -105,3 +124,16 @@ public class ListingRules(data: JsonObject? = listingResource("listing.json")) {
 public val DEFAULT_LISTING: ListingRules = ListingRules()
 public fun asSentence(text: String,lang: String? = null,listing: ListingRules = DEFAULT_LISTING): String = listing.asSentence(text,lang)
 public fun speakableWithLanguage(pattern: String,slots: Map<String,String> = emptyMap(),lang: String? = null,listing: ListingRules = DEFAULT_LISTING): String = listing.speakable(pattern,slots,lang)
+
+/**
+ * Whitespace as the Python reference's `str.split()` sees it: exactly the
+ * code points `str.isspace()` accepts.
+ *
+ * Java's `isWhitespace` or `isSpaceChar` covers all of them but U+0085, which
+ * Python counts and Java files as a control. `(?U)\\s`, which this replaced,
+ * was the JVM's Unicode White_Space -- close, but it left out U+001C..U+001F,
+ * which Python splits on. So this is nearer the reference than what it
+ * replaced, as well as able to run on a phone.
+ */
+internal fun isListingSpace(point: Int): Boolean =
+    Character.isWhitespace(point) || Character.isSpaceChar(point) || point == 0x85
