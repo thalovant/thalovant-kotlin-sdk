@@ -17,6 +17,45 @@ class ListingTest {
         assertFalse(DEFAULT_LISTING.dangling("weather in$letter","en"))
         assertTrue(DEFAULT_LISTING.dangling("weather in$mark","en"))
     }
+    /**
+     * Exactly the code points Python's `str.isspace()` accepts, all of Unicode.
+     *
+     * The listing mirrors the Python reference's `str.split()`, so whitespace
+     * is whatever Python says it is -- checked everywhere, not on a sample.
+     */
+    @Test fun `listing whitespace is exactly Python's`() {
+        val python = setOf(
+            0x9, 0xa, 0xb, 0xc, 0xd, 0x1c, 0x1d, 0x1e, 0x1f, 0x20, 0x85, 0xa0, 0x1680,
+            0x2000, 0x2001, 0x2002, 0x2003, 0x2004, 0x2005, 0x2006, 0x2007, 0x2008, 0x2009, 0x200a,
+            0x2028, 0x2029, 0x202f, 0x205f, 0x3000,
+        )
+        val differ = (0..0x10FFFF).filter { isListingSpace(it) != (it in python) }
+        assertTrue(differ.isEmpty(), "differs from Python at: " + differ.take(10).joinToString { "U+%04X".format(it) })
+    }
+
+    @Test fun `a trailing word is found across any Unicode space`() {
+        // A no-break space and an ideographic space split words as a plain one does.
+        for (space in listOf(" ", "\u00a0", "\u3000", "\u2009")) {
+            assertTrue(DEFAULT_LISTING.dangling("weather${space}in", "en"), "U+%04X".format(space[0].code))
+        }
+    }
+
+    /**
+     * Android's regex engine is ICU, and ICU rejects the `(?U)` flag outright.
+     * The JVM this suite runs on accepts it, so a behavioural test here passes
+     * while every listing on every phone throws PatternSyntaxException -- which
+     * is what happened. This reads the sources instead.
+     */
+    @Test fun `no regex uses a flag Android rejects`() {
+        val offenders = java.io.File("src/main/kotlin").walkTopDown().filter { it.extension == "kt" }
+            .flatMap { file -> file.readLines().mapIndexedNotNull { i, line ->
+                val code = line.trimStart()
+                if (code.startsWith("//") || code.startsWith("*") || code.startsWith("/*")) null
+                else if ("(?U)" in line || "UNICODE_CHARACTER_CLASS" in line) "${file.name}:${i + 1}" else null
+            } }.toList()
+        assertTrue(offenders.isEmpty(), "Android rejects these: $offenders")
+    }
+
     private fun fixture(name: String) = javaClass.getResourceAsStream("/thalovant/$name")!!.bufferedReader().use { Json.parseToJsonElement(it.readText()).jsonObject }
     private fun data(text: String) = Json.parseToJsonElement(text).jsonObject
     @Test fun `matches published Python listing reference cases`() {

@@ -81,12 +81,12 @@
     "listing": {
       "implementation": {
         "src/main/kotlin/com/thalovant/sdk/Intents.kt": "ef2c8f90ef792ae23974208da897581f8b9758c354eb0dad5932d80f7a06163b",
-        "src/main/kotlin/com/thalovant/sdk/Listing.kt": "e1d0dbfb9eea4fb95a9b6e5abf34b0ca74f1af15f9778dda7b73e26615a8f9f7"
+        "src/main/kotlin/com/thalovant/sdk/Listing.kt": "3a8c71c5d0e51102d73038ca4fc949bc172ca80c9e8472ec21c8f94ca5f24c5b"
       },
       "reason": "Applicable public behavior is implemented and exercised by the named regression suites and shared fixtures.",
       "status": "required",
       "tests": {
-        "src/test/kotlin/com/thalovant/sdk/ListingTest.kt": "e60a44a679056a45f39a743df7a1f1e7701e626882dffad4d9f5aae58497ec13",
+        "src/test/kotlin/com/thalovant/sdk/ListingTest.kt": "cbc0760072031b5a8d32de630282458ea3f5534b5c82dbba38eaeda05f234fa1",
         "src/test/resources/thalovant/question-vectors.json": "a6ae21cb27eac6a33cf1026677f0c36be50f0e13faa7ce724bedc9a3b8bb8386"
       },
       "vectors": {
