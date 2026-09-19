@@ -51,6 +51,10 @@ class RuntimeTest {
         // Filed as two entries they aged and were evicted separately, so with
         // the cache full the second could evict the first and a caller
         // continuing under the id it sent found no carry.
+        // Every ask here takes CARRY_SETTLE_MS: handled follows speak on
+        // another thread, and with the client's zero window an ask can return
+        // before the carry it is about has been filed. The subject is the
+        // store, not the window.
         val fake = RuntimeFake(); val sdk = client(fake)
         val handlers = ThalovantJson.parseToJsonElement("""[{"skill_id":"a"}]""")
         // The emitted context carries the correlation, so the reply has to be
@@ -67,11 +71,11 @@ class RuntimeTest {
         }
         repeat(ThalovantClient.MAX_REMEMBERED_CONVERSATIONS) { index ->
             fake.busAnswer = answerWith("filler-$index")
-            sdk.ask("fill", sessionId = "filler-$index")
+            sdk.ask("fill", sessionId = "filler-$index", replySettleMs = CARRY_SETTLE_MS, emptyReplyWaitMs = 0)
         }
         // The hub answers this one under a translated id.
         fake.busAnswer = answerWith("hub:sat-1")
-        sdk.ask("hi", sessionId = "sat-1")
+        sdk.ask("hi", sessionId = "sat-1", replySettleMs = CARRY_SETTLE_MS, emptyReplyWaitMs = 0)
 
         // One conversation, two names: not two entries that age apart. Asserted
         // on the store because a behavioural check cannot tell them apart --
@@ -84,7 +88,7 @@ class RuntimeTest {
         for (id in listOf("sat-1", "hub:sat-1")) {
             fake.emitted.clear()
             fake.busAnswer = answerWith(id)
-            sdk.ask("again", sessionId = id)
+            sdk.ask("again", sessionId = id, replySettleMs = CARRY_SETTLE_MS, emptyReplyWaitMs = 0)
             val sent = fake.emitted.first { it.name == "recognizer_loop:utterance" }
             val session = sent.context["session"].asObjectOrNull()
             assertTrue(session?.get("converse_handlers") != null, "$id sent no carried state")

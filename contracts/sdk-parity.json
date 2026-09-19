@@ -118,7 +118,7 @@
       "status": "required",
       "tests": {
         "src/test/kotlin/com/thalovant/sdk/RefusalVectorsTest.kt": "29cfa1696ca39a9ea468815b002645807f601312281f8b0aeafa2f6b3748e6e8",
-        "src/test/kotlin/com/thalovant/sdk/RuntimeTest.kt": "123dafcb80e50a4b9f80e9f88788ff59f5cd87073abee79f642de9a0dc95c939",
+        "src/test/kotlin/com/thalovant/sdk/RuntimeTest.kt": "9a4e74cb1ca2725fe819f52fca22cd383e0e7f905a3c27ef7bb396cfb59bdebe",
         "src/test/kotlin/com/thalovant/sdk/TransportTest.kt": "44a6c350b3df5551fcf5846be448bb90b8c3f3c39252e4aeecdbb40446758770",
         "src/test/resources/thalovant/refusal-vectors.json": "6b0f4128f1cc9fd8a54944410ce93c6515bac6cde9257284e313a4fea825bfcb"
       },
@@ -136,7 +136,7 @@
       "status": "required",
       "tests": {
         "src/test/kotlin/com/thalovant/sdk/ReplyClaimsTest.kt": "48215df9f7ceeeb02f59298d22534506a4eb2e4bdf52075782b3cf2e2a3bb205",
-        "src/test/kotlin/com/thalovant/sdk/RuntimeTest.kt": "123dafcb80e50a4b9f80e9f88788ff59f5cd87073abee79f642de9a0dc95c939",
+        "src/test/kotlin/com/thalovant/sdk/RuntimeTest.kt": "9a4e74cb1ca2725fe819f52fca22cd383e0e7f905a3c27ef7bb396cfb59bdebe",
         "src/test/kotlin/com/thalovant/sdk/TransportTest.kt": "44a6c350b3df5551fcf5846be448bb90b8c3f3c39252e4aeecdbb40446758770",
         "src/test/resources/thalovant/reply-claim-vectors.json": "45f2731589e612d5a849376d94073c57b0fef426a92e1d065c58c48442b1ffdc"
       },
