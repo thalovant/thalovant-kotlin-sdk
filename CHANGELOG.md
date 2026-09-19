@@ -6,6 +6,8 @@
   - **A denial carrying another ask's request id ended this ask** when nothing else was in flight. The request id is the one thing that does say whose a denial is; `refusalBelongsToAsk()` now judges a denial by it whenever it is there, and falls back to the sole-utterance rule only when it is not.
   - **`allowed` kept blank and untrimmed entries.** A message type an operator is told to allow is now a non-blank, trimmed string, as the reference already had it.
 - `ThalovantPolicyDeniedException`'s message fits the refusal. It told everybody to "allow this connection to publish `recognizer_loop:utterance` in the dashboard" -- the fix for an allow-list, and no help for a spent quota or for `backend_unavailable`, a hub whose assistant is down, which arrives under the same event. `BACKEND_UNAVAILABLE` names that code.
+- A fire-and-forget utterance -- `sendUtterance()`, `sendCode()`, or `emit()` of `recognizer_loop:utterance` -- counts as in flight for 10 s after it is sent, so a refusal of it cannot end an unrelated ask. 0.7.9 and 0.7.10 did not count them.
+- Quota counts are never negative: a negative limit, usage or reset time reads as 0.
 - The constructor takes `quota` (defaulted, so existing calls compile), and a quota refusal whose numbers are missing is still a quota, with zeros, rather than none.
 
 ## 0.7.10

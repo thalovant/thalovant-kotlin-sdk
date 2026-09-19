@@ -79,9 +79,21 @@ public class ThalovantClient(
         return ThalovantSubscription { synchronized(correlationLock) { active.remove(id) } }
     }
 
-    /** How many asks and queries this client has out, for a denial with no request id. */
-    internal fun utterancesInFlight(): Pair<Int, Int> = synchronized(correlationLock) {
-        activeAskIds.size to activeQueryIds.size
+    /** When each fire-and-forget utterance went out; see [utterancesInFlight]. */
+    private val untrackedSends = ArrayDeque<Long>()
+
+    /**
+     * How many utterances this client may still have refused, for a denial
+     * with no request id: asks and queries while they wait, and a
+     * fire-and-forget utterance for [UNTRACKED_UTTERANCE_GRACE_MS] after it
+     * was sent -- its refusal could land while an ask is waiting.
+     */
+    internal fun utterancesInFlight(): Triple<Int, Int, Int> = synchronized(correlationLock) {
+        val now = System.nanoTime()
+        while (untrackedSends.isNotEmpty() &&
+            (now - untrackedSends.first()) / 1_000_000 > UNTRACKED_UTTERANCE_GRACE_MS) untrackedSends.removeFirst()
+        while (untrackedSends.size > 1024) untrackedSends.removeFirst()
+        Triple(activeAskIds.size, activeQueryIds.size, untrackedSends.size)
     }
 
     /**
@@ -114,6 +126,11 @@ public class ThalovantClient(
         data: JsonObject = EMPTY_JSON_OBJECT,
         context: JsonObject = EMPTY_JSON_OBJECT,
     ) {
+        if (eventType == ThalovantEvents.RECOGNIZER_LOOP_UTTERANCE) {
+            // A fire-and-forget utterance: nothing will wait on it, but the
+            // hub may refuse it, and that refusal carries no request id.
+            synchronized(correlationLock) { untrackedSends.addLast(System.nanoTime()) }
+        }
         connect()
         transport.emitBus(eventType, data, context)
     }
@@ -369,9 +386,9 @@ public class ThalovantClient(
                     // ask's, even with nothing else in flight -- which 0.7.9
                     // and 0.7.10 got wrong. refusalBelongsToAsk() is the rule
                     // the shared refusal vectors pin.
-                    val (asks, queries) = utterancesInFlight()
+                    val (asks, queries, sends) = utterancesInFlight()
                     if (!refusalBelongsToAsk(event.requestId, effectiveRequestId,
-                            event.data.optionalString("denied_type"), asks, queries)) return@addBusListener
+                            event.data.optionalString("denied_type"), asks, queries, sends)) return@addBusListener
                 } else if (event.requestId != effectiveRequestId) {
                     return@addBusListener
                 }

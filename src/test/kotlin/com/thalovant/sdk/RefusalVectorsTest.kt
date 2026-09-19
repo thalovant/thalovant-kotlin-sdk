@@ -87,9 +87,15 @@ class RefusalVectorsTest {
                 deniedType = case["denied_type"]!!.jsonPrimitive.content,
                 asksInFlight = case["asks_in_flight"]!!.jsonPrimitive.int,
                 queriesInFlight = case["queries_in_flight"]!!.jsonPrimitive.int,
+                sendsInFlight = case["sends_in_flight"]!!.jsonPrimitive.int,
             )
             assertEquals(case["taken"]!!.jsonPrimitive.boolean, taken, case["name"]!!.jsonPrimitive.content)
         }
+    }
+
+    @Test
+    fun `the grace window is the one the vectors name`() {
+        assertEquals(cases["untracked_grace_seconds"]!!.jsonPrimitive.int * 1000L, UNTRACKED_UTTERANCE_GRACE_MS)
     }
 
     @Test

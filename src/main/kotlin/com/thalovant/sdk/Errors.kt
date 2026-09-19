@@ -130,11 +130,15 @@ public class ThalovantPolicyDeniedException(
     }
 }
 
-/** A whole count from the wire, or 0: never a boolean, never a guess. */
+/**
+ * A whole, non-negative count from the wire, or 0: never a boolean, never a
+ * guess. A negative limit, usage or reset time is not something a policy can
+ * mean, and passing one through would have an app say "-1 of -5 questions used".
+ */
 private fun kotlinx.serialization.json.JsonElement?.count(): Long {
     val primitive = this as? JsonPrimitive ?: return 0
     if (!primitive.isString && (primitive.content == "true" || primitive.content == "false")) return 0
-    return primitive.content.trim().toLongOrNull() ?: 0
+    return (primitive.content.trim().toLongOrNull() ?: 0).coerceAtLeast(0)
 }
 
 private fun policyDeniedMessage(
@@ -180,8 +184,10 @@ internal fun failureError(event: ThalovantEvent): ThalovantException = when (eve
  * builds its denials with source and destination context only, so the usual
  * one carries none and names the refused type instead: enough when this ask is
  * the only utterance the client has out, a guess otherwise -- and a wrong
- * guess ends a question the hub never refused. The shared refusal vectors pin
- * every case.
+ * guess ends a question the hub never refused. [sendsInFlight] is
+ * fire-and-forget utterances still inside [UNTRACKED_UTTERANCE_GRACE_MS]: they
+ * have nothing to wait on, but a refusal of one could land while this ask is
+ * waiting. The shared refusal vectors pin every case.
  */
 internal fun refusalBelongsToAsk(
     requestId: String?,
@@ -189,10 +195,23 @@ internal fun refusalBelongsToAsk(
     deniedType: String?,
     asksInFlight: Int,
     queriesInFlight: Int,
+    sendsInFlight: Int = 0,
 ): Boolean {
     if (!requestId.isNullOrEmpty()) return requestId == ownRequestId
-    return deniedType == ThalovantEvents.RECOGNIZER_LOOP_UTTERANCE && asksInFlight == 1 && queriesInFlight == 0
+    return deniedType == ThalovantEvents.RECOGNIZER_LOOP_UTTERANCE &&
+        asksInFlight == 1 && queriesInFlight == 0 && sendsInFlight == 0
 }
+
+/**
+ * How long a fire-and-forget utterance counts as possibly still being refused.
+ *
+ * Denials come back as fast as the hub admits a message -- milliseconds -- so
+ * this is generous on purpose: a wrong "in flight" only costs an ask the
+ * deadline it always had, where a wrong "not in flight" ends a question the
+ * hub never refused. The shared refusal vectors name it
+ * (`untracked_grace_seconds`), so every SDK uses the same window.
+ */
+internal const val UNTRACKED_UTTERANCE_GRACE_MS: Long = 10_000
 
 /**
  * Control-plane API failures. [statusCode] and [body] are set when the API

@@ -195,6 +195,28 @@ class RuntimeTest {
         query.cancel()
     }
 
+    @Test fun `an uncorrelated denial does not fail an ask a fire-and-forget send could own`() = runBlocking {
+        // sendUtterance() has no reply and no id, but the hub can refuse it,
+        // and that refusal names only the type. Landing while an ask waits, it
+        // could be either message's -- so the ask gets its own answer instead.
+        val fake = RuntimeFake(); val sdk = client(fake)
+        sdk.sendUtterance("turn the lights off")
+        val ask = async { sdk.ask("ask", requestId = "a-1", timeoutMs = 5000, replySettleMs = 0) }
+        withTimeout(2000) { while (fake.emitted.size != 2) yield() }
+
+        fake.deliver(ThalovantEvent(ThalovantEvents.POLICY_DENIED,
+            buildJsonObject {
+                put("denied_type", ThalovantEvents.RECOGNIZER_LOOP_UTTERANCE)
+                put("code", "intent_quota_exceeded")
+            },
+            buildJsonObject { put("source", "hivemind-core") }))
+        val context = contextWithCorrelation(EMPTY_JSON_OBJECT, requestId = "a-1")
+        fake.deliver(ThalovantEvent("speak", buildJsonObject { put("utterance", "ask-only") }, context))
+        fake.deliver(ThalovantEvent(ThalovantEvents.UTTERANCE_HANDLED, EMPTY_JSON_OBJECT, context))
+
+        assertEquals("ask-only", ask.await().text)
+    }
+
     @Test fun `ask budget includes connect send empty wait and settle`() = runBlocking {
         for (phase in listOf("connect", "send", "empty", "settle", "no_speech")) {
             val fake = RuntimeFake(); val sdk = client(fake)
