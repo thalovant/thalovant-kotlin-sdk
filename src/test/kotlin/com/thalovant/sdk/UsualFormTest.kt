@@ -27,9 +27,13 @@ class UsualFormTest {
     fun `a tag already in its usual form has nothing to retry with`() {
         // Null rather than the same tag, so a caller can tell "already right"
         // from "no idea" -- and so a hub that answered is never asked twice.
-        assertNull(usualForm("en-US"))
+        // Only byte-for-byte the usual form. The CAPITAL spelling is a
+        // different string to a manifest keyed `en-us`, and suppressing its
+        // retry was the bug.
+        assertEquals("en-us", usualForm("en-US"))
+        assertEquals("fr-fr", usualForm("fr-FR"))
         assertNull(usualForm("en-us"))
-        assertNull(usualForm("fr-FR"))
+        assertNull(usualForm("fr-fr"))
     }
 
     @Test
