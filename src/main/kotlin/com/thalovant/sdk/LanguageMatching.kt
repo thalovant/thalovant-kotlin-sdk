@@ -97,7 +97,10 @@ public fun usualForm(tag: String): String? {
     if (LanguageMatching.field("likely", base) == null) return null
     val likely = runCatching { LanguageMatching.maximize(LanguageMatching.Tag(base)) }.getOrNull() ?: return null
     val usual = (if (likely.region.isNotEmpty()) "${likely.language}-${likely.region}" else likely.language).lowercase()
-    return usual.takeUnless { sameLanguage(it, tag) }
+    // Byte comparison, NOT sameLanguage. They are not the same test, and the
+    //  difference is the whole point: the canonical spelling is en-US, the manifest is
+    //  keyed en-us, and sameLanguage calls those equal -- so the retry that exists for exactly this case suppressed itself.
+    return usual.takeUnless { it == tag.trim() }
 }
 
 /** Nearest OVOS-compatible locale at distance ten or less; ties retain input order. */
