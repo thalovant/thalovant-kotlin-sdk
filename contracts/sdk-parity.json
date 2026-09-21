@@ -4,7 +4,7 @@
       "implementation": {
         "src/main/kotlin/com/thalovant/sdk/Client.kt": "ee77a037313f0360fb961a7518ff28db4b66a948ae03ccf473b58ea0f9a3fb90",
         "src/main/kotlin/com/thalovant/sdk/Events.kt": "d0758e6932ab0ccb610f6e99301ed8c92e5358c7e0958d2c3ffaa067938c0672",
-        "src/main/kotlin/com/thalovant/sdk/Transport.kt": "98081dcebe8424be8f170a20a575b5086ecdb7e3ad455de92ff0a35376f0b414",
+        "src/main/kotlin/com/thalovant/sdk/Transport.kt": "60c22a243a6b4146cd5e86a203e8a64fb9987ff76b875f67a4be77981a99ecf0",
         "src/main/kotlin/com/thalovant/sdk/Wire.kt": "9df50d1cc0435667e45add571f75e94dead3fe584590a4007d9ef1235d7c847e"
       },
       "reason": "HiveWire.decode branches on BINARY: four bits of payload type, then the clip itself, never parsed or inflated. onBinary() delivers it. Run against the shared binary vectors and against binary-frames.json, which is hivemind-bus-client's own encoder output rather than frames this SDK built for itself.",
@@ -97,7 +97,7 @@
       "implementation": {
         "src/main/kotlin/com/thalovant/sdk/Client.kt": "ee77a037313f0360fb961a7518ff28db4b66a948ae03ccf473b58ea0f9a3fb90",
         "src/main/kotlin/com/thalovant/sdk/Events.kt": "d0758e6932ab0ccb610f6e99301ed8c92e5358c7e0958d2c3ffaa067938c0672",
-        "src/main/kotlin/com/thalovant/sdk/Transport.kt": "98081dcebe8424be8f170a20a575b5086ecdb7e3ad455de92ff0a35376f0b414"
+        "src/main/kotlin/com/thalovant/sdk/Transport.kt": "60c22a243a6b4146cd5e86a203e8a64fb9987ff76b875f67a4be77981a99ecf0"
       },
       "reason": "onHive() over the five hive kinds and propagate/escalate/broadcast, run against the shared mesh vectors.",
       "status": "required",
@@ -112,14 +112,14 @@
     "refusal": {
       "implementation": {
         "src/main/kotlin/com/thalovant/sdk/Client.kt": "ee77a037313f0360fb961a7518ff28db4b66a948ae03ccf473b58ea0f9a3fb90",
-        "src/main/kotlin/com/thalovant/sdk/Errors.kt": "67d5dbf7968c7510eead5d3a2e85af04bb779ff986612a8cb755ad1749db0874"
+        "src/main/kotlin/com/thalovant/sdk/Errors.kt": "334b8f5139b95abb23a1ed6ab12100f1d9ffc6a68784589518c00893839a83f3"
       },
       "reason": "failureError() and refusalBelongsToAsk() in Errors.kt, used by ask() in Client.kt, which counts asks, queries and fire-and-forget utterances inside the shared grace window -- recorded once connected and immediately before the publish, and kept when the publish throws. Run against the shared refusal vectors; TransportTest drives denials over the real transport and RuntimeTest covers an ask beside a query and beside a fire-and-forget send.",
       "status": "required",
       "tests": {
         "src/test/kotlin/com/thalovant/sdk/RefusalVectorsTest.kt": "29cfa1696ca39a9ea468815b002645807f601312281f8b0aeafa2f6b3748e6e8",
         "src/test/kotlin/com/thalovant/sdk/RuntimeTest.kt": "9a4e74cb1ca2725fe819f52fca22cd383e0e7f905a3c27ef7bb396cfb59bdebe",
-        "src/test/kotlin/com/thalovant/sdk/TransportTest.kt": "44a6c350b3df5551fcf5846be448bb90b8c3f3c39252e4aeecdbb40446758770",
+        "src/test/kotlin/com/thalovant/sdk/TransportTest.kt": "c5bf2c0b2b13bd427f5b0f37c9cb9f9b59480f544cfc2b8ba06bd11f7e1678f9",
         "src/test/resources/thalovant/refusal-vectors.json": "6b0f4128f1cc9fd8a54944410ce93c6515bac6cde9257284e313a4fea825bfcb"
       },
       "vectors": {
@@ -130,14 +130,14 @@
       "implementation": {
         "src/main/kotlin/com/thalovant/sdk/Events.kt": "d0758e6932ab0ccb610f6e99301ed8c92e5358c7e0958d2c3ffaa067938c0672",
         "src/main/kotlin/com/thalovant/sdk/Runtime.kt": "4d366a4d8338c8e3d114d9b0e55f749c7c22dee51c1e571d50eff373b53516aa",
-        "src/main/kotlin/com/thalovant/sdk/Transport.kt": "98081dcebe8424be8f170a20a575b5086ecdb7e3ad455de92ff0a35376f0b414"
+        "src/main/kotlin/com/thalovant/sdk/Transport.kt": "60c22a243a6b4146cd5e86a203e8a64fb9987ff76b875f67a4be77981a99ecf0"
       },
       "reason": "Applicable public behavior is implemented and exercised by the named regression suites and shared fixtures. HiveMind #251/#252 only changes the Python upstream client dispatcher; this consumer uses native single-dispatch transports (MCP delegates to the Node SDK), or caller-owned frame parsing in embedded C. No Python HiveMind bus dependency or slave-protocol reinjection exists here. Python now requires fixed upstream 1.1.9a1 and removes its identity-based suppression; equal independent native frames remain distinct. Reply claim metadata follows the Python string-ID contract, with first-seen ordering, case-sensitive fallback stages and legacy unstamped success. Invalid non-string stamps are ignored. Embedded C exposes bounded extraction and claim classification while its caller retains ordered IDs.",
       "status": "required",
       "tests": {
         "src/test/kotlin/com/thalovant/sdk/ReplyClaimsTest.kt": "48215df9f7ceeeb02f59298d22534506a4eb2e4bdf52075782b3cf2e2a3bb205",
         "src/test/kotlin/com/thalovant/sdk/RuntimeTest.kt": "9a4e74cb1ca2725fe819f52fca22cd383e0e7f905a3c27ef7bb396cfb59bdebe",
-        "src/test/kotlin/com/thalovant/sdk/TransportTest.kt": "44a6c350b3df5551fcf5846be448bb90b8c3f3c39252e4aeecdbb40446758770",
+        "src/test/kotlin/com/thalovant/sdk/TransportTest.kt": "c5bf2c0b2b13bd427f5b0f37c9cb9f9b59480f544cfc2b8ba06bd11f7e1678f9",
         "src/test/resources/thalovant/reply-claim-vectors.json": "45f2731589e612d5a849376d94073c57b0fef426a92e1d065c58c48442b1ffdc"
       },
       "vectors": {
