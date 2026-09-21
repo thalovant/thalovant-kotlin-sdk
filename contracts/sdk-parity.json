@@ -80,7 +80,7 @@
     },
     "listing": {
       "implementation": {
-        "src/main/kotlin/com/thalovant/sdk/Intents.kt": "ef2c8f90ef792ae23974208da897581f8b9758c354eb0dad5932d80f7a06163b",
+        "src/main/kotlin/com/thalovant/sdk/Intents.kt": "7f2a1ad7b09eee6ec23fd869eedbdb8994dd2a55650a25a027b7d5ccbefccbae",
         "src/main/kotlin/com/thalovant/sdk/Listing.kt": "3a8c71c5d0e51102d73038ca4fc949bc172ca80c9e8472ec21c8f94ca5f24c5b"
       },
       "reason": "Applicable public behavior is implemented and exercised by the named regression suites and shared fixtures.",
@@ -164,7 +164,8 @@
     "1e8b76b34b755207bb754e5f4c7364334f14476dee70fce1d2687bfdc1545f30",
     "f6a74ead44d53658228da3f4457334f3e922b67dd1e33b43c3ba8b6f7c066bf9",
     "6f5f697b07eb86da6877faf8aa27138430f886495ac965d08a28fba780e411cd",
-    "2377330566e575bb3fda77998d943667bf0795940f9d569a5b8bc7f4f0e5e486"
+    "2377330566e575bb3fda77998d943667bf0795940f9d569a5b8bc7f4f0e5e486",
+    "76bc1eb9957da5a6fdf03e89f3905f8d37d3ef2fe7c841ba751718105ca30a45"
   ],
   "schema_version": 1
 }
