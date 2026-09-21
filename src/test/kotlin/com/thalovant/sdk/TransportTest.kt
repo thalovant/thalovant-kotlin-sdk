@@ -103,6 +103,57 @@ class TransportTest {
         server.start()
     }
 
+    /**
+     * A hub that completes the handshake and then refuses the client.
+     *
+     * This is what a contradicted TOFU pin looks like on the wire: the hub can
+     * only judge this side's static key after reading the last handshake
+     * message, so it accepts every byte of the handshake and then closes.
+     * Nothing distinguishes it from a good connection except that nothing ever
+     * comes back.
+     *
+     * [closeCode] is 1000 on purpose -- hivemind-core's abort path calls
+     * `client.disconnect()`, whose default is a normal closure, so this
+     * carries no hint at all that it was a refusal.
+     */
+    private fun startRefusingHub(closeCode: Int = 1000) {
+        repeat(2) { server.enqueue(
+            MockResponse().withWebSocketUpgrade(
+                object : WebSocketListener() {
+                    private var exchange: NoiseHandshake? = null
+                    override fun onOpen(webSocket: WebSocket, response: Response) {
+                        serverSocket.set(webSocket)
+                        webSocket.send(hiveMessage("hello", helloPayload).toString())
+                        webSocket.send(hiveMessage("shake", offer).toString())
+                    }
+
+                    override fun onMessage(webSocket: WebSocket, text: String) {
+                        val params = ThalovantJson.parseToJsonElement(text).jsonObject["payload"]!!.jsonObject["noise"]!!.jsonObject
+                        if (exchange == null) {
+                            val pattern = params["pattern"]!!.jsonPrimitive.content
+                            val suite = params["suite"]!!.jsonPrimitive.content
+                            exchange = NoiseHandshake(pattern, suite, psk, Noise.prologue(helloPayload, offer, "Noise_${pattern}_$suite"), serverKey, initiator = false)
+                        }
+                        val state = exchange!!
+                        state.read(Noise.unhex(params["msg"]!!.jsonPrimitive.content))
+                        if (!state.finished) webSocket.send(hiveMessage("shake", buildJsonObject { put("noise", buildJsonObject { put("msg", Noise.hex(state.write())) }) }).toString())
+                    }
+
+                    override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
+                        // The client's encrypted HELLO. The hub has read its
+                        // static key by now, does not like it, and hangs up.
+                        webSocket.close(closeCode, null)
+                    }
+
+                    override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
+                        webSocket.close(code, reason)
+                    }
+                },
+            ),
+        ) }
+        server.start()
+    }
+
     private fun identity(endpoint: String = "ws://${server.hostName}:${server.port}"): ThalovantIdentity = ThalovantIdentity(
         buildJsonObject {
             put("access_key", "access")
@@ -265,6 +316,49 @@ class TransportTest {
                 .encodeToString("$DEFAULT_USER_AGENT:access".toByteArray())
             assertEquals(expected, upgrade.requestUrl?.queryParameter("authorization"))
             assertEquals(DEFAULT_USER_AGENT, upgrade.getHeader("User-Agent"))
+        } finally {
+            client.close()
+        }
+    }
+
+    @Test
+    fun `a hub that hangs up without accepting the client is reported, not reported ready`() = runBlocking {
+        // The failure this exists for: hivemind-core pins a client's Noise
+        // static key and aborts a handshake whose key contradicts it, which is
+        // what a connection re-paired onto a reinstalled app or a second
+        // handset always looks like. The abort closes the socket AFTER this
+        // side has written its last handshake message -- so connect() used to
+        // return success, the caller cleared its trouble banner, and the
+        // socket died a few milliseconds later with nothing raised anywhere.
+        // A phone in that state waits on its hub for ever.
+        startRefusingHub()
+        val client = ThalovantClient(identity(), noiseStore = HiveMindNoiseStore(stateDir), protocol = HubProtocol.WSS, replySettleMs = 10)
+        try {
+            val refused = assertFailsWith<ThalovantIdentityException> { client.connect(5000) }
+            assertTrue(
+                refused.message!!.contains("without accepting it"),
+                "a refusal has to say the hub would not have this client, not that the network failed: ${'$'}{refused.message}",
+            )
+        } finally {
+            client.close()
+        }
+    }
+
+    @Test
+    fun `a hub that keeps the connection still gets one, within the window`(): Unit = runBlocking {
+        // The other side of the same decision, and the cost of it. The
+        // acceptance window is paid by every connection a hub is happy with,
+        // so it has to let one through -- and inside connect()'s own deadline,
+        // not by eating it.
+        startHub()
+        val client = ThalovantClient(identity(), noiseStore = HiveMindNoiseStore(stateDir), protocol = HubProtocol.WSS, replySettleMs = 10)
+        try {
+            val elapsed = measureTimeMillis { client.connect(5000) }
+            awaitMessage()
+            assertTrue(
+                elapsed < maxOf(DEFAULT_ACCEPTANCE_WINDOW_MS * 4, 3_000L),
+                "a connection nobody refused waits the window once, not repeatedly: ${'$'}elapsed ms",
+            )
         } finally {
             client.close()
         }

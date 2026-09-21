@@ -2,6 +2,8 @@ package com.thalovant.sdk
 
 import java.nio.file.Files
 import kotlin.test.Test
+import kotlin.test.assertFailsWith
+import kotlin.test.assertIs
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -81,5 +83,25 @@ class NoiseStoreAndroidTest {
         val rejected = runCatching { store.verifyOrPin("node-a", second) }
         assertTrue(rejected.isFailure, "the second key overwrote the first")
         assertContentEquals(first, store.pin("node-a"), "the first key did not survive")
+    }
+
+    @Test
+    fun `a hub answering with another key says so in a type a caller can act on`() {
+        // It used to be `check`, so this arrived as a plain
+        // IllegalStateException -- which is also what an app throws for "this
+        // client is not paired", and is the first thing a caller matches. So a
+        // hub that had honestly been rebuilt, and whose saved pin was merely
+        // out of date, was reported to people as a phone that had never been
+        // set up: a sentence about the wrong end of the problem, under a
+        // button that could not fix it.
+        val directory = Files.createTempDirectory("noise-rotated-hub")
+        val store = HiveMindNoiseStore(directory)
+        store.verifyOrPin("node-a", ByteArray(32) { 1 })
+
+        val rotated = assertFailsWith<ThalovantHubIdentityChangedException> {
+            store.verifyOrPin("node-a", ByteArray(32) { 2 })
+        }
+        // Still an identity failure to anybody who only cares that much.
+        assertIs<ThalovantIdentityException>(rotated)
     }
 }

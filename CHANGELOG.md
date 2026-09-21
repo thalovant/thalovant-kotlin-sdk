@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.7.13
+
+- **A hub that will not have a client no longer looks like a connection that works.** The v3 handshake carries this side's static key in its last message, so a hub judges that key after there is nothing left for it to send: it answers a key it accepts with silence, and one it will not have by closing the socket. `connect()` returned the instant it had written that last message, so a refusal arrived a few milliseconds later as an ordinary close on a connection the caller had already been told was ready -- nothing raised, nothing to show anybody.
+
+  That is not a corner case. `hivemind-core` pins a client's Noise static key on first use and refuses any later handshake that contradicts the pin, and a satellite keeps its key in that install's private storage -- so a connection re-paired onto a reinstalled app or a second handset is refused every single time, invisibly. A phone in that state waits on its hub for ever, reconnecting on every probe and being refused silently on each one.
+
+  `connect()` now holds the connection open for `DEFAULT_ACCEPTANCE_WINDOW_MS` (750 ms) before reporting it ready, and a close inside that window is raised as `ThalovantIdentityException` -- the same type as a refused access key, because it asks the same thing of a person. A close *after* the session has carried a frame stays a `ThalovantConnectionException`: that connection was plainly accepted, and telling somebody to pair again over a hub restart would throw away a perfectly good credential. `HiveMindWssTransport(acceptanceWindowMs = 0)` restores the old behaviour.
+
+- **A rebuilt hub is no longer reported as a client that was never paired.** `HiveMindNoiseStore.verifyOrPin` refused a hub answering with a key other than the pinned one by way of `check`, so it arrived as a bare `IllegalStateException` -- which is also what an app throws for "this client is not paired", and is the first thing a caller matches. New `ThalovantHubIdentityChangedException`, extending `ThalovantIdentityException` so callers that only distinguish "the identity is the problem" are unaffected.
+
 ## 0.7.12
 
 - Automated patch release of the unreleased changes on `main` since v0.7.11.
