@@ -4,10 +4,10 @@ import kotlinx.serialization.json.*
 
 // OVOS-compatible CLDR distances. Adapted from langcodes 3.5.1 (MIT),
 // with versioned tables and attribution in the packaged resources.
-private object LanguageMatching {
+internal object LanguageMatching {
     val data = listingResource("language-matching.json")
     fun field(section: String, key: String): String? = data[section]?.jsonObject?.get(key)?.jsonPrimitive?.content
-    data class Tag(var language: String, var script: String = "", var region: String = "")
+    internal data class Tag(var language: String, var script: String = "", var region: String = "")
     private fun script(value: String) = value.length == 4 && value.all { it in 'a'..'z' }
     private fun region(value: String) = (value.length == 2 && value.all { it in 'a'..'z' }) || (value.length == 3 && value.all { it in '0'..'9' })
     fun parse(raw: String, aliases: Boolean = true): Tag {
@@ -62,6 +62,42 @@ private object LanguageMatching {
         }
         return result + td
     }
+}
+
+/**
+ * The form a language is usually written in, when that differs from [tag].
+ *
+ * `en-CA` and `en-AT` both to `en-us`, `fr-BE` to `fr-fr`, `pt-AO` to
+ * `pt-br`, from CLDR's likely subtags. Null when there is nothing different
+ * to try, so a caller can tell "already the usual form" from "no idea".
+ *
+ * Listing and asking do not agree about languages, and this is what closes
+ * the gap. A hub matches an utterance to the closest language it knows, so a
+ * phone set to `en-CA` is understood by skills registered under `en-US`; its
+ * manifest is keyed by exact tag, so the same hub lists nothing for `en-CA`.
+ *
+ * Lower case, because that is how skills register and how the manifest is
+ * keyed. The manifest lookup is exact, so a retry in the wrong case finds
+ * nothing, which is the very failure this exists to end.
+ */
+public fun usualForm(tag: String): String? {
+    if (tag.isBlank()) return null
+    val base = LanguageMatching.parse(tag).language.ifEmpty { return null }
+    // `und` is the tag for "no idea", and `parse` produces it for anything
+    // it cannot read. It has a likely entry -- CLDR's guess for an unknown
+    // language is English -- so without this, an empty tag would come back
+    // `en-us` and a hub would be listed in a language nobody asked for.
+    if (base == "und") return null
+    // `maximize` does not fail on a language it has never heard of: it walks
+    // its probes down to `und` and takes the root locale's region, so "zzz"
+    // comes back "zzz-us" -- a confident United States for a language that
+    // does not exist. A direct entry in the likely table is what says CLDR
+    // has actually heard of this language, and round-tripping the tag does
+    // not, because the unknown language is carried through unchanged.
+    if (LanguageMatching.field("likely", base) == null) return null
+    val likely = runCatching { LanguageMatching.maximize(LanguageMatching.Tag(base)) }.getOrNull() ?: return null
+    val usual = (if (likely.region.isNotEmpty()) "${likely.language}-${likely.region}" else likely.language).lowercase()
+    return usual.takeUnless { sameLanguage(it, tag) }
 }
 
 /** Nearest OVOS-compatible locale at distance ten or less; ties retain input order. */

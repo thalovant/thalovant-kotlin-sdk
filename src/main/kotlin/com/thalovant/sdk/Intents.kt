@@ -89,6 +89,14 @@ public data class IntentInventoryOptions(
     public val describe: Boolean = true,
     /** Fall back to the engines' manifests when the hub refuses `ovos.intent.list`. */
     public val fallback: Boolean = true,
+    /**
+     * Retry an empty listing once in the language's usual form.
+     *
+     * On by default: a listing that returns nothing from a hub which
+     * demonstrably answers in that language is a fault, not a preference.
+     * See [usualForm].
+     */
+    public val nearest: Boolean = true,
 )
 
 /** Options for [ThalovantClient.listIntents]. */
@@ -260,6 +268,16 @@ public data class HubIntentInventory(
     public val denied: List<String> = emptyList(),
     public val fallbacks: List<HubFallback> = emptyList(),
     public val fallbacksKnown: Boolean = false,
+    /**
+     * The tag the hub actually listed each requested language under, in the
+     * same order as [languages].
+     *
+     * Equal to [languages] unless a listing came back empty and the
+     * language's usual form answered instead, which is the only way the two
+     * differ. Callers rendering sentences must read them from the tag that
+     * answered.
+     */
+    public val listedIn: List<String> = emptyList(),
 ) {
     /** Every intent of every skill, in skill order. */
     public val intents: List<HubIntent> get() = skills.flatMap { it.intents }
@@ -511,12 +529,35 @@ internal suspend fun ThalovantClient.intentInventory(
     require(asked.isNotEmpty()) { "intents() needs at least one language." }
 
     val listed = LinkedHashMap<String, List<IntentRegistration>>()
+    val answered = LinkedHashMap<String, String>()
     try {
         for (lang in asked) {
-            listed[lang] = listIntentRegistrations(
-                lang,
-                ListIntentsOptions(timeoutMs = options.timeoutMs, includeDefinitions = options.describe),
-            )
+            val listingOptions =
+                ListIntentsOptions(timeoutMs = options.timeoutMs, includeDefinitions = options.describe)
+            var rows = listIntentRegistrations(lang, listingOptions)
+            var tag = lang
+            if (rows.isEmpty() && options.nearest) {
+                // Listing and asking do not agree about languages. The hub
+                // matches an utterance to the closest language it knows, so
+                // a phone set to en-CA is understood by skills registered
+                // under en-US; the manifest is keyed by exact tag, so the
+                // same hub lists nothing for en-CA -- and a person is shown
+                // an empty hub by the hub that is answering them.
+                //
+                // Once only, and only on an empty listing: a hub that
+                // answered is never asked twice, and a language whose usual
+                // form is itself has nothing to retry with.
+                val usual = usualForm(lang)
+                if (usual != null) {
+                    val retried = listIntentRegistrations(usual, listingOptions)
+                    if (retried.isNotEmpty()) {
+                        rows = retried
+                        tag = usual
+                    }
+                }
+            }
+            listed[tag] = rows
+            answered[lang] = tag
         }
     } catch (denied: ThalovantPolicyDeniedException) {
         if (!options.fallback || denied.deniedType != ThalovantEvents.INTENT_LIST) throw denied
@@ -572,6 +613,7 @@ internal suspend fun ThalovantClient.intentInventory(
         languages = asked.toList(),
         skills = skills,
         source = HubIntentSource.INTENT_MANIFEST,
+        listedIn = asked.map { answered[it] ?: it },
     ), options.timeoutMs)
 }
 
