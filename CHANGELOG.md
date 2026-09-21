@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.14
+
+- Automated patch release of the unreleased changes on `main` since v0.7.13.
+
 ## 0.7.13
 
 - **A hub that will not have a client no longer looks like a connection that works.** The v3 handshake carries this side's static key in its last message, so a hub judges that key after there is nothing left for it to send: it answers a key it accepts with silence, and one it will not have by closing the socket. `connect()` returned the instant it had written that last message, so a refusal arrived a few milliseconds later as an ordinary close on a connection the caller had already been told was ready -- nothing raised, nothing to show anybody.
