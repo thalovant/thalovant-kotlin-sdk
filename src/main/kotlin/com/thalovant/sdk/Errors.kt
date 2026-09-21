@@ -8,7 +8,26 @@ import kotlinx.serialization.json.JsonPrimitive
 public open class ThalovantException(message: String, cause: Throwable? = null) : RuntimeException(message, cause)
 
 /** Identity files or identity payloads are missing fields or are insecure. */
-public class ThalovantIdentityException(message: String, cause: Throwable? = null) : ThalovantException(message, cause)
+public open class ThalovantIdentityException(message: String, cause: Throwable? = null) : ThalovantException(message, cause)
+
+/**
+ * The hub answered with a Noise static key that is not the pinned one.
+ *
+ * Trust-on-first-use: the first key a hub answers with is remembered, so
+ * nothing can quietly stand in for it afterwards. A refusal here is that
+ * protection working -- and it is also what an honestly rebuilt hub looks
+ * like, because a new deployment mints a new key and the saved pin is then
+ * merely out of date. The two cannot be told apart from here, so this refuses
+ * and says which question it is, rather than guessing.
+ *
+ * Its own type because the answer is different from every other identity
+ * failure: nothing about this client's credentials is wrong, and a caller that
+ * reports "your hub would not accept this connection" is pointing at the wrong
+ * end of it. It extends [ThalovantIdentityException] so callers that only
+ * distinguish "the identity is the problem" keep working unchanged.
+ */
+public class ThalovantHubIdentityChangedException(message: String, cause: Throwable? = null) :
+    ThalovantIdentityException(message, cause)
 
 /** Data-plane connection or handshake failures. */
 public class ThalovantConnectionException(message: String, cause: Throwable? = null) : ThalovantException(message, cause)

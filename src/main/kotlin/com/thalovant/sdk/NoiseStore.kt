@@ -33,7 +33,16 @@ public class HiveMindNoiseStore(public val directory: Path = defaultDirectory())
         prepareDirectory()
         val file = pinFile(nodeId)
         try { writeNew(file, Noise.hex(key)) } catch (_: java.nio.file.FileAlreadyExistsException) { }
-        check(MessageDigest.isEqual(key, readKey(file))) { "Noise server key changed; verify its rotation before replacing the saved pin." }
+        // Typed, not `check`: an IllegalStateException here is
+        // indistinguishable from every other one a caller catches, and the one
+        // an app reaches for first is "this client is not paired" -- so a hub
+        // that had simply been rebuilt was reported to people as a phone that
+        // had never been set up. See [ThalovantHubIdentityChangedException].
+        if (!MessageDigest.isEqual(key, readKey(file))) {
+            throw ThalovantHubIdentityChangedException(
+                "Noise server key changed; verify its rotation before replacing the saved pin.",
+            )
+        }
     }
     private fun prepareDirectory() {
         if (Files.isSymbolicLink(directory)) error("Noise state directory cannot be a symbolic link.")

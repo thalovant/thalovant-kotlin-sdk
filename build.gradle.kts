@@ -11,7 +11,7 @@ plugins {
 }
 
 group = "com.thalovant"
-version = "0.7.12"
+version = "0.7.13"
 
 repositories {
     mavenCentral()

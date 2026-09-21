@@ -52,6 +52,30 @@ public class HiveMindWssTransport(
     public val userAgent: String = DEFAULT_USER_AGENT,
     httpClient: OkHttpClient? = null,
     private val noiseStore: HiveMindNoiseStore = HiveMindNoiseStore(),
+    /**
+     * How long to let a hub refuse this client after the handshake, before
+     * [connect] reports the connection ready.
+     *
+     * **This window is the only proof of acceptance the protocol offers.** In
+     * XXpsk2 this side's static key travels in the *last* handshake message,
+     * so the hub judges it after there is nothing left for it to send. It
+     * answers a key it accepts with silence -- there is no frame that means
+     * yes -- and a contradicted TOFU pin by closing the socket.
+     *
+     * Without the window, [connect] returned success the instant it had
+     * written that last message, and the refusal arrived milliseconds later
+     * as an ordinary close on a connection the caller had already been told
+     * was ready. Nothing raised, nothing to show anybody: a phone whose
+     * connection had been re-paired onto it waited on its hub for ever,
+     * reconnecting on every probe and being refused invisibly each time. It
+     * is the difference between an error and a mystery.
+     *
+     * Paid once per connection and only when the hub is happy -- a refusal
+     * ends the wait early. A refusal slower than this is not misreported,
+     * only noticed on the next probe, which is where it was noticed before.
+     * Zero restores the old behaviour.
+     */
+    private val acceptanceWindowMs: Long = DEFAULT_ACCEPTANCE_WINDOW_MS,
 ) : HiveMindRuntimeTransport {
     private val client: OkHttpClient = httpClient ?: defaultClient
     private val listeners = CopyOnWriteArrayList<(ThalovantEvent) -> Unit>()
@@ -115,6 +139,28 @@ public class HiveMindWssTransport(
     private var opened = CompletableDeferred<Unit>()
     private var handshake = CompletableDeferred<Unit>()
 
+    /**
+     * Completed with the reason this connection ended, if it ended.
+     *
+     * Separate from [handshake] because the case that matters is a close
+     * arriving *after* the handshake succeeded -- which is how a hub says it
+     * did not accept this client's static key, and which [handshake] can no
+     * longer report, having already been completed.
+     */
+    private var ended = CompletableDeferred<Throwable>()
+
+    /**
+     * Whether the hub has said anything through the authenticated session.
+     *
+     * A close is only read as a refusal while nothing has come back. A
+     * session that has carried a frame was plainly accepted, and its later
+     * close is an ordinary disconnection -- a hub restarting, a phone losing
+     * its network -- which must not be reported as a credential no hub will
+     * ever take.
+     */
+    @Volatile
+    private var heardFromHub: Boolean = false
+
     public val authorization: String
         get() = Base64.getEncoder().encodeToString("$userAgent:${identity.accessKey}".toByteArray(Charsets.UTF_8))
 
@@ -164,6 +210,8 @@ public class HiveMindWssTransport(
             connectDurationMs = null
             opened = CompletableDeferred()
             handshake = CompletableDeferred()
+            ended = CompletableDeferred()
+            heardFromHub = false
             generation
         }
         val request = Request.Builder()
@@ -177,6 +225,17 @@ public class HiveMindWssTransport(
         try {
             opened.await()
             handshake.await()
+            // A completed handshake is not an accepted one. See
+            // [acceptanceWindowMs]: the hub forms its opinion of this side's
+            // static key after the last message it will ever receive from us,
+            // says nothing when it is content, and closes when it is not. So
+            // the connection is called ready only once it has survived the
+            // window, and a close inside the window is raised here -- where a
+            // caller is still listening -- rather than landing silently on a
+            // connection that has already been reported good.
+            if (acceptanceWindowMs > 0) {
+                withTimeoutOrNull(acceptanceWindowMs) { ended.await() }?.let { throw it }
+            }
         } catch (error: Throwable) {
             synchronized(sendLock) {
                 if (attempt == generation) {
@@ -249,6 +308,10 @@ public class HiveMindWssTransport(
     }
 
     private fun handleRawMessage(raw: String, authenticated: Boolean = false): List<() -> Unit> {
+        // Anything arriving through the authenticated session is the hub
+        // speaking to a connection it kept, which settles the question a later
+        // close would otherwise raise. See [SocketListener.closedAfterHandshake].
+        if (authenticated) heardFromHub = true
         val deliveries = mutableListOf<() -> Unit>()
         check(authenticated || noiseSession == null) { "Plaintext frame received after Noise negotiation." }
         val parsed = ThalovantJson.parseToJsonElement(raw).asObjectOrNull()
@@ -377,14 +440,45 @@ public class HiveMindWssTransport(
         override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) = receive {
             // OkHttp/interceptor failures can contain the authorized request
             // URL. Never retain that message or cause in public diagnostics.
-            failHandshake(ThalovantConnectionException("HiveMind WSS connection failed."))
+            val error = ThalovantConnectionException("HiveMind WSS connection failed.")
+            ended.complete(error)
+            failHandshake(error)
             emptyList()
         }
         override fun onClosing(webSocket: WebSocket, code: Int, reason: String) { webSocket.close(code, reason) }
         override fun onClosed(webSocket: WebSocket, code: Int, reason: String) = receive {
-            if (!handshakeComplete) failHandshake(closedBeforeHandshake(code))
-            else { resetSession(); phase = "closed" }
+            if (!handshakeComplete) {
+                val error = closedBeforeHandshake(code)
+                ended.complete(error)
+                failHandshake(error)
+            } else {
+                ended.complete(closedAfterHandshake(code))
+                resetSession()
+                phase = "closed"
+            }
             emptyList()
+        }
+
+        /**
+         * What a close means once the handshake has already succeeded.
+         *
+         * Succeeding is not the same as being accepted. This side's static
+         * key travels in the last handshake message, so the hub forms its
+         * opinion of it after there is nothing left to answer: silence means
+         * yes, a close means no.
+         *
+         * A connection that has since carried a frame was accepted, and its
+         * close is an ordinary disconnection. Nothing came back and the socket
+         * closed: the hub read this client's key and would not have it. That
+         * asks the same thing of a person as a refused access key -- pair
+         * again, which is the only thing that gives the hub a key it will
+         * keep -- so it is reported as the same kind of failure.
+         */
+        private fun closedAfterHandshake(code: Int): ThalovantException = when {
+            heardFromHub -> ThalovantConnectionException("HiveMind WSS closed ($code).")
+            else -> ThalovantIdentityException(
+                "The hub closed this connection without accepting it. Pair this client with the hub again.",
+            )
         }
 
         /**
