@@ -24,7 +24,7 @@
     },
     "control": {
       "implementation": {
-        "src/main/kotlin/com/thalovant/sdk/ControlPlane.kt": "925612c101e19f646351d68e782e99895b3793673905acb17677fffa604ab8e1",
+        "src/main/kotlin/com/thalovant/sdk/ControlPlane.kt": "cbde1cc0353d9427d19ca3c75b325682cbfe7eaed838b21f5c11d8e542f59dcb",
         "src/main/kotlin/com/thalovant/sdk/Hubs.kt": "7f77d01990106a91859e808359c44c1c7b17897bc5b63e81892618281294c244",
         "src/main/kotlin/com/thalovant/sdk/NativeSignIn.kt": "5ea87e2a19068cba2ccab8bc1ef7f89caa86ebcc9ebbeafc319674c83cb9f582"
       },
