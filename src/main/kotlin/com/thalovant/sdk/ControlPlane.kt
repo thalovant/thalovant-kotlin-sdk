@@ -182,6 +182,13 @@ public data class HubUpdatePayload(
  * [ThalovantControlPlane.releaseRuntimeGroup]. Every option is optional;
  * omitted fields fall back to the workspace release policy. Passing [images]
  * switches to `custom` mode unless [mode] is also set.
+ *
+ * Unless the caller is a platform administrator, [images] may name only
+ * platform images: a catalog, current or recommended image, or any tag or
+ * digest of the platform's own repository for that key
+ * (`ghcr.io/thalovant/ovos-core` for a runtime group's `core`,
+ * `ghcr.io/thalovant/hivemind-listener` for a hub's `listener`). The API
+ * refuses anything else with HTTP 403 `platform_image_required`.
  */
 public data class ReleaseOptions(
     public val channel: String? = null,
