@@ -1,5 +1,21 @@
 {
   "capabilities": {
+    "api-errors": {
+      "implementation": {
+        "src/main/kotlin/com/thalovant/sdk/ControlPlane.kt": "e5176f1b5becd18fbf9ea0007dbfcf2ead5d7036673d445c52cf94844632d041",
+        "src/main/kotlin/com/thalovant/sdk/Errors.kt": "c4c4c49380c121f1908975bf64dab2f2035e424a8fc5011d3d84252a7b2f1a3b"
+      },
+      "reason": "ThalovantApiException in Errors.kt reads problem, errorCode and detail out of the error body once, exactly as sent, and apiError() in ControlPlane.kt builds one for every non-2xx response, reading the body as UTF-8; its bounded message now carries a string detail, with the bearer token and every string of 8 or more characters the request body sent redacted. Run against the shared API error vectors: each response is served by MockWebServer and read back through getHub(), and the message, toString() and stack trace are checked for every value the body echoed.",
+      "status": "required",
+      "tests": {
+        "src/test/kotlin/com/thalovant/sdk/ApiErrorVectorsTest.kt": "9d4f5a15ede0c36a6e0e525642cc9f73b2a11d178397a4a7ab6822d056409903",
+        "src/test/kotlin/com/thalovant/sdk/ConformanceRecord.kt": "fd4497be06ce8928f83d7d41c8c3dcbd272fdb6f293fe6987eb09e75bef6b11d",
+        "src/test/resources/thalovant/api-error-vectors.json": "f0d2d8e6e153811f071dac6e0611f00f3c32ed772b751ccccb31904d7dc936ec"
+      },
+      "vectors": {
+        "api-error-vectors.json": "src/test/resources/thalovant/api-error-vectors.json"
+      }
+    },
     "binary": {
       "implementation": {
         "src/main/kotlin/com/thalovant/sdk/Client.kt": "ee77a037313f0360fb961a7518ff28db4b66a948ae03ccf473b58ea0f9a3fb90",
@@ -24,7 +40,7 @@
     },
     "control": {
       "implementation": {
-        "src/main/kotlin/com/thalovant/sdk/ControlPlane.kt": "cbde1cc0353d9427d19ca3c75b325682cbfe7eaed838b21f5c11d8e542f59dcb",
+        "src/main/kotlin/com/thalovant/sdk/ControlPlane.kt": "e5176f1b5becd18fbf9ea0007dbfcf2ead5d7036673d445c52cf94844632d041",
         "src/main/kotlin/com/thalovant/sdk/Hubs.kt": "7f77d01990106a91859e808359c44c1c7b17897bc5b63e81892618281294c244",
         "src/main/kotlin/com/thalovant/sdk/NativeSignIn.kt": "5ea87e2a19068cba2ccab8bc1ef7f89caa86ebcc9ebbeafc319674c83cb9f582"
       },
@@ -112,7 +128,7 @@
     "refusal": {
       "implementation": {
         "src/main/kotlin/com/thalovant/sdk/Client.kt": "ee77a037313f0360fb961a7518ff28db4b66a948ae03ccf473b58ea0f9a3fb90",
-        "src/main/kotlin/com/thalovant/sdk/Errors.kt": "334b8f5139b95abb23a1ed6ab12100f1d9ffc6a68784589518c00893839a83f3"
+        "src/main/kotlin/com/thalovant/sdk/Errors.kt": "c4c4c49380c121f1908975bf64dab2f2035e424a8fc5011d3d84252a7b2f1a3b"
       },
       "reason": "failureError() and refusalBelongsToAsk() in Errors.kt, used by ask() in Client.kt, which counts asks, queries and fire-and-forget utterances inside the shared grace window -- recorded once connected and immediately before the publish, and kept when the publish throws. Run against the shared refusal vectors; TransportTest drives denials over the real transport and RuntimeTest covers an ask beside a query and beside a fire-and-forget send.",
       "status": "required",
@@ -166,7 +182,8 @@
     "6f5f697b07eb86da6877faf8aa27138430f886495ac965d08a28fba780e411cd",
     "2377330566e575bb3fda77998d943667bf0795940f9d569a5b8bc7f4f0e5e486",
     "76bc1eb9957da5a6fdf03e89f3905f8d37d3ef2fe7c841ba751718105ca30a45",
-    "34a21f2ad875b220a571613e25b6a6e5f3d8de1a776f4949a7ab63ba93e07b16"
+    "34a21f2ad875b220a571613e25b6a6e5f3d8de1a776f4949a7ab63ba93e07b16",
+    "f79d99e9acd2fe299e3b313102541e47b366751defe5fa0dcfa44053aa7f007d"
   ],
   "schema_version": 1
 }

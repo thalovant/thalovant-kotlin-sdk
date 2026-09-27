@@ -1,6 +1,7 @@
 package com.thalovant.sdk
 
 import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 
@@ -249,42 +250,108 @@ internal fun refusalBelongsToAsk(
 internal const val UNTRACKED_UTTERANCE_GRACE_MS: Long = 10_000
 
 /**
- * Control-plane API failures. [statusCode] and [body] are set when the API
- * responded with a non-2xx status; both are null for local failures such as a
- * missing access token or an unexpected response shape.
+ * A failed control-plane request.
+ *
+ * [statusCode] and [body] are set when the API answered with a non-2xx status.
+ * Everything else the API said rides beside the message rather than inside it,
+ * read out of [body] once, when the exception is built:
+ *
+ * - [problem] is the whole body parsed, when it is a JSON object -- the
+ *   Problem+JSON document every Thalovant API refusal is. A structured field
+ *   the API adds is reachable here without a new SDK release:
+ *   `refused_images`, `allowed_images` and `allowed_repositories` on a
+ *   `platform_image_required` refusal; `resource`, `limit`, `used` and `plan`
+ *   on a `plan_limit` one.
+ * - [errorCode] is the body's machine-readable code, for branching without
+ *   reading the prose.
+ * - [detail] is the API's own sentence, whole, exactly as sent.
+ *
+ * The message is not where to read any of that. It is one line for display:
+ * "Thalovant API request failed with HTTP <status>", followed, when the body
+ * has one, by a short known field -- the body's `detail` when it is a string;
+ * else the `message` or `code` of a `detail` object, the `msg` of each entry
+ * in a validation list, or the body's own `message`, `error_description`,
+ * `error`, `title` or `code` -- with its whitespace collapsed and cut at 200
+ * characters, so a long sentence is shortened there and whole in [detail].
+ * The message never repeats what the request sent: a validation input is
+ * never read into it, and the bearer token and every string of 8 characters
+ * or more in the request body are replaced with `[redacted]` before it is
+ * cut. [body], [problem] and [detail] are exactly what the API sent, and
+ * [toString] is the class name and the message.
+ *
+ * Every field but the message is null for a local failure, such as a missing
+ * access token or an unexpected response shape.
  */
 public class ThalovantApiException(
     message: String,
     public val statusCode: Int? = null,
+    /** The response text as the API sent it, read as UTF-8, or null for a local failure. */
     public val body: String? = null,
 ) : ThalovantException(message) {
 
     /**
-     * The sentence the API wrote for a person, out of [body], or null.
-     *
-     * The control plane answers RFC 7807 and writes its refusals to be read:
-     * "Free plan allows up to 1 client." [message] is not that -- it is the
-     * whole body, whitespace-collapsed and truncated, behind "Thalovant API
-     * request failed with HTTP 403:" -- so a caller that wants to show
-     * somebody why gets a JSON blob or writes this itself.
-     *
-     * thalovant-android wrote it itself, which is why a phone said "Thalovant
-     * could not answer just now. Try again in a moment." to somebody whose
-     * plan was full: not a moment, and trying again would not have helped.
-     *
-     * Both shapes the API emits are handled: `{"detail": "..."}` and the
-     * validation wrapper `{"detail": {"detail": "...", "errors": [...]}}`.
+     * [body] parsed, when it is a JSON object; null for a body that is empty,
+     * is not JSON, or is JSON that is not an object.
      */
-    public val detail: String?
-        get() {
-            val raw = body?.takeIf { it.isNotBlank() } ?: return null
-            val root = runCatching { ThalovantJson.parseToJsonElement(raw).asObjectOrNull() }
-                .getOrNull() ?: return null
-            val detail = root["detail"] ?: return null
-            (detail as? JsonPrimitive)?.takeIf { it.isString }?.content?.let { return it }
-            return ((detail as? JsonObject)?.get("detail") as? JsonPrimitive)
-                ?.takeIf { it.isString }?.content
-        }
+    public val problem: JsonObject? = problemOf(body)
+
+    /**
+     * The body's machine-readable code, such as `platform_image_required` or
+     * `plan_limit`, or null.
+     *
+     * [problem]'s `code` when it is a string with a non-whitespace character;
+     * else, when its `detail` is itself an object -- FastAPI's own envelope,
+     * which the API's Problem+JSON handler normally lifts -- that object's
+     * `code` under the same rule. Returned exactly as sent.
+     */
+    public val errorCode: String? = problemMember(problem, "code")
+
+    /**
+     * The sentence the API wrote for a person, whole, or null.
+     *
+     * The control plane writes its refusals to be read: "Free plan allows up to
+     * 1 connection." A caller that shows somebody why reads it here rather than
+     * writing its own -- which is how a phone once told somebody whose plan was
+     * full to try again in a moment.
+     *
+     * [problem]'s `detail` when it is a string with a non-whitespace character;
+     * else, when `detail` is itself an object, that object's `detail` under the
+     * same rule. Never trimmed, collapsed or shortened: a refusal that lists
+     * every image a caller may pin instead runs past any display limit.
+     */
+    public val detail: String? = problemMember(problem, "detail")
+}
+
+/** The body of a failed request as a JSON object, or null when it is not one. */
+private fun problemOf(body: String?): JsonObject? {
+    if (body.isNullOrEmpty()) return null
+    return try {
+        ThalovantJson.parseToJsonElement(body) as? JsonObject
+    } catch (_: Exception) {
+        null
+    }
+}
+
+/**
+ * [problem]'s [name] member, or the same member of a `detail` that is itself an
+ * object. The same rule reads `code` and `detail`, as every SDK reads them.
+ */
+private fun problemMember(problem: JsonObject?, name: String): String? {
+    if (problem == null) return null
+    return problemText(problem[name]) ?: problemText((problem["detail"] as? JsonObject)?.get(name))
+}
+
+/**
+ * A JSON string with something in it, exactly as sent; anything else is absent.
+ * "Something" is a character the Python reference's `str.strip()` would keep
+ * ([isListingSpace] is its whitespace), so a sentence of only spaces is no
+ * sentence here either.
+ */
+internal fun problemText(value: JsonElement?): String? {
+    val primitive = value as? JsonPrimitive ?: return null
+    if (!primitive.isString) return null
+    val text = primitive.content
+    return text.takeIf { content -> content.any { !isListingSpace(it.code) } }
 }
 
 /** The requested data-plane protocol is unavailable or unsupported. */

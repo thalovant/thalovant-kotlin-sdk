@@ -19,7 +19,7 @@ Full docs: <https://docs.thalovant.com/developers/sdks/kotlin/>
 
 ```kotlin
 dependencies {
-    implementation("com.thalovant:thalovant-sdk:0.7.16")
+    implementation("com.thalovant:thalovant-sdk:0.7.17")
 }
 ```
 
@@ -154,7 +154,9 @@ routes need a **paid plan** and a token with the **`hubs:write`** scope
 ("Create and update your hubs" on the dashboard's API Tokens page). A free-plan
 token fails with HTTP 402 `API access requires a paid plan.`, and a token
 without the scope fails with HTTP 403 `Insufficient scopes`; both arrive as
-`ThalovantApiException` with the status code on `statusCode`.
+`ThalovantApiException` with the status code on `statusCode` (and the API's
+code, sentence and whole body on `errorCode`, `detail` and `problem`; see
+[Reading An API Error](#reading-an-api-error)).
 
 ```kotlin
 import com.thalovant.sdk.HubCreatePayload
@@ -604,11 +606,52 @@ subscription.close()
   points at the next UTC day or month boundary.
 
 Both 429s apply to token-authenticated control-plane calls and surface as
-`ThalovantApiException`, whose `statusCode` is 429 and whose `body` holds the
-JSON above (the codes and fields live under `detail`). The SDK does not retry
-automatically: `Retry-After` is authoritative, so honor it before resending.
+`ThalovantApiException`, whose `statusCode` is 429, whose `errorCode` is the
+code, and whose `problem` holds the JSON above (the codes and fields live under
+`detail`). The SDK does not retry automatically: `Retry-After` is
+authoritative, so honor it before resending.
 Per-plan limits are listed in the dashboard and at
 <https://docs.thalovant.com/developers/sdks/kotlin/>.
+
+## Reading An API Error
+
+A refused control-plane request throws `ThalovantApiException`. Its message is
+one line for display, with the API's sentence cut at 200 characters, so read
+what the API said from the exception itself:
+
+- `statusCode`: the HTTP status.
+- `errorCode`: the machine-readable code, such as `platform_image_required` or
+  `plan_limit`, or null.
+- `detail`: the API's whole sentence, exactly as sent, or null.
+- `problem`: the whole error body as a `JsonObject` when it is a JSON object,
+  or null. Every structured field the API sends is here, including ones added
+  after this SDK was released.
+- `body`: the response text as received.
+
+```kotlin
+import com.thalovant.sdk.ReleaseOptions
+import com.thalovant.sdk.ThalovantApiException
+
+try {
+    api.releaseRuntimeGroup(groupId, ReleaseOptions(images = mapOf("core" to "docker.io/me/ovos-core:dev")))
+} catch (error: ThalovantApiException) {
+    val problem = error.problem
+    when (error.errorCode) {
+        "platform_image_required" -> {
+            println(error.detail)
+            println(problem?.get("allowed_images"))        // per image key
+            println(problem?.get("allowed_repositories"))  // any tag or digest of these
+        }
+        "plan_limit" -> println("${problem?.get("resource")}: ${problem?.get("used")} of ${problem?.get("limit")}")
+        else -> throw error
+    }
+}
+```
+
+The message never repeats a credential the call sent. A validation error's
+echoed input is never read into it, and the bearer token and every string of 8
+characters or more in the request body are replaced with `[redacted]`.
+`problem`, `detail` and `body` are exactly what the API sent.
 
 ## API Shape
 

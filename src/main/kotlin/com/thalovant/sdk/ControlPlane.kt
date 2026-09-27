@@ -183,12 +183,15 @@ public data class HubUpdatePayload(
  * omitted fields fall back to the workspace release policy. Passing [images]
  * switches to `custom` mode unless [mode] is also set.
  *
- * Unless the caller is a platform administrator, [images] may name only
- * platform images: a catalog, current or recommended image, or any tag or
- * digest of the platform's own repository for that key
- * (`ghcr.io/thalovant/ovos-core` for a runtime group's `core`,
- * `ghcr.io/thalovant/hivemind-listener` for a hub's `listener`). The API
- * refuses anything else with HTTP 403 `platform_image_required`.
+ * Unless the caller is a platform administrator, each key of [images] may name
+ * only a platform image for that key: a catalog pin of the stable or alpha
+ * channel, the resource's current or recommended image, its release-policy
+ * image, or the platform's default image. A runtime group's `core` also takes
+ * any tag or digest of `ghcr.io/thalovant/ovos-core`, and a hub's `listener`
+ * any tag or digest of `ghcr.io/thalovant/hivemind-listener`; `bus` and
+ * `preview_bridge` take only the listed images. The API refuses anything else
+ * with HTTP 403 `platform_image_required`, and [ThalovantApiException.problem]
+ * names what each refused key may be instead.
  */
 public data class ReleaseOptions(
     public val channel: String? = null,
@@ -1163,11 +1166,12 @@ public class ThalovantControlPlane(
         for ((key, value) in headers) {
             builder.header(key, value)
         }
-        if (auth) {
-            val token = accessToken
-                ?: throw ThalovantApiException("Missing Thalovant API access token.")
-            builder.header("Authorization", "Bearer $token")
+        val token = if (auth) {
+            accessToken ?: throw ThalovantApiException("Missing Thalovant API access token.")
+        } else {
+            null
         }
+        token?.let { builder.header("Authorization", "Bearer $it") }
         val requestBody = body?.toString()?.toRequestBody("application/json".toMediaType())
         builder.method(method, requestBody)
         return suspendCancellableCoroutine { continuation ->
@@ -1180,10 +1184,8 @@ public class ThalovantControlPlane(
                 override fun onResponse(call: Call, response: Response) {
                     continuation.resumeWith(runCatching {
                         response.use {
+                            if (!response.isSuccessful) throw apiError(response, sentSecrets(token, body))
                             val text = response.body?.string().orEmpty()
-                            if (!response.isSuccessful) throw ThalovantApiException(
-                                apiErrorMessage(response.code, text), statusCode = response.code, body = text,
-                            )
                             if (text.isBlank()) EMPTY_JSON_OBJECT
                             else ThalovantJson.parseToJsonElement(text).asObjectOrNull()
                                 ?: throw ThalovantApiException("Thalovant API returned an unexpected response shape.")
@@ -1204,30 +1206,86 @@ private const val API_ERROR_DETAIL_MAX_LENGTH: Int = 200
 
 private val API_ERROR_WHITESPACE: Regex = Regex("\\s+")
 
+/** What a value this call sent is replaced with when an error message would repeat it. */
+private const val API_ERROR_REDACTED: String = "[redacted]"
+
 /**
- * Builds the human-facing message for a failed API request. The full response
- * body stays on [ThalovantApiException.body] for programmatic inspection (the
- * device flow parses its `error` code from it), but the message keeps only the
- * status and a bounded, known JSON error field. Raw bodies and validation
- * inputs can reflect submitted credentials, so they never become the message.
+ * The shortest value treated as a credential. An email or an enum such as
+ * `stable` is left alone; a password, a key, or a generated secret is not.
  */
-private fun apiErrorMessage(statusCode: Int, body: String): String {
+private const val API_ERROR_SECRET_MIN_LENGTH: Int = 8
+
+/**
+ * What an error message must never repeat: the bearer token and every string
+ * value in this call's JSON body, at least [API_ERROR_SECRET_MIN_LENGTH]
+ * characters long. Longest first, so a value that contains another is replaced
+ * whole rather than leaving its remainder behind.
+ */
+private fun sentSecrets(token: String?, body: JsonObject?): List<String> {
+    val sent = linkedSetOf<String>()
+    token?.let { sent += it }
+    fun collect(element: JsonElement) {
+        when (element) {
+            is JsonObject -> element.values.forEach(::collect)
+            is JsonArray -> element.forEach(::collect)
+            is JsonPrimitive -> if (element.isString) sent += element.content
+        }
+    }
+    body?.let(::collect)
+    return sent.filter { it.length >= API_ERROR_SECRET_MIN_LENGTH }.sortedByDescending { it.length }
+}
+
+/**
+ * Builds the human-facing message for a failed API request: the status and a
+ * bounded, known JSON error field. The full response body stays on
+ * [ThalovantApiException.body] for programmatic inspection (the device flow
+ * parses its `error` code from it), and what the API said in full is on the
+ * exception itself: its `problem`, `errorCode` and whole `detail`.
+ *
+ * The field is the body's own `detail` sentence when it is a string; otherwise
+ * the `message` or `code` of a `detail` object, the `msg` of each validation
+ * entry, or the body's `message`, `error_description`, `error`, `title` or
+ * `code`. A body can repeat what the request sent -- a validation error echoes
+ * its input, which for `POST /v1/auth/token` or `POST /v1/clients` is a
+ * credential -- so a raw body or a validation input never becomes the message,
+ * and every value in [secrets] is replaced with `[redacted]` before the field
+ * is collapsed and bounded, so a cut cannot leave part of one behind.
+ */
+private fun apiErrorMessage(statusCode: Int, body: String, secrets: List<String> = emptyList()): String {
     val envelope = runCatching { ThalovantJson.parseToJsonElement(body) as? JsonObject }.getOrNull()
     fun text(value: JsonElement?): String? = (value as? JsonPrimitive)
         ?.takeIf { it.isString }?.content?.takeIf { it.isNotBlank() }
     val rawDetail = envelope?.get("detail")
-    val summary = (rawDetail as? JsonObject)?.let { text(it["message"]) ?: text(it["code"]) }
+    val summary = problemText(rawDetail)
+        ?: (rawDetail as? JsonObject)?.let { text(it["message"]) ?: text(it["code"]) }
         ?: (rawDetail as? JsonArray)?.mapNotNull { (it as? JsonObject)?.let { row -> text(row["msg"]) } }
             ?.takeIf { it.isNotEmpty() }?.joinToString("; ")
         ?: listOf("message", "error_description", "error", "title", "code")
             .firstNotNullOfOrNull { envelope?.get(it)?.let(::text) }
         ?: ""
-    val detail = summary.replace(API_ERROR_WHITESPACE, " ").trim().take(API_ERROR_DETAIL_MAX_LENGTH)
+    val redacted = secrets.fold(summary) { text, secret -> text.replace(secret, API_ERROR_REDACTED) }
+    val detail = redacted.replace(API_ERROR_WHITESPACE, " ").trim().take(API_ERROR_DETAIL_MAX_LENGTH)
     return if (detail.isEmpty()) {
         "Thalovant API request failed with HTTP $statusCode."
     } else {
         "Thalovant API request failed with HTTP $statusCode: $detail"
     }
+}
+
+/**
+ * The error for a response the API answered with a failure status. Every
+ * non-2xx control-plane response becomes one here.
+ *
+ * The body is read as UTF-8 whatever the Content-Type claims: it is JSON, which
+ * is UTF-8, and the API declares no charset on `application/problem+json`, so a
+ * charset some proxy declares must not re-spell the API's sentence. A byte
+ * order mark is dropped, as OkHttp drops it. The exception reads its `problem`,
+ * `errorCode` and `detail` out of that text once, exactly as sent; only the
+ * message, the bounded line [apiErrorMessage] builds, has [secrets] redacted.
+ */
+private fun apiError(response: Response, secrets: List<String>): ThalovantApiException {
+    val text = response.body?.bytes()?.decodeToString()?.removePrefix("\uFEFF").orEmpty()
+    return ThalovantApiException(apiErrorMessage(response.code, text, secrets), statusCode = response.code, body = text)
 }
 
 /** Extracts the device-flow `error` code from an HTTP 400 body, or null. */

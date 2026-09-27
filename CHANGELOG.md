@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.7.17
+
+- `ThalovantApiException` carries the rest of what the API said. `problem` is the whole error body parsed, as a `JsonObject`, when it is a JSON object, and `errorCode` is its machine-readable code. A `platform_image_required` refusal names what a caller may pin instead in `refused_images`, `allowed_images` and `allowed_repositories`, and `plan_limit` sends `resource`, `limit`, `used` and `plan`; until now none of that reached a caller except by parsing `body` again by hand. The constructor and `body` are unchanged.
+- `errorCode` and `detail` follow the rule every SDK now shares: a string with at least one non-whitespace character, else the same member of a `detail` that is itself an object -- FastAPI's own envelope, which the API's Problem+JSON handler normally lifts -- returned whole and exactly as sent. A `detail` of only spaces is now null rather than the spaces. The body is parsed once, when the exception is built, rather than on every read of `detail`.
+- The message carries the API's sentence. It never read a string `detail`, so every Problem+JSON refusal read `Thalovant API request failed with HTTP 403: HTTPException`, its title. It now uses the `detail` sentence, still collapsed to one line and cut at 200 characters, and falls back to the fields it read before. So that it still never repeats a credential, the bearer token and every string of 8 characters or more in the request body are replaced with `[redacted]` before the cut; a validation error's echoed input is still never read into it. `problem`, `detail` and `body` are not redacted.
+- An error body is read as UTF-8 whatever charset its Content-Type declares. The API declares none, which OkHttp already read as UTF-8; a charset some proxy declared would have re-spelled the API's sentence.
+- `ReleaseOptions` states the whole rule for a caller who is not a platform administrator: each image key may name a catalog pin of the stable or alpha channel, the resource's current or recommended image, its release-policy image, or the platform's default image; runtime `core` also takes any tag or digest of `ghcr.io/thalovant/ovos-core`, and hub `listener` any tag or digest of `ghcr.io/thalovant/hivemind-listener`. `bus` and `preview_bridge` take only the listed images.
+- New `api-errors` capability in the parity contract, with the Python reference's `api-error-vectors.json` vendored unchanged: thirteen responses, from the image and plan refusals the API sends to a body that is HTML, empty, or JSON that is not an object, each served by MockWebServer and read back through `getHub()`. What this SDK produced for each is recorded in `contracts/conformance-results.json` and matches the reference.
+
 ## 0.7.16
 
 - Automated patch release of the unreleased changes on `main` since v0.7.15.
