@@ -310,6 +310,57 @@ class HomeLinkSessionTest {
     }
 
     @Test
+    fun `a reply withdrawn while queued is not sent and leaves the link up`(): Unit = runBlocking {
+        FakeHub().use { hub ->
+            val client = hub.connectedClient()
+            try {
+                eventually { hub.sessions.isNotEmpty() }
+                val peer = hub.sessions.single()
+                val transport = client.transport as HiveMindWssTransport
+                // Another frame is being written.
+                transport.sendQueue.lock()
+                val sent = client.answerHomeRequest(
+                    ThalovantEvent(ThalovantHome.REQUEST, request, route), hubTimeoutMs = 200,
+                ) { HomeAnswer(speech = "Done.") }
+                assertEquals(null, sent, "withdrawn at the bound")
+                transport.sendQueue.unlock()
+                // Never sent late, and the same link carries the next frame.
+                client.emit("still.there")
+                val next = withContext(Dispatchers.IO) { peer.awaitBus("still.there") }
+                assertNotNull(next)
+                assertTrue(alive(client))
+                assertEquals(1, hub.attempts.get(), "the same link all along")
+                assertTrue(peer.received.none { it["payload"]?.jsonObject?.get("type")?.jsonPrimitive?.content == ThalovantHome.RESPONSE })
+            } finally {
+                client.close()
+            }
+        }
+    }
+
+    @Test
+    fun `a connection a withdrawn reply had to make stays the session's`(): Unit = runBlocking {
+        val outbox = Outbox()
+        var builds = 0
+        val session = HubSession(
+            connect = { builds++; delay(300); outbox.client().also { it.connect() } },
+            policy = fast,
+            warm = false,
+        )
+        try {
+            val sent = session.answerHomeRequest(ThalovantEvent(ThalovantHome.REQUEST, request), hubTimeoutMs = 100) {
+                HomeAnswer(speech = "Done.")
+            }
+            assertEquals(null, sent)
+            // The connect it started finishes on the session and is kept.
+            withTimeout(2_000) { session.connected.first { it } }
+            assertEquals(1, builds)
+            assertTrue(outbox.emitted.isEmpty(), "nothing sent late")
+        } finally {
+            session.close()
+        }
+    }
+
+    @Test
     fun `a served request is answered within the hub's bound from its arrival, or not at all`(): Unit = runBlocking {
         val outbox = Outbox()
         val client = outbox.client()
@@ -408,8 +459,8 @@ class HomeLinkSessionTest {
         assertEquals("", plainSpeech(" <break time=\"1s\"/> "))
         // A long attribute is scanned, not recursed through.
         assertEquals("Ding", plainSpeech("<audio src='" + "a".repeat(200_000) + "'>Ding</audio>"))
-        // U+001C is not White_Space: kept inside, and trimmed at the ends as Python's strip() does.
-        assertEquals("a\u001Cb", plainSpeech("\u001Ca\u001Cb\u001F"))
+        // U+001C..U+001F are not White_Space: kept, at the ends too.
+        assertEquals("\u001Ca\u001Cb\u001F", plainSpeech(" \u001Ca\u001Cb\u001F\u3000"))
     }
 
     @Test

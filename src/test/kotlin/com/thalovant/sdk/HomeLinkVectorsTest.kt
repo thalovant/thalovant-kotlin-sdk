@@ -317,7 +317,8 @@ class HomeLinkVectorsTest {
         val call = case.getValue("call").jsonObject
         val api = ScriptedApi(case["exchanges"]?.jsonArray.orEmpty().map { it.jsonObject })
         api.use {
-            val url = if (call.text("api") == "unreachable") "http://127.0.0.1:${closedPort()}/" else api.url
+            val resetting = if (call.text("api") == "unreachable") ResettingListener() else null
+            val url = resetting?.let { "http://127.0.0.1:${it.port}/" } ?: api.url
             val plane = ThalovantControlPlane(url, accessToken = "synthetic-token")
             val operation = (call["operation"] as? JsonObject)?.let {
                 val placed = ThalovantJson.parseToJsonElement(
@@ -364,6 +365,7 @@ class HomeLinkVectorsTest {
                 produced["outcome"] = JsonPrimitive("error")
                 produced["polls"] = JsonPrimitive(api.sent.size)
             }
+            resetting?.close()
             expect["waited_at_least_ms"]?.let {
                 // Recorded as the bound it met, so every SDK records the same value.
                 val waitedMs = (System.nanoTime() - started) / 1_000_000
@@ -385,8 +387,27 @@ class HomeLinkVectorsTest {
         }
     }
 
-    /** A loopback port nothing listens on. */
-    private fun closedPort(): Int = java.net.ServerSocket(0, 0, java.net.InetAddress.getLoopbackAddress()).use { it.localPort }
+    /**
+     * An API that cannot be reached, reached the same way on every platform:
+     * a loopback port that accepts each connection and resets it at once. A
+     * closed port is refused at once on Linux and macOS, but Windows retries
+     * the SYN for about two seconds first.
+     */
+    private class ResettingListener : AutoCloseable {
+        private val socket = java.net.ServerSocket(0, 8, java.net.InetAddress.getLoopbackAddress())
+        val port: Int = socket.localPort
+        private val thread = Thread {
+            while (!socket.isClosed) {
+                val connection = runCatching { socket.accept() }.getOrNull() ?: continue
+                runCatching { connection.setSoLinger(true, 0); connection.close() } // RST
+            }
+        }.apply { isDaemon = true; start() }
+
+        override fun close() {
+            socket.close()
+            thread.join(2_000)
+        }
+    }
 
     // -- the home link --------------------------------------------------------
 
@@ -485,6 +506,21 @@ class HomeLinkVectorsTest {
                 assertTrue(outbox.emitted.isEmpty(), "a reply was sent after the hub gave up")
             }
         }
+    }
+
+    @Test
+    fun `the recorder writes JSON byte for byte as the reference does`() {
+        // Every escape the reference's json.dumps(ensure_ascii=False) makes and
+        // every one it does not, keys in code-point order: the digest of
+        // exactly what Python writes for this value.
+        val text = "a\"b\\c/d\b\u000C\n\r\t\u0001\u001F\u007F\u2028\u2029\u00E9\uD83D\uDE00"
+        val value = buildJsonObject {
+            put(text, text)
+            put("\uFFFF", 1)
+            put("\uD83D\uDE00", 2)
+            put("b", JsonArray(listOf(JsonPrimitive(true), JsonNull, JsonPrimitive(1.0))))
+        }
+        assertEquals("fa5644fa9e7805f9a16081e501a442fc01b3feb4c6358962cb31fc7c901f5b5e", ConformanceRecord.canonicalDigest(value))
     }
 
     @Test

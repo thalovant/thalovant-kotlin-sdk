@@ -89,6 +89,16 @@ class HomeLinkControlPlaneTest {
     }
 
     @Test
+    fun `an unusable 2xx token answer has no status, whatever it holds`(): Unit = runBlocking {
+        for (body in listOf("[1, 2]", "\"text\"", """{"token_type": "bearer"}""", "not json")) {
+            answer(200, body)
+            val error = assertFailsWith<ThalovantApiException> { api(null).pollDeviceLogin("dc-1") }
+            assertNull(error.statusCode, body)
+            assertNull(error.problem, body)
+        }
+    }
+
+    @Test
     fun `a revoke that finishes after a new sign-in forgets only the token it revoked`(): Unit = runBlocking {
         // The DELETE is answered late; a password sign-in lands in between.
         server.enqueue(MockResponse().setResponseCode(204).setHeadersDelay(400, java.util.concurrent.TimeUnit.MILLISECONDS))

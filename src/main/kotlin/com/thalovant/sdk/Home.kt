@@ -160,8 +160,10 @@ public data class HomeAnswer(
  *    which stay as written; the five XML entities; and `&nbsp;`. Nothing
  *    else -- `&eacute;` stays `&eacute;` -- and a reference needs its `;`.
  *    An escaped `&lt;b&gt;` is therefore the text `<b>`.
- * 3. Every run of Unicode White_Space becomes one space, and the ends are
- *    trimmed.
+ * 3. Every run of Unicode White_Space becomes one space, and White_Space --
+ *    only White_Space: U+001C..U+001F are kept -- is trimmed from both ends.
+ *
+ * Linear in the length of [text], which comes off the network.
  *
  * No platform HTML library is used: their entity tables differ.
  */
@@ -181,7 +183,9 @@ public fun plainSpeech(text: String?): String {
             out.appendCodePoint(point)
         }
     }
-    return out.toString().trim { isListingSpace(it.code) }
+    // Every White_Space run is one space by now, so trimming spaces trims
+    // exactly White_Space: Kotlin's own trim() would also take U+001C..U+001F.
+    return out.toString().trim(' ')
 }
 /**
  * The `thalovant.home.response` payload for [answer], held to the contract.

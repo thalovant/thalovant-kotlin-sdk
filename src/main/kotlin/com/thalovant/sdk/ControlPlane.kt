@@ -1691,8 +1691,13 @@ public class ThalovantControlPlane(
                         response.use {
                             if (!response.isSuccessful) throw apiError(response, sentSecrets(token, body))
                             val text = response.body?.string().orEmpty()
+                            // A 2xx this SDK cannot use is a local failure,
+                            // with no status: the API did not refuse. A body
+                            // that is not JSON reads the same as one that is
+                            // JSON and not an object -- device-login-vectors
+                            // records a 2xx with no token that way too.
                             if (text.isBlank()) EMPTY_JSON_OBJECT
-                            else ThalovantJson.parseToJsonElement(text).asObjectOrNull()
+                            else runCatching { ThalovantJson.parseToJsonElement(text) }.getOrNull()?.asObjectOrNull()
                                 ?: throw ThalovantApiException("Thalovant API returned an unexpected response shape.")
                         }
                     })

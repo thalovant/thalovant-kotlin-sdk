@@ -233,14 +233,23 @@ public class HubSession(connect: suspend () -> ThalovantClient,
      * Assistant request is timed out after ten seconds. So a reply goes out on
      * the live link at once. Only when no link is up does it connect first,
      * taking its turn like any other call.
+     *
+     * Withdrawing a reply -- cancelling it while it still waits, as the home
+     * link does when the hub's bound passes -- is not a failure of the link:
+     * it is not sent, and the connection is left exactly as it was. A
+     * connection this reply had to make is the session's, made on the
+     * session's own scope, and stays up whether the reply is withdrawn or not.
      */
     public suspend fun reply(event: ThalovantEvent,msgType: String,data: JsonObject=EMPTY_JSON_OBJECT,context: JsonObject=EMPTY_JSON_OBJECT) {
         val live = synchronized(lock) { check(!closed) { "Hub session is closed" }; client }
-        if (live != null && alive(live)) {
-            live.reply(event, msgType, data, context)
-            return
-        }
-        call { it.reply(event, msgType, data, context) }
+        val target = if (live != null && alive(live)) live else scope.async {
+            busy.withLock {
+                val current = synchronized(lock) { client }
+                if (current != null && !alive(current)) drop()
+                ensure()
+            }
+        }.await()
+        target.reply(event, msgType, data, context)
     }
 
     /**

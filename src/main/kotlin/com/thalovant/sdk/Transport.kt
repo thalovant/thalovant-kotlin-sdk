@@ -104,8 +104,16 @@ public class HiveMindWssTransport(
     }
     override suspend fun sendHiveFrame(message: JsonObject) {
         val caller = kotlinx.coroutines.currentCoroutineContext()
-        sendHiveMessageChecked(message, true) { caller.ensureActive() }
+        // Waiting behind another frame can be cancelled: a message still
+        // queued is withdrawn whole, and the link is left exactly as it was --
+        // no close, no error recorded against it. Once its turn has come the
+        // write is not: half a frame, or a nonce spent and never sent, would
+        // break the Noise stream for every frame after it.
+        sendQueue.withLock { sendHiveMessageChecked(message, true) { caller.ensureActive() } }
     }
+
+    /** The turn of each application frame; see [sendHiveFrame]. */
+    internal val sendQueue = Mutex()
 
     private var socket: WebSocket? = null
     private var serverHello: JsonObject? = null

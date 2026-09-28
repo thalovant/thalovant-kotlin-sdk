@@ -56,18 +56,58 @@ internal object ConformanceRecord {
         is JsonNull -> "null"
         is JsonArray -> value.joinToString(",", "[", "]") { canonical(it, fractions) }
         is JsonObject ->
-            value.keys.sorted().joinToString(",", "{", "}") { key ->
-                Json.encodeToString(JsonPrimitive.serializer(), JsonPrimitive(key)) +
-                    ":" + canonical(value.getValue(key), fractions)
+            value.keys.sortedWith(::byCodePoint).joinToString(",", "{", "}") { key ->
+                quote(key) + ":" + canonical(value.getValue(key), fractions)
             }
         is JsonPrimitive ->
             if (value.isString) {
-                Json.encodeToString(JsonPrimitive.serializer(), value)
+                quote(value.content)
             } else if (fractions) {
                 referenceNumber(value.content)
             } else {
                 wholeNumber(value.content)
             }
+    }
+
+    /**
+     * A string exactly as Python's `json.dumps(..., ensure_ascii=False)` writes
+     * it: only `\"`, `\\`, `\b`, `\f`, `\n`, `\r`, `\t`, and `\u00xx` in
+     * lowercase hex for the rest below U+0020; everything else raw -- `/`,
+     * U+007F, and U+2028 and U+2029, which the speech vectors hold. Written
+     * by hand so no serialiser's own choices can move a digest.
+     */
+    internal fun quote(text: String): String = buildString(text.length + 2) {
+        append('"')
+        for (char in text) {
+            when (char) {
+                '"' -> append("\\\"")
+                '\\' -> append("\\\\")
+                '\b' -> append("\\b")
+                '\u000C' -> append("\\f")
+                '\n' -> append("\\n")
+                '\r' -> append("\\r")
+                '\t' -> append("\\t")
+                else -> if (char < ' ') append("\\u%04x".format(char.code)) else append(char)
+            }
+        }
+        append('"')
+    }
+
+    /**
+     * Keys sorted as Python sorts `str`, by code point -- not by UTF-16 unit,
+     * which puts a supplementary character before U+E000..U+FFFF.
+     */
+    private fun byCodePoint(a: String, b: String): Int {
+        var i = 0
+        var j = 0
+        while (i < a.length && j < b.length) {
+            val x = a.codePointAt(i)
+            val y = b.codePointAt(j)
+            if (x != y) return x.compareTo(y)
+            i += Character.charCount(x)
+            j += Character.charCount(y)
+        }
+        return (a.length - i).compareTo(b.length - j)
     }
 
     /**
