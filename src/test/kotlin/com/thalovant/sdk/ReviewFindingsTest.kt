@@ -257,9 +257,34 @@ class ReviewFindingsTest {
                 assertFalse(Files.exists(partial.directory.resolve("noise-static.key")), "no key without its pin")
                 assertFalse(legacyKey.contentEquals(partial.staticKey()))
             }
+            // Another hub's pin that cannot be read does not cost this hub its key.
+            if (!Files.isReadable(unreadable)) {
+                val other = HiveMindNoiseStore.forIdentity(ThalovantIdentity.fromFile(identityFile("other")))
+                assertContentEquals(ByteArray(32) { 1 }, other.pin("hub-a"))
+                assertContentEquals(legacyKey, other.staticKey())
+                assertNull(other.pin("hub-c"), "the unreadable pin is not copied")
+            }
             // An identity from anywhere else keeps the shared default.
             val plain = ThalovantIdentity(buildJsonObject { put("access_key", "a"); put("password", "p"); put("site_id", "s"); put("default_master", "wss://h") })
             assertEquals(HiveMindNoiseStore.defaultDirectory(), HiveMindNoiseStore.forIdentity(plain).directory)
+            // So does one whose folder this user cannot write to, unless its key folder is already there.
+            val shared = identityFile("shared")
+            val kept = identityFile("kept")
+            Files.createDirectories(kept.parent.resolve(HiveMindNoiseStore.IDENTITY_KEY_FOLDER))
+            val readOnly = java.nio.file.attribute.PosixFilePermissions.fromString("r-x------")
+            runCatching { Files.setPosixFilePermissions(shared.parent, readOnly); Files.setPosixFilePermissions(kept.parent, readOnly) }
+            try {
+                if (!Files.isWritable(shared.parent)) {
+                    assertEquals(HiveMindNoiseStore.defaultDirectory(), HiveMindNoiseStore.forIdentity(ThalovantIdentity.fromFile(shared)).directory)
+                    assertEquals(
+                        kept.parent.resolve(HiveMindNoiseStore.IDENTITY_KEY_FOLDER),
+                        HiveMindNoiseStore.forIdentity(ThalovantIdentity.fromFile(kept)).directory,
+                    )
+                }
+            } finally {
+                val writable = java.nio.file.attribute.PosixFilePermissions.fromString("rwx------")
+                runCatching { Files.setPosixFilePermissions(shared.parent, writable); Files.setPosixFilePermissions(kept.parent, writable) }
+            }
         } finally {
             System.setProperty("user.home", original)
             home.toFile().deleteRecursively()

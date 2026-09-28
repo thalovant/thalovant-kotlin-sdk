@@ -64,15 +64,22 @@ public class HiveMindNoiseStore(public val directory: Path = defaultDirectory())
             // pins and a fresh key -- the hub's key still checked against its
             // pin -- never the old key without the pin that went with it,
             // which would let the next XX handshake pin whatever answers.
+            // This hub's pin first of all: it is the one the key needs, and
+            // another hub's pin that cannot be read must not cost this hub
+            // the key it already trusts.
+            val own = pinFile(nodeId)
+            if (!Files.exists(own, NOFOLLOW_LINKS)) {
+                try { writeNew(own, Noise.hex(old.readKey(old.pinFile(nodeId)))) } catch (_: java.nio.file.FileAlreadyExistsException) { }
+            }
             Files.newDirectoryStream(legacy, "noise-pin-*.key").use { pins ->
                 for (pin in pins) {
                     val target = directory.resolve(pin.fileName.toString())
-                    if (!Files.exists(target, NOFOLLOW_LINKS)) {
-                        try { writeNew(target, Noise.hex(old.readKey(pin))) } catch (_: java.nio.file.FileAlreadyExistsException) { }
-                    }
+                    if (target == own || Files.exists(target, NOFOLLOW_LINKS)) continue
+                    // Best effort: that hub checks its key on first use, as any new hub does.
+                    try { writeNew(target, Noise.hex(old.readKey(pin))) } catch (_: Exception) { }
                 }
             }
-            if (!Files.exists(pinFile(nodeId), NOFOLLOW_LINKS)) return
+            if (!Files.exists(own, NOFOLLOW_LINKS)) return
             writeNew(key, Noise.hex(legacyKey))
         } catch (_: java.nio.file.FileAlreadyExistsException) {
             // Another process adopted it first.
@@ -206,14 +213,20 @@ public class HiveMindNoiseStore(public val directory: Path = defaultDirectory())
          * a hub pins one per connection, and refuses any other. The first time
          * that folder is used, the key and hub pins this SDK kept in
          * [defaultDirectory] before are copied into it, when that key has met
-         * the hub. Any other identity keeps [defaultDirectory]. On Android, pass
-         * a store in the app's private storage.
+         * the hub. Any other identity keeps [defaultDirectory], and so does one
+         * whose folder has no [IDENTITY_KEY_FOLDER] yet and cannot be written
+         * to. On Android, pass a store in the app's private storage.
          */
         public fun forIdentity(identity: ThalovantIdentity): HiveMindNoiseStore {
             val file = identity.sourcePath ?: return HiveMindNoiseStore()
             val parent = file.parent ?: return HiveMindNoiseStore()
             val legacy = defaultDirectory()
-            return HiveMindNoiseStore(parent.resolve(IDENTITY_KEY_FOLDER)).also {
+            val beside = parent.resolve(IDENTITY_KEY_FOLDER)
+            // An identity this user can read but not write beside (one in
+            // /etc, say) keeps the shared default, as before, rather than
+            // failing every connection on a folder it cannot create.
+            if (!Files.isDirectory(beside, NOFOLLOW_LINKS) && !Files.isWritable(parent)) return HiveMindNoiseStore()
+            return HiveMindNoiseStore(beside).also {
                 it.otherFolder = legacy
                 it.adoptFrom = legacy
             }
