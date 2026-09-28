@@ -30,11 +30,63 @@ public open class ThalovantIdentityException(message: String, cause: Throwable? 
 public class ThalovantHubIdentityChangedException(message: String, cause: Throwable? = null) :
     ThalovantIdentityException(message, cause)
 
-/** Data-plane connection or handshake failures. */
-public class ThalovantConnectionException(message: String, cause: Throwable? = null) : ThalovantException(message, cause)
+/**
+ * Data-plane connection or handshake failures.
+ *
+ * Open since 0.8.0 so the admission failures, which are connection failures
+ * too, can say so: [ThalovantAdmissionTimeoutException] and
+ * [ThalovantAdmissionFailedException].
+ */
+public open class ThalovantConnectionException(message: String, cause: Throwable? = null) : ThalovantException(message, cause)
+
+/**
+ * A wait that ran out: the thing may still happen, later.
+ *
+ * Implemented by [ThalovantTimeoutException] and by
+ * [ThalovantAdmissionTimeoutException], which is also a
+ * [ThalovantConnectionException] -- a class can extend only one of the two, so
+ * `is ThalovantTimeout` is the way to ask "did this time out?" of either.
+ */
+public interface ThalovantTimeout
 
 /** Deadlines exceeded while waiting on the hub. */
-public class ThalovantTimeoutException(message: String) : ThalovantException(message)
+public class ThalovantTimeoutException(message: String) : ThalovantException(message), ThalovantTimeout
+
+/**
+ * A hub had not admitted a new connection when the wait ended.
+ *
+ * A connection is admitted about ninety seconds after it is created, while the
+ * platform carries it to its hub. This is both a connection failure and a
+ * timeout ([ThalovantTimeout]): the connection exists and may still be
+ * admitted, so waiting longer, or connecting later, can succeed.
+ */
+public class ThalovantAdmissionTimeoutException(message: String) :
+    ThalovantConnectionException(message), ThalovantTimeout
+
+/**
+ * A new connection will not be admitted.
+ *
+ * Either the operation that admits it failed, or the platform gave up on it --
+ * [errorCode] is the operation's own code, such as `gitops_push_rejected` or
+ * `convergence_timeout`, and [statusCode] is null -- or the API refused the
+ * wait itself, and then [statusCode], [code], [detail] and [problem] keep what
+ * it answered, as a [ThalovantApiException] does. Waiting longer will not
+ * help. An authentication refusal is never this: it is thrown as the API's
+ * own [ThalovantAuthException].
+ */
+public class ThalovantAdmissionFailedException(
+    message: String,
+    public val errorCode: String? = null,
+    cause: Throwable? = null,
+    /** The HTTP status of the API's refusal of the wait, or null when the operation itself failed. */
+    public val statusCode: Int? = null,
+    /** The refusal's machine-readable code, as [ThalovantApiException.errorCode] reads it. */
+    public val code: String? = null,
+    /** The refusal's sentence, whole, as [ThalovantApiException.detail] reads it. */
+    public val detail: String? = null,
+    /** The refusal's body parsed, when it was a JSON object. */
+    public val problem: JsonObject? = null,
+) : ThalovantConnectionException(message, cause)
 
 /** The hub reported a runtime failure while handling a request. */
 public open class ThalovantRuntimeException(message: String) : ThalovantException(message)
@@ -282,7 +334,7 @@ internal const val UNTRACKED_UTTERANCE_GRACE_MS: Long = 10_000
  * Every field but the message is null for a local failure, such as a missing
  * access token or an unexpected response shape.
  */
-public class ThalovantApiException(
+public open class ThalovantApiException(
     message: String,
     public val statusCode: Int? = null,
     /** The response text as the API sent it, read as UTF-8, or null for a local failure. */
@@ -320,10 +372,74 @@ public class ThalovantApiException(
      * every image a caller may pin instead runs past any display limit.
      */
     public val detail: String? = problemMember(problem, "detail")
+
+    /**
+     * How long the API asked to wait before trying again, in seconds, when it
+     * said: a 429's `retry_after_seconds` -- at the top of [problem], or inside
+     * its `detail` object, where the API's per-token limit puts it -- else its
+     * `Retry-After` header, else its `RateLimit-Reset`, which is all the API's
+     * own rate limiter sends with its plain-text "Too Many Requests". Null
+     * otherwise.
+     */
+    public var retryAfterSeconds: Double? = retryAfterOf(problem)
+        internal set
+}
+
+/** A problem's `retry_after_seconds`, at its top or inside a `detail` object: a number, not negative. */
+private fun retryAfterOf(problem: JsonObject?): Double? {
+    if (problem == null) return null
+    for (source in listOfNotNull(problem, problem["detail"] as? JsonObject)) {
+        val value = source["retry_after_seconds"] as? JsonPrimitive ?: continue
+        if (value.isString || value.content == "true" || value.content == "false") continue
+        value.content.toDoubleOrNull()?.takeIf { it.isFinite() && it >= 0 }?.let { return it }
+    }
+    return null
+}
+
+/**
+ * The exception for a failed API answer, of the kind a caller can branch on.
+ *
+ * The same rules every SDK keeps (`connection-kinds-vectors.json`): 401, 423
+ * and 403 `Insufficient scopes` are [ThalovantAuthException]; 402 and 403
+ * `plan_limit` are [ThalovantPlanException]; 409
+ * `home_assistant_already_linked` is [ThalovantAlreadyLinkedException]; every
+ * other refusal is a plain [ThalovantApiException]. Each keeps [statusCode],
+ * [body] and what is read out of it.
+ */
+internal fun apiException(message: String, statusCode: Int, body: String): ThalovantApiException {
+    val problem = problemOf(body)
+    val code = problemMember(problem, "code")
+    val detail = problemMember(problem, "detail")
+    return when {
+        statusCode == 401 || statusCode == 423 || (statusCode == 403 && detail == "Insufficient scopes") ->
+            ThalovantAuthException(message, statusCode, body)
+        statusCode == 402 || (statusCode == 403 && code == "plan_limit") ->
+            ThalovantPlanException(message, statusCode, body)
+        statusCode == 409 && code == "home_assistant_already_linked" ->
+            ThalovantAlreadyLinkedException(message, statusCode, body)
+        else -> ThalovantApiException(message, statusCode, body)
+    }
+}
+
+/**
+ * The connection a 409 `home_assistant_already_linked` names: `client_id`, or
+ * `existing_client_id` or `connection_id`, on the problem or on a `detail`
+ * object inside it.
+ */
+internal fun linkedClientId(problem: JsonObject?): String? {
+    if (problem == null) return null
+    val nested = problem["detail"] as? JsonObject
+    for (source in listOfNotNull(problem, nested)) {
+        for (key in listOf("client_id", "existing_client_id", "connection_id")) {
+            val value = (source[key] as? JsonPrimitive)?.takeIf { it.isString }?.content
+            if (!value.isNullOrEmpty()) return value
+        }
+    }
+    return null
 }
 
 /** The body of a failed request as a JSON object, or null when it is not one. */
-private fun problemOf(body: String?): JsonObject? {
+internal fun problemOf(body: String?): JsonObject? {
     if (body.isNullOrEmpty()) return null
     return try {
         ThalovantJson.parseToJsonElement(body) as? JsonObject
@@ -336,7 +452,7 @@ private fun problemOf(body: String?): JsonObject? {
  * [problem]'s [name] member, or the same member of a `detail` that is itself an
  * object. The same rule reads `code` and `detail`, as every SDK reads them.
  */
-private fun problemMember(problem: JsonObject?, name: String): String? {
+internal fun problemMember(problem: JsonObject?, name: String): String? {
     if (problem == null) return null
     return problemText(problem[name]) ?: problemText((problem["detail"] as? JsonObject)?.get(name))
 }
@@ -354,14 +470,105 @@ internal fun problemText(value: JsonElement?): String? {
     return text.takeIf { content -> content.any { !isListingSpace(it.code) } }
 }
 
+/**
+ * The control plane refused the API token itself: sign in again.
+ *
+ * A 401 (the token is unknown, expired or revoked), a 423 (the account is
+ * locked), or a 403 whose detail is `Insufficient scopes` (the token was never
+ * given what this call needs). Signing in again, with the right scopes, is the
+ * way out of each, which is not true of any other refusal.
+ */
+public class ThalovantAuthException(
+    message: String,
+    statusCode: Int? = null,
+    body: String? = null,
+) : ThalovantApiException(message, statusCode, body)
+
+/**
+ * The account's plan does not allow the request.
+ *
+ * A 402, or a 403 whose code is `plan_limit`; [problem] carries the `resource`,
+ * `limit`, `used` and `plan` the API reported, and [detail] the sentence to
+ * show somebody -- "Free plan allows up to 1 connection."
+ */
+public class ThalovantPlanException(
+    message: String,
+    statusCode: Int? = null,
+    body: String? = null,
+) : ThalovantApiException(message, statusCode, body)
+
+/**
+ * The hub already has the one connection of this kind it allows.
+ *
+ * A 409 `home_assistant_already_linked`: a hub takes one Home Assistant
+ * connection. [clientId] names the connection that holds the link when the API
+ * said which, so a caller can offer to replace it.
+ */
+public class ThalovantAlreadyLinkedException(
+    message: String,
+    statusCode: Int? = null,
+    body: String? = null,
+    public val clientId: String? = linkedClientId(problemOf(body)),
+) : ThalovantApiException(message, statusCode, body)
+
+/**
+ * The API cannot make a connection of the kind asked for.
+ *
+ * A 422 naming `connection_type` (an API that does not know the kind yet), or
+ * a created connection whose kind did not come back as asked. An API that
+ * silently ignored the field would have handed out an ordinary satellite with
+ * a satellite's grants, so the SDK deletes that connection before throwing;
+ * [statusCode] is null then, because the API itself answered 201.
+ */
+public class ThalovantUnsupportedConnectionTypeException(
+    message: String,
+    statusCode: Int? = null,
+    body: String? = null,
+) : ThalovantApiException(message, statusCode, body)
+
+/**
+ * One device-login poll found nobody has decided yet: poll again later.
+ *
+ * [intervalMillis] is how long to wait before the next poll, already
+ * lengthened when the API asked this code to slow down (RFC 8628 §3.5: five
+ * seconds more for every `slow_down`, and they stay added).
+ */
+public class ThalovantDeviceLoginPendingException(
+    message: String,
+    public val intervalMillis: Long,
+    statusCode: Int? = null,
+    body: String? = null,
+) : ThalovantApiException(message, statusCode, body)
+
 /** The requested data-plane protocol is unavailable or unsupported. */
 public class ThalovantUnsupportedProtocolException(message: String) : ThalovantException(message)
 
-/** The device sign-in request was denied in the browser. */
-public class ThalovantDeviceLoginDeniedException(message: String) : ThalovantException(message)
+/**
+ * The device sign-in request was denied in the browser.
+ *
+ * [statusCode] and [body] are the API's answer (a 400 `access_denied`). This
+ * stays a [ThalovantException] rather than a [ThalovantApiException], as it
+ * has been since the device flow arrived, so a `catch` written against it
+ * keeps catching exactly what it caught.
+ */
+public class ThalovantDeviceLoginDeniedException @JvmOverloads constructor(
+    message: String,
+    public val statusCode: Int? = null,
+    public val body: String? = null,
+) : ThalovantException(message)
 
-/** The device sign-in code expired before it was approved. */
-public class ThalovantDeviceLoginExpiredException(message: String) : ThalovantException(message)
+/**
+ * The device sign-in code expired before it was approved.
+ *
+ * [statusCode] and [body] are the API's answer (a 400 `expired_token`); see
+ * [ThalovantDeviceLoginDeniedException] for why this is not a
+ * [ThalovantApiException].
+ */
+public class ThalovantDeviceLoginExpiredException @JvmOverloads constructor(
+    message: String,
+    public val statusCode: Int? = null,
+    public val body: String? = null,
+) : ThalovantException(message)
 
 /** An automatic skill wait failed after acceptance. Resume with [accepted]; never replay the write. */
 public class HubSkillOperationException(
