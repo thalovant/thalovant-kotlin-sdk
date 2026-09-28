@@ -19,7 +19,7 @@ Full docs: <https://docs.thalovant.com/developers/sdks/kotlin/>
 
 ```kotlin
 dependencies {
-    implementation("com.thalovant:thalovant-sdk:0.7.17")
+    implementation("com.thalovant:thalovant-sdk:0.8.0")
 }
 ```
 
@@ -124,7 +124,14 @@ expand the echoed scopes.
 - The poll honors the server interval and `slow_down` responses.
 - Denial throws `ThalovantDeviceLoginDeniedException`, an expired code throws
   `ThalovantDeviceLoginExpiredException`, and exceeding `timeoutMillis`
-  (default 900 s) throws `ThalovantTimeoutException`.
+  (default 900 s) throws `ThalovantTimeoutException`. Both carry the API's
+  `statusCode` and `body`.
+- The token's id is kept on `api.tokenId`, so `api.revokeApiToken()` can undo
+  the sign-in later: a token may always revoke itself.
+
+To run the loop yourself -- a config flow, a TV, anything that shows a code and
+cannot block inside one call -- take it one step at a time. See
+[Link Home Assistant](#link-home-assistant).
 
 ## Use A Pre-Made API Token (CI)
 
@@ -137,6 +144,137 @@ val api = ThalovantControlPlane(accessToken = System.getenv("THALOVANT_API_TOKEN
 
 `accessToken` is a mutable property, so a token can also be set (or rotated)
 after construction.
+
+## Link Home Assistant
+
+Home Assistant, or any home controller, links to a hub in four steps: sign in
+on the device, create a connection of the `home_assistant` kind, wait for the
+hub to admit it, then answer the hub's requests on the data plane.
+
+**1. Sign in, one step at a time.** `beginDeviceLogin` returns the code to show
+and how often to poll; each `pollDeviceLogin` asks once.
+
+```kotlin
+import com.thalovant.sdk.HOME_ASSISTANT_SCOPES
+import com.thalovant.sdk.ThalovantControlPlane
+import com.thalovant.sdk.ThalovantDeviceLoginPendingException
+
+val api = ThalovantControlPlane()
+val grant = api.beginDeviceLogin(scopes = HOME_ASSISTANT_SCOPES, clientName = "Home Assistant")
+show(grant.verificationUriComplete ?: grant.verificationUri, grant.userCode)
+var wait = grant.intervalMillis
+while (true) {
+    delay(wait)
+    try {
+        api.pollDeviceLogin(grant)   // stores accessToken and tokenId
+        break
+    } catch (pending: ThalovantDeviceLoginPendingException) {
+        wait = pending.intervalMillis  // already lengthened by any slow_down
+    }
+}
+```
+
+`HOME_ASSISTANT_SCOPES` (`hubs:read`, `clients:read`, `clients:write`) is also
+all a Free plan can approve. An expired code throws
+`ThalovantDeviceLoginExpiredException`, a refusal
+`ThalovantDeviceLoginDeniedException`; start again with `beginDeviceLogin`. A
+verification URL that is not http(s), has no host, or carries credentials is
+refused before anything is shown. `DeviceAuthorization.asJson()` /
+`fromJson()` let a sign-in resume in another process (the device code is in it:
+store it as a secret). `api.revokeApiToken()` revokes the token when the
+integration is removed.
+
+**2. Create the connection.** Set `connectionType`; the API has to answer with
+the same kind, and a connection it made without it is deleted before the call
+fails.
+
+```kotlin
+import com.thalovant.sdk.CONNECTION_TYPE_HOME_ASSISTANT
+import com.thalovant.sdk.CreateClientIdentityOptions
+import com.thalovant.sdk.ThalovantAlreadyLinkedException
+import com.thalovant.sdk.ThalovantApiException
+import com.thalovant.sdk.ThalovantAuthException
+import com.thalovant.sdk.ThalovantPlanException
+import com.thalovant.sdk.ThalovantUnsupportedConnectionTypeException
+
+val result = try {
+    api.createClientIdentity(
+        hubId,
+        CreateClientIdentityOptions(name = "Home Assistant (Kitchen)", connectionType = CONNECTION_TYPE_HOME_ASSISTANT),
+    )
+} catch (refused: ThalovantApiException) {
+    when (refused) {
+        is ThalovantAlreadyLinkedException -> offerToReplace(refused.clientId)  // the hub has its Home Assistant
+        is ThalovantPlanException -> showPlan(refused.detail)  // "Free plan allows up to 1 connection."
+        is ThalovantAuthException -> signInAgain()
+        is ThalovantUnsupportedConnectionTypeException -> showNotYet()
+        else -> {}
+    }
+    throw refused
+}
+saveSecret(result.identity.asJson(includeSecrets = true))
+```
+
+Every one of these is a `ThalovantApiException` with `statusCode`, `errorCode`,
+`detail` and `problem`, and every control-plane call throws the same kinds: a
+401, 423, or 403 `Insufficient scopes` is `ThalovantAuthException`; a 402 or 403
+`plan_limit` is `ThalovantPlanException`.
+
+`deleteClient(clientId)` removes a connection. It reads the `etag` first when
+you give none, retries once when another writer changed the client (HTTP 412),
+and counts a client already gone (HTTP 404) as deleted.
+
+**3. Wait for the hub to admit it**, about ninety seconds:
+
+```kotlin
+api.waitForAdmission(result)   // up to DEFAULT_ADMISSION_TIMEOUT_MS, 180 s
+```
+
+It follows the operation the create returned. A failed operation throws
+`ThalovantAdmissionFailedException` with the operation's `errorCode`; running out
+of time throws `ThalovantAdmissionTimeoutException`, which is a
+`ThalovantConnectionException` and a `ThalovantTimeout` at once -- the connection
+may still be admitted, so connecting later can work. An operation link to
+another origin than the API's is never fetched.
+
+**4. Keep the link and answer.** `HubSession.run()` keeps the connection:
+reconnecting on a 10 s to 120 s ladder, noticing a dropped link as it drops, and
+reading a refusal as "not admitted yet" for `refusalGraceSeconds` (600 s) before
+throwing it. `answerHomeRequests` answers every `thalovant.home.request`:
+
+```kotlin
+import com.thalovant.sdk.HomeAnswer
+import com.thalovant.sdk.HubSession
+import com.thalovant.sdk.ThalovantClient
+import com.thalovant.sdk.ThalovantHome
+import com.thalovant.sdk.answerHomeRequests
+
+val session = HubSession(connect = { ThalovantClient(identity).also { it.connect() } }, warm = false)
+scope.launch { session.run() }
+scope.launch {
+    session.answerHomeRequests { request ->
+        val said = assist.process(request.utterance, request.lang, request.conversationId)
+        HomeAnswer(
+            speech = said.speech,
+            responseType = if (said.isQuestion) ThalovantHome.QUERY_ANSWER else ThalovantHome.ACTION_DONE,
+            continueConversation = said.continueConversation,
+        )
+    }
+}
+scope.launch { session.connected.collect { up -> showLinked(up) } }
+```
+
+Every request gets exactly one answer, sent back along the route it came
+(`replyContext`, OVOS-MSG-1 §5.2) and within the hub's ten seconds. A handler
+that throws is answered `failed_to_handle`, one that runs past `timeoutMs`
+(9 s by default) `timeout`, and one that answers outside the contract -- a
+`responseType` other than `action_done`, `query_answer` or `error`, or an
+`error` whose code is not one of `ThalovantHome.ERROR_CODES` -- `unknown`; each
+with empty speech, because the hub speaks its own sentence for the code in the
+device's language. Speech is sent as plain text: markup is stripped, character
+references decoded and whitespace collapsed (`plainSpeech`). The answer never
+waits behind a running `session.ask`. `ThalovantClient.answerHomeRequests` and
+`client.reply(event, msgType, data)` do the same on a bare client.
 
 ## List Your Hubs
 
@@ -683,7 +821,10 @@ characters or more in the request body are replaced with `[redacted]`.
 - `controlPlane.getMemoryItem(memoryId)`
 - `controlPlane.updateMemoryItem(memoryId, payload)`
 - `controlPlane.deleteMemoryItem(memoryId)`
-- `controlPlane.createClientIdentity(hubId, options)`
+- `controlPlane.beginDeviceLogin(scopes, clientName)` / `controlPlane.pollDeviceLogin(authorization)` / `controlPlane.revokeApiToken(tokenId)`
+- `controlPlane.createClientIdentity(hubId, options)` — `options.connectionType` for a kind such as `home_assistant`
+- `controlPlane.getClient(clientId)` / `controlPlane.listClients(hubId, limit, cursor)` / `controlPlane.deleteClient(clientId, etag)`
+- `controlPlane.waitForAdmission(result, timeoutMs, pollIntervalMs)`
 - `controlPlane.requireRuntimeProtocol(result, protocol)`
 - `ThalovantIdentity.fromJson(json)` / `ThalovantIdentity.fromFile(path)`
 - `ThalovantClient(identity)` / `ThalovantClient.fromIdentityFile(path)`
@@ -695,6 +836,9 @@ characters or more in the request body are replaced with `[redacted]`.
 - `client.sendUtterance(text, lang, sessionId, requestId, context)`
 - `client.emit(eventType, data, context)`
 - `client.on(eventName, sessionId, requestId, handler)`
+- `client.reply(event, msgType, data, context)`
+- `client.answerHomeRequests(timeoutMs, handler)` / `session.answerHomeRequests(timeoutMs, handler)`
+- `HubSession(connect, policy).run()` / `session.connect()` / `session.connected` / `session.reply(event, msgType, data, context)`
 - `client.close()`
 
 ## Development
@@ -829,8 +973,13 @@ stream; the other managed SDKs expose subscription handles. Close the session
 when its owner shuts down; close waits for admitted operations and is terminal.
 
 Background connection attempts back off for 10, 20, 40, 80, then 120 seconds.
-Foreground calls can try immediately. Your application owns probe scheduling:
-use the reported probe delay (60 seconds while held, 5 seconds while down).
+Foreground calls can try immediately. Either your application owns probe
+scheduling -- use the reported probe delay (60 seconds while held, 5 seconds
+while down) -- or `session.run()` keeps the link for you until `close()`,
+noticing a drop as it happens and reading refusals as "not admitted yet" for
+`HubSessionPolicy.refusalGraceSeconds`. `session.connected` is a `StateFlow` of
+whether the link is up. `session.reply(...)` answers a hub's message on the
+live link without waiting behind a running ask.
 The SDK never replays an admitted Ask or Emit after a lost response, because an
 Ask can trigger an action. A request timeout applies to the underlying operation;
 waiting for session admission and your connection factory are separate budgets.
