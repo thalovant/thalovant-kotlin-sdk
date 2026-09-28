@@ -261,9 +261,18 @@ public class HiveMindWssTransport(
             val error = ThalovantConnectionException("HiveMind WSS disconnected.")
             opened.completeExceptionally(error)
             handshake.completeExceptionally(error)
+            ended.complete(error)
             current?.close(1000, null)
         }
     }
+
+    /**
+     * Completes with the reason the connection current at the call ended,
+     * once it has: a hub's close, a dropped socket, or [disconnect]. What a
+     * session keeping the link waits on, so it notices a drop as it happens
+     * rather than at its next probe.
+     */
+    internal fun linkEnded(): kotlinx.coroutines.Deferred<Throwable> = synchronized(sendLock) { ended }
 
     override fun addBusListener(listener: (ThalovantEvent) -> Unit): ThalovantSubscription {
         listeners.add(listener)
@@ -396,6 +405,7 @@ public class HiveMindWssTransport(
         socket?.cancel()
         opened.completeExceptionally(error)
         handshake.completeExceptionally(error)
+        ended.complete(error)
     }
 
     private inner class SocketListener(private val currentGeneration: Long) : WebSocketListener() {
@@ -440,7 +450,14 @@ public class HiveMindWssTransport(
         override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) = receive {
             // OkHttp/interceptor failures can contain the authorized request
             // URL. Never retain that message or cause in public diagnostics.
-            val error = ThalovantConnectionException("HiveMind WSS connection failed.")
+            val error = when (val status = response?.code) {
+                // The upgrade itself refused: the hub, or the gateway in front
+                // of it, read the access key and would not have it.
+                401, 403 -> ThalovantIdentityException(
+                    "The hub refused this client's credentials (HTTP $status). Pair this client with the hub again.",
+                )
+                else -> ThalovantConnectionException("HiveMind WSS connection failed.")
+            }
             ended.complete(error)
             failHandshake(error)
             emptyList()
@@ -473,9 +490,13 @@ public class HiveMindWssTransport(
          * asks the same thing of a person as a refused access key -- pair
          * again, which is the only thing that gives the hub a key it will
          * keep -- so it is reported as the same kind of failure.
+         *
+         * Only a close the way a hub refuses ([REFUSAL_CLOSE_CODES]) is read
+         * so; an internal error or a restart right after the handshake is an
+         * ordinary failure, as the reference reads it.
          */
         private fun closedAfterHandshake(code: Int): ThalovantException = when {
-            heardFromHub -> ThalovantConnectionException("HiveMind WSS closed ($code).")
+            heardFromHub || code !in REFUSAL_CLOSE_CODES -> ThalovantConnectionException("HiveMind WSS closed ($code).")
             else -> ThalovantIdentityException(
                 "The hub closed this connection without accepting it. Pair this client with the hub again.",
             )
@@ -505,6 +526,17 @@ public class HiveMindWssTransport(
     private companion object {
         /** RFC 6455 policy violation. HiveMind closes with it on a refused key. */
         const val POLICY_VIOLATION = 1008
+
+        /**
+         * The closes a hub refuses a client with, right after the handshake:
+         * a normal closure (hivemind-core's abort path calls `disconnect()`,
+         * whose default it is), no status at all (1005), and a policy
+         * violation. Any other code -- 1001 going away, 1011 an internal
+         * error, 1012 a restart, 1013 try again later -- is the hub's trouble
+         * or the network's, not a verdict on this client's credentials, and
+         * telling somebody to pair again over it would throw away a good one.
+         */
+        val REFUSAL_CLOSE_CODES = setOf(1000, 1005, POLICY_VIOLATION)
 
         val defaultClient: OkHttpClient = OkHttpClient.Builder()
             .pingInterval(30, TimeUnit.SECONDS)

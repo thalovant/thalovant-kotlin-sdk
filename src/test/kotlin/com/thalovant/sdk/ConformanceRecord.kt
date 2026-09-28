@@ -1,6 +1,9 @@
 package com.thalovant.sdk
 
 import java.io.File
+import java.math.BigDecimal
+import java.math.MathContext
+import java.math.RoundingMode
 import java.security.MessageDigest
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
@@ -49,20 +52,67 @@ internal object ConformanceRecord {
      * whole number can be left to the serialiser. `conversation-vectors.json`
      * has `activated_at: 1.0`, which every other SDK writes as `1`.
      */
-    private fun canonical(value: JsonElement): String = when (value) {
+    private fun canonical(value: JsonElement, fractions: Boolean = false): String = when (value) {
         is JsonNull -> "null"
-        is JsonArray -> value.joinToString(",", "[", "]") { canonical(it) }
+        is JsonArray -> value.joinToString(",", "[", "]") { canonical(it, fractions) }
         is JsonObject ->
             value.keys.sorted().joinToString(",", "{", "}") { key ->
                 Json.encodeToString(JsonPrimitive.serializer(), JsonPrimitive(key)) +
-                    ":" + canonical(value.getValue(key))
+                    ":" + canonical(value.getValue(key), fractions)
             }
         is JsonPrimitive ->
             if (value.isString) {
                 Json.encodeToString(JsonPrimitive.serializer(), value)
+            } else if (fractions) {
+                referenceNumber(value.content)
             } else {
                 wholeNumber(value.content)
             }
+    }
+
+    /**
+     * Spell a number of a *vector file* the way the reference spells it.
+     *
+     * The reference digests each vector file as it parsed it, and the Home
+     * Assistant vectors carry fractions -- `poll_interval_seconds: 0.01`,
+     * `timeout_seconds: 0.2` -- which Python writes with its own float repr.
+     * That digest identifies the vectors rather than anything this SDK
+     * produced, so it has to be spelled Python's way: a whole number as an
+     * integer, anything else as the shortest decimal that reads back as the
+     * same double, positional down to 1e-4 and `1e-05` style below. What a
+     * case produced is still held to [wholeNumber].
+     */
+    internal fun referenceNumber(content: String): String {
+        if (content == "true" || content == "false") return content
+        val decimal = content.toBigDecimalOrNull()
+            ?: error("conformance: cannot canonicalise $content: not a number")
+        runCatching { return decimal.toBigIntegerExact().toString() }
+        val value = content.toDouble()
+        check(value.isFinite()) { "conformance: cannot canonicalise $content: not finite" }
+        val exact = BigDecimal(value)
+        var shortest: BigDecimal? = null
+        for (precision in 1..17) {
+            val nearest = exact.round(MathContext(precision, RoundingMode.HALF_EVEN))
+            val step = BigDecimal.ONE.movePointLeft(nearest.scale())
+            shortest = listOf(nearest, nearest - step, nearest + step)
+                .filter { it.toDouble() == value }
+                .minByOrNull { (it - exact).abs() }
+            if (shortest != null) break
+        }
+        val digits = shortest!!.stripTrailingZeros()
+        val unscaled = digits.unscaledValue().abs().toString()
+        val point = unscaled.length - digits.scale()
+        val sign = if (digits.signum() < 0) "-" else ""
+        return sign + when {
+            point <= -4 || point > 16 -> {
+                val exponent = point - 1
+                val mantissa = if (unscaled.length == 1) unscaled else unscaled[0] + "." + unscaled.substring(1)
+                mantissa + "e" + (if (exponent < 0) "-" else "+") + kotlin.math.abs(exponent).toString().padStart(2, '0')
+            }
+            point <= 0 -> "0." + "0".repeat(-point) + unscaled
+            point >= unscaled.length -> unscaled + "0".repeat(point - unscaled.length) + ".0"
+            else -> unscaled.substring(0, point) + "." + unscaled.substring(point)
+        }
     }
 
     /**
@@ -75,8 +125,9 @@ internal object ConformanceRecord {
      *
      * Anything not whole is refused rather than passed through. Only a whole
      * number is written the same way by every language here; 1.5 and 1e-7
-     * have per-language spellings. No vector contains one, and if one ever
-     * does this should stop rather than lie.
+     * have per-language spellings. No case produces one, and if one ever does
+     * this should stop rather than lie. (A vector file itself may hold one;
+     * its digest goes through [referenceNumber].)
      */
     private fun wholeNumber(content: String): String {
         if (content == "true" || content == "false") return content
@@ -96,6 +147,9 @@ internal object ConformanceRecord {
         MessageDigest.getInstance("SHA-256").digest(raw).joinToString("") { "%02x".format(it) }
 
     fun canonicalDigest(value: JsonElement): String = sha256(canonical(value).toByteArray(Charsets.UTF_8))
+
+    /** The digest of a vector file as the reference computes it; see [referenceNumber]. */
+    fun vectorDigest(value: JsonElement): String = sha256(canonical(value, fractions = true).toByteArray(Charsets.UTF_8))
 
     /** Record what this SDK produced for one case of one vector file. */
     fun record(vectorFile: String, case: String, produced: JsonElement) {
@@ -126,7 +180,7 @@ internal object ConformanceRecord {
                         // The parsed JSON, not the bytes: a vendored copy is
                         // allowed to differ in indentation and line endings, and
                         // the checker accepts it on the same terms.
-                        put("digest", JsonPrimitive(canonicalDigest(parsed)))
+                        put("digest", JsonPrimitive(vectorDigest(parsed)))
                         putJsonObject("cases") {
                             val cases = results.getValue(vectorFile)
                             for (name in cases.keys.sorted()) {

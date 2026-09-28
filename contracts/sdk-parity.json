@@ -2,14 +2,14 @@
   "capabilities": {
     "api-errors": {
       "implementation": {
-        "src/main/kotlin/com/thalovant/sdk/ControlPlane.kt": "e5176f1b5becd18fbf9ea0007dbfcf2ead5d7036673d445c52cf94844632d041",
-        "src/main/kotlin/com/thalovant/sdk/Errors.kt": "c4c4c49380c121f1908975bf64dab2f2035e424a8fc5011d3d84252a7b2f1a3b"
+        "src/main/kotlin/com/thalovant/sdk/ControlPlane.kt": "50503f9868058289cb95b6a2c4447a8a541d6135e83dcebd46070e5bb34fd122",
+        "src/main/kotlin/com/thalovant/sdk/Errors.kt": "61e90567f7302ef429486ccb8e265d70a81d7d9aac1fee3a20b465f48d6dda70"
       },
       "reason": "ThalovantApiException in Errors.kt reads problem, errorCode and detail out of the error body once, exactly as sent, and apiError() in ControlPlane.kt builds one for every non-2xx response, reading the body as UTF-8; its bounded message now carries a string detail, with the bearer token and every string of 8 or more characters the request body sent redacted. Run against the shared API error vectors: each response is served by MockWebServer and read back through getHub(), and the message, toString() and stack trace are checked for every value the body echoed.",
       "status": "required",
       "tests": {
         "src/test/kotlin/com/thalovant/sdk/ApiErrorVectorsTest.kt": "9d4f5a15ede0c36a6e0e525642cc9f73b2a11d178397a4a7ab6822d056409903",
-        "src/test/kotlin/com/thalovant/sdk/ConformanceRecord.kt": "fd4497be06ce8928f83d7d41c8c3dcbd272fdb6f293fe6987eb09e75bef6b11d",
+        "src/test/kotlin/com/thalovant/sdk/ConformanceRecord.kt": "2994d45b23339c3e23cd3f21d0885c9ad8c120c908d86b22ea306f7e0867353f",
         "src/test/resources/thalovant/api-error-vectors.json": "f0d2d8e6e153811f071dac6e0611f00f3c32ed772b751ccccb31904d7dc936ec"
       },
       "vectors": {
@@ -18,16 +18,16 @@
     },
     "binary": {
       "implementation": {
-        "src/main/kotlin/com/thalovant/sdk/Client.kt": "ee77a037313f0360fb961a7518ff28db4b66a948ae03ccf473b58ea0f9a3fb90",
-        "src/main/kotlin/com/thalovant/sdk/Events.kt": "d0758e6932ab0ccb610f6e99301ed8c92e5358c7e0958d2c3ffaa067938c0672",
-        "src/main/kotlin/com/thalovant/sdk/Transport.kt": "60c22a243a6b4146cd5e86a203e8a64fb9987ff76b875f67a4be77981a99ecf0",
+        "src/main/kotlin/com/thalovant/sdk/Client.kt": "69b91df89b0b69e5fe1258830888787008126af851913c3eee1f2f64d0388535",
+        "src/main/kotlin/com/thalovant/sdk/Events.kt": "afc9ad7ca7fa5018fc2a836e9976e1ba8a33e24b915a5ce1cdaf1efac1b948a1",
+        "src/main/kotlin/com/thalovant/sdk/Transport.kt": "54e6badf51f567d9dbf515ff6ce0aad706ccbfca49538b55ea3aed681a5431d6",
         "src/main/kotlin/com/thalovant/sdk/Wire.kt": "9df50d1cc0435667e45add571f75e94dead3fe584590a4007d9ef1235d7c847e"
       },
       "reason": "HiveWire.decode branches on BINARY: four bits of payload type, then the clip itself, never parsed or inflated. onBinary() delivers it. Run against the shared binary vectors and against binary-frames.json, which is hivemind-bus-client's own encoder output rather than frames this SDK built for itself.",
       "status": "required",
       "tests": {
         "src/test/kotlin/com/thalovant/sdk/BinaryFrameTest.kt": "a47fbd74ae197d24393b8de56594fbbb3e647ca930f9cb3016933160cd980251",
-        "src/test/kotlin/com/thalovant/sdk/ConformanceRecord.kt": "fd4497be06ce8928f83d7d41c8c3dcbd272fdb6f293fe6987eb09e75bef6b11d"
+        "src/test/kotlin/com/thalovant/sdk/ConformanceRecord.kt": "2994d45b23339c3e23cd3f21d0885c9ad8c120c908d86b22ea306f7e0867353f"
       },
       "vectors": {
         "binary-frames.json": "src/test/resources/thalovant/binary-frames.json",
@@ -38,9 +38,41 @@
       "reason": "Python command line entry point; consumers expose idiomatic language APIs or MCP tools.",
       "status": "not-applicable"
     },
+    "connection-admission": {
+      "implementation": {
+        "src/main/kotlin/com/thalovant/sdk/ControlPlane.kt": "50503f9868058289cb95b6a2c4447a8a541d6135e83dcebd46070e5bb34fd122",
+        "src/main/kotlin/com/thalovant/sdk/Errors.kt": "61e90567f7302ef429486ccb8e265d70a81d7d9aac1fee3a20b465f48d6dda70"
+      },
+      "reason": "ThalovantControlPlane.waitForAdmission(result | operation) polls GET /v1/operations/{id}: ready, no operation and 404 are admitted, a 5xx is ridden out, failed and timed_out throw ThalovantAdmissionFailedException with the operation's errorCode, and the deadline throws ThalovantAdmissionTimeoutException, which extends ThalovantConnectionException and implements the ThalovantTimeout interface ThalovantTimeoutException also implements. A links.self on another origin is refused before any request. Any other refusal while polling is thrown as the API's own typed exception (a 401 is ThalovantAuthException), which the Python reference folds into its admission failure; no vector covers it. Run against the shared admission vectors over OkHttp and MockWebServer, the repeated exchange served until the deadline; results recorded and matching the reference.",
+      "status": "required",
+      "tests": {
+        "src/test/kotlin/com/thalovant/sdk/HomeLinkVectorsTest.kt": "41b75b2038b5e718c28df9d31dc12caf3bf1749ddade69653f32b5441ffa43ba",
+        "src/test/kotlin/com/thalovant/sdk/HomeLinkControlPlaneTest.kt": "ae54652dcf287e6430d5ed7bbd6117408eae75e38f01bbf5b31a6ad01a0f75ab",
+        "src/test/kotlin/com/thalovant/sdk/ConformanceRecord.kt": "2994d45b23339c3e23cd3f21d0885c9ad8c120c908d86b22ea306f7e0867353f"
+      },
+      "vectors": {
+        "connection-admission-vectors.json": "src/test/resources/thalovant/connection-admission-vectors.json"
+      }
+    },
+    "connection-kinds": {
+      "implementation": {
+        "src/main/kotlin/com/thalovant/sdk/ControlPlane.kt": "50503f9868058289cb95b6a2c4447a8a541d6135e83dcebd46070e5bb34fd122",
+        "src/main/kotlin/com/thalovant/sdk/Errors.kt": "61e90567f7302ef429486ccb8e265d70a81d7d9aac1fee3a20b465f48d6dda70"
+      },
+      "reason": "CreateClientIdentityOptions.connectionType is sent as spec.connection_type by createClientIdentity, which deletes a client whose answer does not echo the kind (DELETE with If-Match: its etag) and throws ThalovantUnsupportedConnectionTypeException, as it does for a 422 naming the field. apiException() in Errors.kt types every control-plane refusal: 401, 423 and 403 Insufficient scopes are ThalovantAuthException, 402 and 403 plan_limit ThalovantPlanException, 409 home_assistant_already_linked ThalovantAlreadyLinkedException with clientId; all remain ThalovantApiException with statusCode, errorCode, detail and problem. deleteClient(clientId, etag = null) reads the etag with getClient when none is given, retries once on 412, and counts 404 as deleted. Run against the shared connection-kinds vectors over OkHttp and MockWebServer, recording the requests sent in order; results recorded and matching the reference.",
+      "status": "required",
+      "tests": {
+        "src/test/kotlin/com/thalovant/sdk/HomeLinkVectorsTest.kt": "41b75b2038b5e718c28df9d31dc12caf3bf1749ddade69653f32b5441ffa43ba",
+        "src/test/kotlin/com/thalovant/sdk/HomeLinkControlPlaneTest.kt": "ae54652dcf287e6430d5ed7bbd6117408eae75e38f01bbf5b31a6ad01a0f75ab",
+        "src/test/kotlin/com/thalovant/sdk/ConformanceRecord.kt": "2994d45b23339c3e23cd3f21d0885c9ad8c120c908d86b22ea306f7e0867353f"
+      },
+      "vectors": {
+        "connection-kinds-vectors.json": "src/test/resources/thalovant/connection-kinds-vectors.json"
+      }
+    },
     "control": {
       "implementation": {
-        "src/main/kotlin/com/thalovant/sdk/ControlPlane.kt": "e5176f1b5becd18fbf9ea0007dbfcf2ead5d7036673d445c52cf94844632d041",
+        "src/main/kotlin/com/thalovant/sdk/ControlPlane.kt": "50503f9868058289cb95b6a2c4447a8a541d6135e83dcebd46070e5bb34fd122",
         "src/main/kotlin/com/thalovant/sdk/Hubs.kt": "7f77d01990106a91859e808359c44c1c7b17897bc5b63e81892618281294c244",
         "src/main/kotlin/com/thalovant/sdk/NativeSignIn.kt": "5ea87e2a19068cba2ccab8bc1ef7f89caa86ebcc9ebbeafc319674c83cb9f582"
       },
@@ -55,17 +87,54 @@
     },
     "conversation": {
       "implementation": {
-        "src/main/kotlin/com/thalovant/sdk/Client.kt": "ee77a037313f0360fb961a7518ff28db4b66a948ae03ccf473b58ea0f9a3fb90",
-        "src/main/kotlin/com/thalovant/sdk/Events.kt": "d0758e6932ab0ccb610f6e99301ed8c92e5358c7e0958d2c3ffaa067938c0672"
+        "src/main/kotlin/com/thalovant/sdk/Client.kt": "69b91df89b0b69e5fe1258830888787008126af851913c3eee1f2f64d0388535",
+        "src/main/kotlin/com/thalovant/sdk/Events.kt": "afc9ad7ca7fa5018fc2a836e9976e1ba8a33e24b915a5ce1cdaf1efac1b948a1"
       },
       "reason": "carryConversation() and the client's per-session memory, run against the shared conversation vectors.",
       "status": "required",
       "tests": {
-        "src/test/kotlin/com/thalovant/sdk/ConformanceRecord.kt": "fd4497be06ce8928f83d7d41c8c3dcbd272fdb6f293fe6987eb09e75bef6b11d",
+        "src/test/kotlin/com/thalovant/sdk/ConformanceRecord.kt": "2994d45b23339c3e23cd3f21d0885c9ad8c120c908d86b22ea306f7e0867353f",
         "src/test/kotlin/com/thalovant/sdk/ConversationCarryTest.kt": "1347036db46f247b665cc47877deb5ef2e0652cb4a62b1568c0ab5f6b013bee9"
       },
       "vectors": {
         "conversation-vectors.json": "src/test/resources/thalovant/conversation-vectors.json"
+      }
+    },
+    "device-login": {
+      "implementation": {
+        "src/main/kotlin/com/thalovant/sdk/ControlPlane.kt": "50503f9868058289cb95b6a2c4447a8a541d6135e83dcebd46070e5bb34fd122",
+        "src/main/kotlin/com/thalovant/sdk/Errors.kt": "61e90567f7302ef429486ccb8e265d70a81d7d9aac1fee3a20b465f48d6dda70"
+      },
+      "reason": "ThalovantControlPlane.beginDeviceLogin, pollDeviceLogin and revokeApiToken in ControlPlane.kt, with DeviceAuthorization and ApiToken; ThalovantDeviceLoginPendingException (a ThalovantApiException carrying intervalMillis) in Errors.kt, and the denied and expired exceptions, which keep their ThalovantException supertype and now carry statusCode and body. slow_down lengthens a device code's interval by five seconds for good; an approved poll stores accessToken and tokenId; loginWithBrowser runs on the same steps. Run against the shared device-login vectors over OkHttp: each case's exchanges are served in order by MockWebServer, every request is checked (method, path, body, Authorization), and the message, toString and stack trace of every error are checked for the device code and the token. The results are recorded in contracts/conformance-results.json and match the reference's.",
+      "status": "required",
+      "tests": {
+        "src/test/kotlin/com/thalovant/sdk/HomeLinkVectorsTest.kt": "41b75b2038b5e718c28df9d31dc12caf3bf1749ddade69653f32b5441ffa43ba",
+        "src/test/kotlin/com/thalovant/sdk/HomeLinkControlPlaneTest.kt": "ae54652dcf287e6430d5ed7bbd6117408eae75e38f01bbf5b31a6ad01a0f75ab",
+        "src/test/kotlin/com/thalovant/sdk/ConformanceRecord.kt": "2994d45b23339c3e23cd3f21d0885c9ad8c120c908d86b22ea306f7e0867353f"
+      },
+      "vectors": {
+        "device-login-vectors.json": "src/test/resources/thalovant/device-login-vectors.json"
+      }
+    },
+    "home-link": {
+      "implementation": {
+        "src/main/kotlin/com/thalovant/sdk/Home.kt": "25f938fc27eecd0a59ed5841d0b9b2c14d2baf28860ae688e71fb89fe40b5ee8",
+        "src/main/kotlin/com/thalovant/sdk/Client.kt": "69b91df89b0b69e5fe1258830888787008126af851913c3eee1f2f64d0388535",
+        "src/main/kotlin/com/thalovant/sdk/Events.kt": "afc9ad7ca7fa5018fc2a836e9976e1ba8a33e24b915a5ce1cdaf1efac1b948a1",
+        "src/main/kotlin/com/thalovant/sdk/Session.kt": "fff21253289e18c138d45c12f23bed44360f1c1c6c1e7364def862c1feabf2f0",
+        "src/main/kotlin/com/thalovant/sdk/Transport.kt": "54e6badf51f567d9dbf515ff6ce0aad706ccbfca49538b55ea3aed681a5431d6",
+        "src/main/resources/thalovant/html-entities.tsv": "9a281544c54795dd40d24ee80826111b15bf0d668c02d214d80e7feb60c75aa0"
+      },
+      "reason": "replyContext() in Events.kt and ThalovantClient.reply build the OVOS-MSG-1 5.2 reply from the context exactly as the hub sent it (this SDK delivers the raw context). Home.kt holds the contract (ThalovantHome), HomeRequest, HomeAnswer, homeResponse, plainSpeech (tags stripped, references decoded as Python's html.unescape does from the HTML5 table in html-entities.tsv, whitespace collapsed) and answerHomeRequest(s) on a client or a HubSession: the handler runs in a child coroutine and the reply goes out at the deadline even when it ignores cancellation. HubSession.run keeps the link on the policy ladder, wakes on HiveMindWssTransport's end signal, reads refusals as not admitted for refusalGraceSeconds, and HubSession.reply uses the live client so an answer never waits behind a running ask. A close right after the handshake is a refusal only for 1000, 1005 and 1008. The answer cases run through ThalovantClient.answerHomeRequest and its reply path; HomeLinkSessionTest also answers over the real WSS transport against an in-process Noise hub, including while an ask is in flight. Results recorded and matching the reference.",
+      "status": "required",
+      "tests": {
+        "src/test/kotlin/com/thalovant/sdk/HomeLinkVectorsTest.kt": "41b75b2038b5e718c28df9d31dc12caf3bf1749ddade69653f32b5441ffa43ba",
+        "src/test/kotlin/com/thalovant/sdk/HomeLinkSessionTest.kt": "f7d5b56e639892449b465f02877aa27f00e1210b8e155083e15a9d3d0380cec2",
+        "src/test/kotlin/com/thalovant/sdk/FakeHub.kt": "5308d5c85d2941fdac334f895c0bbc586aede51c833d7a1216863619afa0b5ec",
+        "src/test/kotlin/com/thalovant/sdk/ConformanceRecord.kt": "2994d45b23339c3e23cd3f21d0885c9ad8c120c908d86b22ea306f7e0867353f"
+      },
+      "vectors": {
+        "home-link-vectors.json": "src/test/resources/thalovant/home-link-vectors.json"
       }
     },
     "identity": {
@@ -111,14 +180,14 @@
     },
     "mesh": {
       "implementation": {
-        "src/main/kotlin/com/thalovant/sdk/Client.kt": "ee77a037313f0360fb961a7518ff28db4b66a948ae03ccf473b58ea0f9a3fb90",
-        "src/main/kotlin/com/thalovant/sdk/Events.kt": "d0758e6932ab0ccb610f6e99301ed8c92e5358c7e0958d2c3ffaa067938c0672",
-        "src/main/kotlin/com/thalovant/sdk/Transport.kt": "60c22a243a6b4146cd5e86a203e8a64fb9987ff76b875f67a4be77981a99ecf0"
+        "src/main/kotlin/com/thalovant/sdk/Client.kt": "69b91df89b0b69e5fe1258830888787008126af851913c3eee1f2f64d0388535",
+        "src/main/kotlin/com/thalovant/sdk/Events.kt": "afc9ad7ca7fa5018fc2a836e9976e1ba8a33e24b915a5ce1cdaf1efac1b948a1",
+        "src/main/kotlin/com/thalovant/sdk/Transport.kt": "54e6badf51f567d9dbf515ff6ce0aad706ccbfca49538b55ea3aed681a5431d6"
       },
       "reason": "onHive() over the five hive kinds and propagate/escalate/broadcast, run against the shared mesh vectors.",
       "status": "required",
       "tests": {
-        "src/test/kotlin/com/thalovant/sdk/ConformanceRecord.kt": "fd4497be06ce8928f83d7d41c8c3dcbd272fdb6f293fe6987eb09e75bef6b11d",
+        "src/test/kotlin/com/thalovant/sdk/ConformanceRecord.kt": "2994d45b23339c3e23cd3f21d0885c9ad8c120c908d86b22ea306f7e0867353f",
         "src/test/kotlin/com/thalovant/sdk/ConversationCarryTest.kt": "1347036db46f247b665cc47877deb5ef2e0652cb4a62b1568c0ab5f6b013bee9"
       },
       "vectors": {
@@ -127,8 +196,8 @@
     },
     "refusal": {
       "implementation": {
-        "src/main/kotlin/com/thalovant/sdk/Client.kt": "ee77a037313f0360fb961a7518ff28db4b66a948ae03ccf473b58ea0f9a3fb90",
-        "src/main/kotlin/com/thalovant/sdk/Errors.kt": "c4c4c49380c121f1908975bf64dab2f2035e424a8fc5011d3d84252a7b2f1a3b"
+        "src/main/kotlin/com/thalovant/sdk/Client.kt": "69b91df89b0b69e5fe1258830888787008126af851913c3eee1f2f64d0388535",
+        "src/main/kotlin/com/thalovant/sdk/Errors.kt": "61e90567f7302ef429486ccb8e265d70a81d7d9aac1fee3a20b465f48d6dda70"
       },
       "reason": "failureError() and refusalBelongsToAsk() in Errors.kt, used by ask() in Client.kt, which counts asks, queries and fire-and-forget utterances inside the shared grace window -- recorded once connected and immediately before the publish, and kept when the publish throws. Run against the shared refusal vectors; TransportTest drives denials over the real transport and RuntimeTest covers an ask beside a query and beside a fire-and-forget send.",
       "status": "required",
@@ -144,9 +213,9 @@
     },
     "runtime": {
       "implementation": {
-        "src/main/kotlin/com/thalovant/sdk/Events.kt": "d0758e6932ab0ccb610f6e99301ed8c92e5358c7e0958d2c3ffaa067938c0672",
+        "src/main/kotlin/com/thalovant/sdk/Events.kt": "afc9ad7ca7fa5018fc2a836e9976e1ba8a33e24b915a5ce1cdaf1efac1b948a1",
         "src/main/kotlin/com/thalovant/sdk/Runtime.kt": "4d366a4d8338c8e3d114d9b0e55f749c7c22dee51c1e571d50eff373b53516aa",
-        "src/main/kotlin/com/thalovant/sdk/Transport.kt": "60c22a243a6b4146cd5e86a203e8a64fb9987ff76b875f67a4be77981a99ecf0"
+        "src/main/kotlin/com/thalovant/sdk/Transport.kt": "54e6badf51f567d9dbf515ff6ce0aad706ccbfca49538b55ea3aed681a5431d6"
       },
       "reason": "Applicable public behavior is implemented and exercised by the named regression suites and shared fixtures. HiveMind #251/#252 only changes the Python upstream client dispatcher; this consumer uses native single-dispatch transports (MCP delegates to the Node SDK), or caller-owned frame parsing in embedded C. No Python HiveMind bus dependency or slave-protocol reinjection exists here. Python now requires fixed upstream 1.1.9a1 and removes its identity-based suppression; equal independent native frames remain distinct. Reply claim metadata follows the Python string-ID contract, with first-seen ordering, case-sensitive fallback stages and legacy unstamped success. Invalid non-string stamps are ignored. Embedded C exposes bounded extraction and claim classification while its caller retains ordered IDs.",
       "status": "required",
@@ -162,11 +231,12 @@
     },
     "session": {
       "implementation": {
-        "src/main/kotlin/com/thalovant/sdk/Session.kt": "bcf2d5007f54c364abdd96fe266a9870da0c2ff9602cd5c615d505bcb9618cdc"
+        "src/main/kotlin/com/thalovant/sdk/Session.kt": "fff21253289e18c138d45c12f23bed44360f1c1c6c1e7364def862c1feabf2f0"
       },
-      "reason": "Applicable public behavior is implemented and exercised by the named regression suites and shared fixtures. The connected-client factory owns failed connection cleanup; Python performs that dial internally and retains failed retirement before replacement.",
+      "reason": "Applicable public behavior is implemented and exercised by the named regression suites and shared fixtures. The connected-client factory owns failed connection cleanup; Python performs that dial internally and retains failed retirement before replacement. HubSession.run keeps the link by the same policy as the reference's AsyncHubSession.run, and reply never waits behind a running ask (HomeLinkSessionTest).",
       "status": "required",
       "tests": {
+        "src/test/kotlin/com/thalovant/sdk/HomeLinkSessionTest.kt": "f7d5b56e639892449b465f02877aa27f00e1210b8e155083e15a9d3d0380cec2",
         "src/test/kotlin/com/thalovant/sdk/SessionInventoryTest.kt": "8564690078ffb87b9f93ad2c93df7bbef16c5328a2b99be82791c42f19e6073a"
       }
     }
@@ -183,7 +253,8 @@
     "2377330566e575bb3fda77998d943667bf0795940f9d569a5b8bc7f4f0e5e486",
     "76bc1eb9957da5a6fdf03e89f3905f8d37d3ef2fe7c841ba751718105ca30a45",
     "34a21f2ad875b220a571613e25b6a6e5f3d8de1a776f4949a7ab63ba93e07b16",
-    "f79d99e9acd2fe299e3b313102541e47b366751defe5fa0dcfa44053aa7f007d"
+    "f79d99e9acd2fe299e3b313102541e47b366751defe5fa0dcfa44053aa7f007d",
+    "b16579bd501d18147e6b74b02d67d98ce6aeb850f369de2138fbdfb598469b7c"
   ],
   "schema_version": 1
 }

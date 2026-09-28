@@ -9,6 +9,8 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.suspendCancellableCoroutine
 import java.io.IOException
+import kotlin.math.roundToLong
+import kotlinx.serialization.json.JsonNull
 import okhttp3.Call
 import okhttp3.Callback
 import okhttp3.Response
@@ -244,6 +246,141 @@ public data class InstallSkillOptions(
 /** Default `POST /v1/auth/device/token` poll interval when the API omits `interval`. */
 public const val DEFAULT_DEVICE_POLL_INTERVAL_MILLIS: Long = 5_000
 
+/**
+ * The scopes a Home Assistant link asks for when it signs in: find the hubs,
+ * then create, find and delete its own connection. Also all that a Free plan
+ * can approve, so asking for more breaks sign-in for Free accounts.
+ */
+public val HOME_ASSISTANT_SCOPES: List<String> = listOf("hubs:read", "clients:read", "clients:write")
+
+/** `spec.connection_type` of a Home Assistant link; see [CreateClientIdentityOptions.connectionType]. */
+public const val CONNECTION_TYPE_HOME_ASSISTANT: String = "home_assistant"
+
+/**
+ * How long [ThalovantControlPlane.waitForAdmission] waits by default. A hub
+ * admits a new connection about ninety seconds after it is created.
+ */
+public const val DEFAULT_ADMISSION_TIMEOUT_MS: Long = 180_000
+
+/** How often [ThalovantControlPlane.waitForAdmission] reads the operation by default. */
+public const val DEFAULT_OPERATION_POLL_INTERVAL_MS: Long = 2_000
+
+/**
+ * A started device sign-in: what to show a person, and what to poll with.
+ *
+ * Returned by [ThalovantControlPlane.beginDeviceLogin]. Show [verificationUri]
+ * and [userCode] (or [verificationUriComplete], which carries the code), then
+ * call [ThalovantControlPlane.pollDeviceLogin] every [intervalMillis] until it
+ * returns a token or throws something other than
+ * [ThalovantDeviceLoginPendingException].
+ *
+ * [deviceCode] is the secret half and never needs showing: this is a plain
+ * class whose [toString] leaves it out. [asJson] keeps it, so a sign-in can be
+ * resumed in another process with [fromJson]; store that like a secret.
+ */
+public class DeviceAuthorization(
+    public val deviceCode: String,
+    public val userCode: String,
+    public val verificationUri: String,
+    public val verificationUriComplete: String? = null,
+    /** How long to wait between two polls, as the API asked. */
+    public val intervalMillis: Long = DEFAULT_DEVICE_POLL_INTERVAL_MILLIS,
+    /** How long the code is valid for from when it was issued. */
+    public val expiresInMillis: Long = 900_000,
+) {
+    /** A JSON form, [deviceCode] included, in the API's own field names. */
+    public fun asJson(): JsonObject = buildJsonObject {
+        put("device_code", deviceCode)
+        put("user_code", userCode)
+        put("verification_uri", verificationUri)
+        put("verification_uri_complete", verificationUriComplete)
+        put("interval", intervalMillis / 1_000.0)
+        put("expires_in", expiresInMillis / 1_000)
+    }
+
+    override fun toString(): String =
+        "DeviceAuthorization(userCode=$userCode, verificationUri=$verificationUri, " +
+            "intervalMillis=$intervalMillis, expiresInMillis=$expiresInMillis)"
+
+    public companion object {
+        /**
+         * Reads `POST /v1/auth/device/authorize` (or [asJson]).
+         *
+         * Refuses a grant without its codes, and a verification URL that is
+         * not http(s), has no host, or carries credentials or whitespace: it
+         * is about to be opened in a browser, or read out to somebody.
+         */
+        public fun fromJson(grant: JsonObject): DeviceAuthorization {
+            val deviceCode = jsonText(grant["device_code"])
+            val userCode = jsonText(grant["user_code"])
+            val verificationUri = jsonText(grant["verification_uri"])
+            if (deviceCode == null || userCode == null || verificationUri == null) {
+                throw ThalovantApiException("Thalovant API device authorization response was incomplete.")
+            }
+            val completeValue = grant["verification_uri_complete"]
+            val complete = jsonText(completeValue)
+            if (deviceVerificationUri(verificationUri) == null ||
+                (completeValue != null && completeValue != JsonNull && (complete == null || deviceVerificationUri(complete) == null))
+            ) {
+                throw ThalovantApiException("Thalovant API device authorization returned an invalid verification URI.")
+            }
+            val interval = jsonNumber(grant["interval"])?.takeIf { it >= 0 }
+            val expires = jsonNumber(grant["expires_in"])?.takeIf { it >= 0 }
+            return DeviceAuthorization(
+                deviceCode = deviceCode,
+                userCode = userCode,
+                verificationUri = verificationUri,
+                verificationUriComplete = complete,
+                intervalMillis = interval?.let { (it * 1_000).roundToLong() } ?: DEFAULT_DEVICE_POLL_INTERVAL_MILLIS,
+                expiresInMillis = expires?.let { (it * 1_000).roundToLong() } ?: 900_000,
+            )
+        }
+    }
+}
+
+/**
+ * An API token the API minted for a device sign-in: the credential and what it may do.
+ *
+ * There is no refresh token; a device-login token lives 365 days. [tokenId] is
+ * what [ThalovantControlPlane.revokeApiToken] revokes. A plain class, so
+ * [toString] never prints [accessToken].
+ */
+public class ApiToken(
+    public val accessToken: String,
+    public val tokenType: String = "bearer",
+    public val scopes: List<String> = emptyList(),
+    /** When the token stops working, in ISO 8601 exactly as the API sent it, or null. */
+    public val expiresAt: String? = null,
+    public val tokenId: String? = null,
+) {
+    /** A JSON form in the API's own field names, [accessToken] included: store it as a secret. */
+    public fun asJson(): JsonObject = buildJsonObject {
+        put("access_token", accessToken)
+        put("token_type", tokenType)
+        put("scopes", JsonArray(scopes.map(::JsonPrimitive)))
+        put("expires_at", expiresAt)
+        put("token_id", tokenId)
+    }
+
+    override fun toString(): String =
+        "ApiToken(tokenType=$tokenType, scopes=$scopes, expiresAt=$expiresAt, tokenId=$tokenId)"
+
+    public companion object {
+        /** Reads a token answer; one without an `access_token` is refused. */
+        public fun fromJson(token: JsonObject): ApiToken {
+            val accessToken = jsonText(token["access_token"])
+                ?: throw ThalovantApiException("Thalovant API token response did not include access_token.")
+            return ApiToken(
+                accessToken = accessToken,
+                tokenType = jsonText(token["token_type"]) ?: "bearer",
+                scopes = (token["scopes"] as? JsonArray)?.mapNotNull(::jsonText) ?: emptyList(),
+                expiresAt = jsonText(token["expires_at"]),
+                tokenId = jsonText(token["token_id"]),
+            )
+        }
+    }
+}
+
 /** Options for [ThalovantControlPlane.loginWithBrowser]. */
 public data class DeviceLoginOptions(
     /** Scopes to request for the durable API token; omitted from the request when null. */
@@ -273,6 +410,16 @@ public data class CreateClientIdentityOptions(
     public val active: Boolean = true,
     public val preferredProtocols: List<HubProtocol>? = null,
     public val idempotencyKey: String? = null,
+    /**
+     * The kind of connection to create, sent as `spec.connection_type`:
+     * `voice_satellite`, `web_chat`, `developer`, `embedded`, or
+     * [CONNECTION_TYPE_HOME_ASSISTANT]. The kind decides what the connection
+     * may send and receive. Null sends none, and the API makes its default.
+     *
+     * When set, the API must say the connection is of that kind; see
+     * [ThalovantControlPlane.createClientIdentity].
+     */
+    public val connectionType: String? = null,
 )
 
 /**
@@ -293,6 +440,19 @@ public class BootstrapIdentityResult internal constructor(
     public val endpoint: SelectedHubEndpoint?,
 ) {
     public val selectedProtocol: HubProtocol? get() = endpoint?.protocol
+
+    /** The new connection's id. */
+    public val clientId: String? get() = jsonText(client["id"])
+
+    /** The kind of connection the API recorded, `spec.connection_type`, or null when it named none. */
+    public val connectionType: String? get() = jsonText((client["spec"] as? JsonObject)?.get("connection_type"))
+
+    /**
+     * The operation that carries the new connection to its hub, when the API
+     * returned one it could read; [ThalovantControlPlane.waitForAdmission]
+     * waits for it.
+     */
+    public val operation: OperationResource? get() = operationOrNull(client["operation"])
 
     /**
      * Serializes the result. Without [includeSecrets] the hub/client secret
@@ -330,6 +490,22 @@ public class ThalovantControlPlane(
 ) {
     /** Normalized API root; a trailing `/v1` is stripped and a trailing slash added. */
     public val apiUrl: String = normalizeControlApiUrl(apiUrl)
+
+    /**
+     * The id of the API token in [accessToken], when a device login on this
+     * client minted it; what [revokeApiToken] revokes by default.
+     */
+    @Volatile
+    public var tokenId: String? = null
+
+    /**
+     * Each device code's poll interval, lengthened by every `slow_down` and
+     * kept that way (RFC 8628 §3.5). Bounded: a caller that begins sign-ins
+     * and abandons them must not grow this for the life of the client.
+     */
+    private val deviceIntervals = object : LinkedHashMap<String, Long>() {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Long>?): Boolean = size > 32
+    }
     private val httpClient = httpClient.newBuilder().followRedirects(false).followSslRedirects(false)
         .addNetworkInterceptor { chain ->
             val request = chain.request()
@@ -391,47 +567,21 @@ public class ThalovantControlPlane(
      * normalize and expand the echoed `scopes`.
      */
     public suspend fun loginWithBrowser(options: DeviceLoginOptions = DeviceLoginOptions()): JsonObject {
-        val body = buildJsonObject {
-            options.scopes?.let { scopes -> put("scopes", JsonArray(scopes.map { JsonPrimitive(it) })) }
-            options.clientName?.takeIf { it.isNotEmpty() }?.let { put("client_name", it) }
-        }
-        val grant = request("POST", "/v1/auth/device/authorize", body = body, auth = false)
-
-        val deviceCode = grant.optionalString("device_code")
-        val userCode = grant.optionalString("user_code")
-        val verificationUri = (grant["verification_uri"] as? JsonPrimitive)?.takeIf { it.isString }?.content
-        if (deviceCode == null || userCode == null || verificationUri == null) {
-            throw ThalovantApiException("Thalovant API device authorization response was incomplete.")
-        }
-        val completeValue = grant["verification_uri_complete"]
-        val completeUri = (completeValue as? JsonPrimitive)?.takeIf { it.isString }?.content
-        if (deviceVerificationUri(verificationUri) == null ||
-            (completeValue != null && completeValue != kotlinx.serialization.json.JsonNull && (completeUri == null || deviceVerificationUri(completeUri) == null))) {
-            throw ThalovantApiException("Thalovant API device authorization returned an invalid verification URI.")
-        }
-        val intervalSeconds = optionalString(grant["interval"])?.toLongOrNull()
-        val intervalMillis = if (intervalSeconds != null && intervalSeconds >= 0) {
-            intervalSeconds * 1_000
-        } else {
-            DEFAULT_DEVICE_POLL_INTERVAL_MILLIS
-        }
+        val grant = request("POST", "/v1/auth/device/authorize", body = deviceAuthorizeBody(options.scopes, options.clientName), auth = false)
+        val authorization = DeviceAuthorization.fromJson(grant)
 
         val prompt = options.prompt
         if (prompt != null) {
             prompt(grant)
         } else {
-            println("To sign in, visit $verificationUri and enter the code $userCode")
+            println("To sign in, visit ${authorization.verificationUri} and enter the code ${authorization.userCode}")
         }
         if (options.openBrowser) {
-            grant.optionalString("verification_uri_complete")?.let { openBrowserBestEffort(it) }
+            authorization.verificationUriComplete?.let { openBrowserBestEffort(it) }
         }
 
-        val token = pollDeviceToken(deviceCode, intervalMillis, options.timeoutMillis)
-        val accessToken = (token["access_token"] as? JsonPrimitive)?.takeIf { it.isString }?.content
-        if (accessToken.isNullOrEmpty()) {
-            throw ThalovantApiException("Thalovant API token response did not include access_token.")
-        }
-        this.accessToken = accessToken
+        val token = pollDeviceToken(authorization.deviceCode, authorization.intervalMillis, options.timeoutMillis)
+        acceptToken(token)
         return token
     }
 
@@ -448,35 +598,153 @@ public class ThalovantControlPlane(
         clock: () -> Long = { System.nanoTime() / 1_000_000 },
     ): JsonObject {
         val deadline = clock() + timeoutMillis
-        var waitMillis = intervalMillis
+        synchronized(deviceIntervals) { deviceIntervals[deviceCode] = intervalMillis }
         while (true) {
-            try {
-                return request(
-                    "POST",
-                    "/v1/auth/device/token",
-                    body = buildJsonObject { put("device_code", deviceCode) },
-                    auth = false,
-                )
-            } catch (exception: ThalovantApiException) {
-                when (deviceFlowError(exception)) {
-                    "authorization_pending" -> Unit
-                    "slow_down" -> waitMillis += 5_000
-                    "access_denied" -> throw ThalovantDeviceLoginDeniedException(
-                        "The device sign-in request was denied in the browser.",
-                    )
-                    "expired_token" -> throw ThalovantDeviceLoginExpiredException(
-                        "The device sign-in code expired before it was approved. " +
-                            "Call loginWithBrowser() again to request a new code.",
-                    )
-                    else -> throw exception
-                }
+            val waitMillis = try {
+                return deviceTokenOnce(deviceCode)
+            } catch (pending: ThalovantDeviceLoginPendingException) {
+                pending.intervalMillis
             }
             val remainingMillis = deadline - clock()
             if (remainingMillis <= 0) {
+                synchronized(deviceIntervals) { deviceIntervals.remove(deviceCode) }
                 throw ThalovantTimeoutException("Timed out waiting for the device sign-in to be approved.")
             }
             sleep(minOf(waitMillis, remainingMillis))
         }
+    }
+
+    /**
+     * Starts a device sign-in (RFC 8628): a code for a person to approve in a
+     * browser, for a caller that runs its own loop.
+     *
+     * A Home Assistant config flow, a TV, a CLI: anything that shows a code
+     * and cannot wait inside one call for a person to act. Show the person
+     * [DeviceAuthorization.verificationUri] and [DeviceAuthorization.userCode]
+     * (or [DeviceAuthorization.verificationUriComplete], which carries the
+     * code), then call [pollDeviceLogin] every
+     * [DeviceAuthorization.intervalMillis]. [loginWithBrowser] is the same
+     * flow with the loop run for you.
+     *
+     * [scopes] are what the token will carry; the API defaults to `hubs:read`
+     * and `clients:write` when none are given. A Free plan can approve only
+     * [HOME_ASSISTANT_SCOPES]. [clientName] is shown on the approval page.
+     *
+     * Throws [ThalovantApiException] when the API refuses, and when its answer
+     * is incomplete or names a verification URL that is not http(s), has no
+     * host, or carries credentials.
+     */
+    public suspend fun beginDeviceLogin(scopes: List<String>? = null, clientName: String? = null): DeviceAuthorization {
+        val grant = request("POST", "/v1/auth/device/authorize", body = deviceAuthorizeBody(scopes, clientName), auth = false)
+        val authorization = DeviceAuthorization.fromJson(grant)
+        synchronized(deviceIntervals) { deviceIntervals[authorization.deviceCode] = authorization.intervalMillis }
+        return authorization
+    }
+
+    /**
+     * Asks once whether the device sign-in was approved.
+     *
+     * Returns the token and stores it on this client, as [accessToken] and
+     * [tokenId]. Otherwise throws:
+     *
+     * - [ThalovantDeviceLoginPendingException] while nobody has decided --
+     *   poll again after its [ThalovantDeviceLoginPendingException.intervalMillis],
+     *   which a `slow_down` has already lengthened, for good;
+     * - [ThalovantDeviceLoginExpiredException] when the code ran out, and
+     *   [ThalovantDeviceLoginDeniedException] when the person said no -- start
+     *   again with [beginDeviceLogin];
+     * - [ThalovantApiException] for anything else the API answered, carrying
+     *   its status, code and detail.
+     *
+     * Neither the device code nor the token ever appears in an error message.
+     */
+    public suspend fun pollDeviceLogin(authorization: DeviceAuthorization): ApiToken {
+        synchronized(deviceIntervals) { deviceIntervals.putIfAbsent(authorization.deviceCode, authorization.intervalMillis) }
+        return pollDeviceLogin(authorization.deviceCode)
+    }
+
+    /** [pollDeviceLogin] for a device code kept on its own, as `device_code` in [DeviceAuthorization.asJson]. */
+    public suspend fun pollDeviceLogin(deviceCode: String): ApiToken {
+        val token = deviceTokenOnce(deviceCode)
+        val parsed = ApiToken.fromJson(token)
+        acceptToken(token)
+        return parsed
+    }
+
+    /**
+     * Revokes an API token via `DELETE /v1/auth/api-tokens/{tokenId}`; by
+     * default the one a device login on this client signed in with.
+     *
+     * A token may always revoke itself, whatever its scopes, so a Home
+     * Assistant integration can undo its own sign-in when it is removed.
+     * Revoking the token in use forgets it here too -- [accessToken] and
+     * [tokenId] become null -- so a later call fails locally rather than with
+     * a 401.
+     */
+    public suspend fun revokeApiToken(tokenId: String? = null) {
+        val target = tokenId?.takeIf { it.isNotEmpty() } ?: this.tokenId
+            ?: throw ThalovantApiException(
+                "No API token id to revoke: pass tokenId, or sign in with a device login first.",
+            )
+        request("DELETE", "/v1/auth/api-tokens/${encodePathSegment(target)}")
+        if (target == this.tokenId) {
+            accessToken = null
+            this.tokenId = null
+        }
+    }
+
+    /** One `POST /v1/auth/device/token`: the token, or why there is none yet. */
+    private suspend fun deviceTokenOnce(deviceCode: String): JsonObject {
+        val token = try {
+            request(
+                "POST",
+                "/v1/auth/device/token",
+                body = buildJsonObject { put("device_code", deviceCode) },
+                auth = false,
+            )
+        } catch (exception: ThalovantApiException) {
+            val status = exception.statusCode ?: throw exception
+            val error = deviceFlowError(exception)
+            val interval = synchronized(deviceIntervals) {
+                val current = deviceIntervals[deviceCode] ?: DEFAULT_DEVICE_POLL_INTERVAL_MILLIS
+                when (error) {
+                    // RFC 8628 §3.5: every slow_down adds five seconds, for good.
+                    "slow_down" -> (current + 5_000).also { deviceIntervals[deviceCode] = it }
+                    "access_denied", "expired_token" -> current.also { deviceIntervals.remove(deviceCode) }
+                    else -> current
+                }
+            }
+            when (error) {
+                "authorization_pending", "slow_down" -> throw ThalovantDeviceLoginPendingException(
+                    "The device sign-in has not been approved yet.",
+                    intervalMillis = interval,
+                    statusCode = status,
+                    body = exception.body,
+                )
+                "access_denied" -> throw ThalovantDeviceLoginDeniedException(
+                    "The device sign-in request was denied in the browser.",
+                    statusCode = status,
+                    body = exception.body,
+                )
+                "expired_token" -> throw ThalovantDeviceLoginExpiredException(
+                    "The device sign-in code expired before it was approved. " +
+                        "Call beginDeviceLogin() or loginWithBrowser() again to request a new code.",
+                    statusCode = status,
+                    body = exception.body,
+                )
+                else -> throw exception
+            }
+        }
+        synchronized(deviceIntervals) { deviceIntervals.remove(deviceCode) }
+        return token
+    }
+
+    /** Keeps an approved device login's token, and its id, for later calls. */
+    private fun acceptToken(token: JsonObject) {
+        val accessToken = jsonText(token["access_token"])
+            ?: throw ThalovantApiException("Thalovant API token response did not include access_token.")
+        this.accessToken = accessToken
+        tokenId = jsonText(token["token_id"])
     }
 
     /**
@@ -652,21 +920,6 @@ public class ThalovantControlPlane(
         )
 
     /**
-     * Deletes one client via `DELETE /v1/clients/{clientId}`.
-     *
-     * A client is a connection, and connections are counted against a plan. An
-     * app that mints a new client every time somebody pairs, without removing
-     * the one it made last time, spends its own allowance: on a plan that
-     * allows a single connection, the second attempt is refused because of the
-     * first. That is what this exists to prevent.
-     *
-     * Like [deleteHub] this route requires the client's current [etag], sent
-     * as `If-Match`; a stale or missing value fails with HTTP 412. The etag
-     * comes back from the call that created the client.
-     *
-     * Requires a token with the `clients:write` scope.
-     */
-    /**
      * The clients on this account, newest page first, via `GET /v1/clients`.
      *
      * The `clients:read` scope existed with nothing to spend it on: an app
@@ -693,8 +946,48 @@ public class ThalovantControlPlane(
         return request("GET", "/v1/clients", query = query)
     }
 
-    public suspend fun deleteClient(clientId: String, etag: String) {
-        request("DELETE", "/v1/clients/${encodePathSegment(clientId)}", headers = mapOf("If-Match" to etag))
+    /**
+     * Reads one client (a hub connection) via `GET /v1/clients/{clientId}`,
+     * with the `etag` a change to it needs.
+     *
+     * Requires a token with `clients:read` or `clients:write`.
+     */
+    public suspend fun getClient(clientId: String): JsonObject =
+        request("GET", "/v1/clients/${encodePathSegment(clientId)}")
+
+    /**
+     * Deletes one client via `DELETE /v1/clients/{clientId}`.
+     *
+     * A client is a connection, and connections are counted against a plan. An
+     * app that mints a new client every time somebody pairs, without removing
+     * the one it made last time, spends its own allowance: on a plan that
+     * allows a single connection, the second attempt is refused because of the
+     * first. That is what this exists to prevent.
+     *
+     * The route requires the client's current [etag], sent as `If-Match`; it
+     * comes back from the call that created the client, and on every row of
+     * [listClients] and [getClient]. Without one this reads it first. When
+     * another writer changed the client in between -- HTTP 412 -- it reads the
+     * etag once more and retries, once. A client that is already gone (HTTP
+     * 404, on either request) counts as deleted, so deleting twice is safe.
+     *
+     * Requires a token with the `clients:write` scope.
+     */
+    public suspend fun deleteClient(clientId: String, etag: String? = null) {
+        val path = "/v1/clients/${encodePathSegment(clientId)}"
+        var current = etag
+        for (attempt in 0..1) {
+            try {
+                val match = current ?: jsonText(getClient(clientId)["etag"])
+                    ?: throw ThalovantApiException("Thalovant API client response did not include etag.")
+                request("DELETE", path, headers = mapOf("If-Match" to match))
+                return
+            } catch (error: ThalovantApiException) {
+                if (error.statusCode == 404) return
+                if (error.statusCode != 412 || attempt == 1) throw error
+                current = null
+            }
+        }
     }
 
     /**
@@ -999,6 +1292,20 @@ public class ThalovantControlPlane(
      * Provisions a client on [hub] and derives a runtime [ThalovantIdentity].
      * Secrets are generated locally; when the API returns `initial_identify`, that
      * payload wins and is merged with the hub protocol/endpoint settings.
+     *
+     * With [CreateClientIdentityOptions.connectionType] set, the kind is sent
+     * as `spec.connection_type` and the API must answer with the same kind. A
+     * 422 about the field, or a connection whose kind came back different,
+     * throws [ThalovantUnsupportedConnectionTypeException] -- after deleting
+     * that connection, which would otherwise be an ordinary satellite nobody
+     * asked for. A plan that does not allow it throws [ThalovantPlanException];
+     * a hub that already holds the one link of its kind,
+     * [ThalovantAlreadyLinkedException] naming it; a token that cannot do this,
+     * [ThalovantAuthException].
+     *
+     * The new connection is admitted by its hub about ninety seconds later;
+     * [BootstrapIdentityResult.operation] tracks that, and [waitForAdmission]
+     * waits for it.
      */
     public suspend fun createClientIdentity(hub: JsonObject, options: CreateClientIdentityOptions): BootstrapIdentityResult {
         val hubId = hub.optionalString("id")
@@ -1010,6 +1317,7 @@ public class ThalovantControlPlane(
         val spec = buildJsonObject {
             options.spec?.forEach { (key, value) -> put(key, value) }
             put("version", optionalString(options.spec?.get("version")) ?: "1")
+            options.connectionType?.let { put("connection_type", it) }
             put("apiKey", apiKey)
             put("password", password)
             put("cryptoKey", cryptoKey)
@@ -1022,7 +1330,20 @@ public class ThalovantControlPlane(
             put("active", options.active)
             options.ownerId?.let { put("owner_id", it) }
         }
-        val client = createClient(payload, options.idempotencyKey)
+        val kind = options.connectionType
+        val client = try {
+            createClient(payload, options.idempotencyKey)
+        } catch (error: ThalovantApiException) {
+            if (kind != null && refusesConnectionType(error)) {
+                throw ThalovantUnsupportedConnectionTypeException(
+                    "The Thalovant API cannot create a '$kind' connection yet.",
+                    statusCode = error.statusCode,
+                    body = error.body,
+                )
+            }
+            throw error
+        }
+        if (kind != null) requireConnectionType(client, kind)
         val protocols = HubProtocolSettings.from(hub)
         val endpoints = HubDataPlaneEndpoints.fromHub(hub)
         val endpoint = selectDataPlaneEndpoint(
@@ -1046,6 +1367,127 @@ public class ThalovantControlPlane(
             put("protocols", protocols.asJson())
         }
         return BootstrapIdentityResult(ThalovantIdentity(identityInput), hub, client, endpoint)
+    }
+
+    /** Deletes and refuses a connection the API did not make of the kind asked for. */
+    private suspend fun requireConnectionType(client: JsonObject, kind: String) {
+        val echoed = jsonText((client["spec"] as? JsonObject)?.get("connection_type"))
+        if (echoed == kind) return
+        val clientId = jsonText(client["id"])
+        var note = ""
+        if (clientId != null) {
+            try {
+                deleteClient(clientId, jsonText(client["etag"]))
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                throw cancelled
+            } catch (_: ThalovantApiException) {
+                note = " Deleting the connection it made instead ($clientId) failed; remove it in the dashboard."
+            } catch (_: IOException) {
+                note = " Deleting the connection it made instead ($clientId) failed; remove it in the dashboard."
+            }
+        }
+        throw ThalovantUnsupportedConnectionTypeException(
+            "The Thalovant API did not make a '$kind' connection (it answered ${echoed?.let { "'$it'" } ?: "no type"}).$note",
+        )
+    }
+
+    /**
+     * Waits until the hub has admitted a new connection, about ninety seconds
+     * after [createClientIdentity] made it.
+     *
+     * Follows the operation the create answered with, reading
+     * `GET /v1/operations/{id}` every [pollIntervalMs]:
+     *
+     * - `ready` returns: the hub knows the connection, and connecting works;
+     * - no operation at all, or one the API no longer tracks (HTTP 404),
+     *   returns at once -- there is nothing to wait on;
+     * - `failed` and `timed_out` throw [ThalovantAdmissionFailedException] with
+     *   the operation's own code; the connection has to be created again;
+     * - an answer in the 5xx range is ridden out, and any other refusal is
+     *   thrown as it came -- a token revoked while waiting is
+     *   [ThalovantAuthException];
+     * - [timeoutMs] passing first throws [ThalovantAdmissionTimeoutException],
+     *   which is a [ThalovantConnectionException] and a [ThalovantTimeout] at
+     *   once: the connection may still be admitted later.
+     *
+     * A connection a hub has not admitted yet is refused by it, the way a
+     * wrong credential is; this is how to tell the two apart. An operation
+     * whose `links.self` names another origin than [apiUrl] is refused before
+     * anything is fetched, with [ThalovantApiException]: the token goes to the
+     * API and nowhere else.
+     */
+    public suspend fun waitForAdmission(
+        result: BootstrapIdentityResult,
+        timeoutMs: Long = DEFAULT_ADMISSION_TIMEOUT_MS,
+        pollIntervalMs: Long = DEFAULT_OPERATION_POLL_INTERVAL_MS,
+    ) {
+        val operation = result.client["operation"] as? JsonObject
+        awaitAdmission(
+            jsonText(operation?.get("id")),
+            jsonText((operation?.get("links") as? JsonObject)?.get("self")),
+            timeoutMs,
+            pollIntervalMs,
+        )
+    }
+
+    /** [waitForAdmission] for an operation held on its own; null returns at once. */
+    public suspend fun waitForAdmission(
+        operation: OperationResource?,
+        timeoutMs: Long = DEFAULT_ADMISSION_TIMEOUT_MS,
+        pollIntervalMs: Long = DEFAULT_OPERATION_POLL_INTERVAL_MS,
+    ) {
+        awaitAdmission(operation?.id, operation?.links?.get("self"), timeoutMs, pollIntervalMs)
+    }
+
+    private suspend fun awaitAdmission(id: String?, link: String?, timeoutMs: Long, pollIntervalMs: Long) {
+        require(timeoutMs > 0 && pollIntervalMs > 0) { "timeoutMs and pollIntervalMs must be positive." }
+        if (id.isNullOrEmpty() && link.isNullOrEmpty()) return
+        if (link != null && (link.startsWith("http://", ignoreCase = true) || link.startsWith("https://", ignoreCase = true))) {
+            val theirs = runCatching { java.net.URI(link).rawAuthority }.getOrNull()
+            val ours = runCatching { java.net.URI(apiUrl).rawAuthority }.getOrNull()
+            if (theirs == null || theirs != ours) {
+                // The token goes to the API's own origin and nowhere else.
+                throw ThalovantApiException("The admission operation points outside the Thalovant API.")
+            }
+        }
+        val operationId = id?.takeIf { it.isNotEmpty() } ?: operationIdFromLink(link.orEmpty())
+            ?: throw ThalovantApiException("An operation needs an id to wait on.")
+        val started = System.nanoTime()
+        fun remaining(): Long = timeoutMs - (System.nanoTime() - started) / 1_000_000
+        while (true) {
+            val current = try {
+                request("GET", "/v1/operations/${encodePathSegment(operationId)}")
+            } catch (error: ThalovantApiException) {
+                when {
+                    error.statusCode == 404 -> return
+                    (error.statusCode ?: 0) >= 500 -> null
+                    // Anything else is about this call, not the connection: a
+                    // token revoked mid-wait is ThalovantAuthException, and
+                    // "sign in again" is the answer to it.
+                    else -> throw error
+                }
+            }
+            if (current != null) {
+                when (jsonText(current["status"])) {
+                    "ready" -> return
+                    "failed", "timed_out" -> {
+                        val code = jsonText(current["error_code"])
+                        throw ThalovantAdmissionFailedException(
+                            "The hub could not admit the connection: operation $operationId ended with status " +
+                                "${jsonText(current["status"])}: ${jsonText(current["error_message"]) ?: code ?: "no detail"}",
+                            errorCode = code,
+                        )
+                    }
+                }
+            }
+            val left = remaining()
+            if (left <= 0) {
+                throw ThalovantAdmissionTimeoutException(
+                    "The hub did not admit the connection within ${timeoutMs / 1_000.0}s; it may still.",
+                )
+            }
+            delay(minOf(pollIntervalMs, left))
+        }
     }
 
     /** Resolves the runtime endpoint for [protocol] (or the selected one), or throws. */
@@ -1285,7 +1727,51 @@ private fun apiErrorMessage(statusCode: Int, body: String, secrets: List<String>
  */
 private fun apiError(response: Response, secrets: List<String>): ThalovantApiException {
     val text = response.body?.bytes()?.decodeToString()?.removePrefix("\uFEFF").orEmpty()
-    return ThalovantApiException(apiErrorMessage(response.code, text, secrets), statusCode = response.code, body = text)
+    return apiException(apiErrorMessage(response.code, text, secrets), statusCode = response.code, body = text)
+}
+
+/** A 422 whose problem is about `connection_type`: the API does not know the kind asked for. */
+private fun refusesConnectionType(error: ThalovantApiException): Boolean {
+    if (error.statusCode != 422) return false
+    val text = error.problem?.toString() ?: error.message.orEmpty()
+    return "connection_type" in text || "connectionType" in text
+}
+
+/** The body of `POST /v1/auth/device/authorize`: scopes when given, a client name when not empty. */
+private fun deviceAuthorizeBody(scopes: List<String>?, clientName: String?): JsonObject = buildJsonObject {
+    scopes?.let { put("scopes", JsonArray(it.map(::JsonPrimitive))) }
+    clientName?.takeIf { it.isNotEmpty() }?.let { put("client_name", it) }
+}
+
+/** A JSON string with something in it, exactly as sent; anything else, including a number, is null. */
+internal fun jsonText(value: JsonElement?): String? =
+    (value as? JsonPrimitive)?.takeIf { it.isString }?.content?.takeIf { it.isNotEmpty() }
+
+/** A JSON number that is finite -- never a string, never a boolean -- or null. */
+internal fun jsonNumber(value: JsonElement?): Double? {
+    val primitive = value as? JsonPrimitive ?: return null
+    if (primitive.isString || primitive is JsonNull || primitive.content == "true" || primitive.content == "false") return null
+    return primitive.content.toDoubleOrNull()?.takeIf { it.isFinite() }
+}
+
+/** The operation a create answered with, when it reads as one; else null. */
+internal fun operationOrNull(value: JsonElement?): OperationResource? {
+    val operation = value as? JsonObject ?: return null
+    return try {
+        ThalovantJson.decodeFromJsonElement(OperationResource.serializer(), operation)
+    } catch (_: IllegalArgumentException) {
+        // kotlinx.serialization reports a missing field or an unknown status
+        // as a SerializationException, which is an IllegalArgumentException.
+        null
+    }
+}
+
+/** The id at the end of an operation's `links.self`, `/v1/operations/{id}`, or null. */
+private fun operationIdFromLink(link: String): String? {
+    val marker = "/v1/operations/"
+    val at = link.lastIndexOf(marker).takeIf { it >= 0 } ?: return null
+    val id = link.substring(at + marker.length).substringBefore('?').substringBefore('#').trim('/')
+    return id.takeIf { it.isNotEmpty() }?.let { runCatching { java.net.URLDecoder.decode(it, "UTF-8") }.getOrDefault(it) }
 }
 
 /** Extracts the device-flow `error` code from an HTTP 400 body, or null. */

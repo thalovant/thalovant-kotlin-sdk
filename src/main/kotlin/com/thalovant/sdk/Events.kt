@@ -2,6 +2,7 @@ package com.thalovant.sdk
 
 import java.util.UUID
 import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
@@ -256,6 +257,31 @@ public fun carryConversation(previous: JsonObject?, session: JsonObject): JsonOb
         carried[field] = value
     }
     return JsonObject(carried)
+}
+
+/**
+ * The context of a reply to a message that carried [context] (OVOS-MSG-1 §5.2).
+ *
+ * Everything the request said -- its session, its request id, whatever a skill
+ * waiting on the answer matches -- with the route turned round: the reply goes
+ * to whoever sent the request (`destination` becomes the old `source`) and
+ * comes from whoever it was sent to (`source` becomes the old `destination`,
+ * its first entry when that is a list). A key the request did not have, or had
+ * as null, is left as it was. A hub routes the answer back to whoever asked
+ * with this, across bridges and NAT.
+ *
+ * A [JsonObject] is immutable, so the copy is as deep as a deep copy: nothing
+ * done to the reply can reach the request.
+ */
+public fun replyContext(context: JsonObject): JsonObject {
+    val source = context["source"]?.takeUnless { it is JsonNull }
+    val destination = context["destination"]?.takeUnless { it is JsonNull }
+    val swapped = LinkedHashMap<String, kotlinx.serialization.json.JsonElement>(context)
+    if (destination != null) {
+        swapped["source"] = if (destination is JsonArray && destination.isNotEmpty()) destination[0] else destination
+    }
+    if (source != null) swapped["destination"] = source
+    return JsonObject(swapped)
 }
 
 public fun newSessionId(): String = "thalovant-session-" + UUID.randomUUID().toString().replace("-", "")

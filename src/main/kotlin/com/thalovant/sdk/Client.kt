@@ -165,6 +165,27 @@ public class ThalovantClient(
         transport.emitBus(eventType, data, context)
     }
 
+    /**
+     * Answers a message the hub sent, back along the route it came.
+     *
+     * The reply carries the request's context as the hub sent it -- its
+     * session, its request id, everything a skill waiting on the answer
+     * matches -- with `source` and `destination` swapped ([replyContext],
+     * OVOS-MSG-1 §5.2). [context] entries are laid over the request's before
+     * the swap. This is how a `thalovant.home.request` is answered, and any
+     * other message a skill sends expecting a reply.
+     */
+    public suspend fun reply(
+        event: ThalovantEvent,
+        msgType: String,
+        data: JsonObject = EMPTY_JSON_OBJECT,
+        context: JsonObject = EMPTY_JSON_OBJECT,
+    ) {
+        val type = msgType.trim()
+        require(type.isNotEmpty()) { "A reply needs a non-empty message type." }
+        emit(type, data, replyContext(JsonObject(event.context + context)))
+    }
+
     /** Sends a fire-and-forget utterance with fresh correlation ids. */
     public suspend fun sendUtterance(
         text: String,
