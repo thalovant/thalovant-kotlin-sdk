@@ -2,7 +2,7 @@
   "capabilities": {
     "api-errors": {
       "implementation": {
-        "src/main/kotlin/com/thalovant/sdk/ControlPlane.kt": "b0951d20b8596560f91a8e3d7a2e2269a70d30770acf0a0752d89a250197e3c4",
+        "src/main/kotlin/com/thalovant/sdk/ControlPlane.kt": "7b0fb43091811b40219b42f7c11de0e7c918daa1a1e5ce0e2fb66aad51c59445",
         "src/main/kotlin/com/thalovant/sdk/Errors.kt": "34468984bd0064e93da523a31dc09c5cce8faf459aac41a11c876489b3975cc0"
       },
       "reason": "ThalovantApiException in Errors.kt reads problem, errorCode and detail out of the error body once, exactly as sent, and apiError() in ControlPlane.kt builds one for every non-2xx response, reading the body as UTF-8; its bounded message now carries a string detail, with the bearer token and every string of 8 or more characters the request body sent redacted. Run against the shared API error vectors: each response is served by MockWebServer and read back through getHub(), and the message, toString() and stack trace are checked for every value the body echoed.",
@@ -40,14 +40,14 @@
     },
     "connection-admission": {
       "implementation": {
-        "src/main/kotlin/com/thalovant/sdk/ControlPlane.kt": "b0951d20b8596560f91a8e3d7a2e2269a70d30770acf0a0752d89a250197e3c4",
+        "src/main/kotlin/com/thalovant/sdk/ControlPlane.kt": "7b0fb43091811b40219b42f7c11de0e7c918daa1a1e5ce0e2fb66aad51c59445",
         "src/main/kotlin/com/thalovant/sdk/Errors.kt": "34468984bd0064e93da523a31dc09c5cce8faf459aac41a11c876489b3975cc0"
       },
       "reason": "ThalovantControlPlane.waitForAdmission(result | operation) polls GET /v1/operations/{id}, every read bounded by what is left of the wait: ready, no operation and 404 are admitted; a 5xx is ridden out; a 429 waits max(poll interval, ThalovantApiException.retryAfterSeconds -- the body's retry_after_seconds at the top or inside its detail object, else Retry-After, else RateLimit-Reset) and is a timeout at once when that is more than is left; 401 and 403 are thrown as the API's own ThalovantAuthException (and its kin); failed and timed_out, and any other refusal of the wait, throw ThalovantAdmissionFailedException, the operation's errorCode for the first and the API's statusCode, code, detail and problem for the second; an API out of reach throws the IOException it is. The deadline throws ThalovantAdmissionTimeoutException, whose message ends \"it may still admit it later\", which extends ThalovantConnectionException and implements the ThalovantTimeout interface ThalovantTimeoutException also implements. A links.self whose origin -- scheme, host and port, the default port spelled out -- is not the API's is refused before any request. Run against the shared admission vectors over OkHttp and MockWebServer, with the scripted response headers, {api_host}/{api_port} filled in and a closed loopback port for the unreachable API; results recorded and matching the reference.",
       "status": "required",
       "tests": {
         "src/test/kotlin/com/thalovant/sdk/HomeLinkVectorsTest.kt": "e7f1e6ae57d0e5cdc45fa5c7f0b546be72f0db94e7c4386bcca4e5131986d0b4",
-        "src/test/kotlin/com/thalovant/sdk/HomeLinkControlPlaneTest.kt": "522f099b81ae264ee8c0c71e647688af3775a5556b08305a6e53db1ee87b5ca1",
+        "src/test/kotlin/com/thalovant/sdk/HomeLinkControlPlaneTest.kt": "8d036418af245780722ec68697dfcd5847ff3ab4926cea7908ffbbe7bcb32359",
         "src/test/kotlin/com/thalovant/sdk/ConformanceRecord.kt": "ad7c7faea97edd20e2292f2e00e65a74f79ca46e262c9da3bd79b3a68b22f79c"
       },
       "vectors": {
@@ -56,14 +56,14 @@
     },
     "connection-kinds": {
       "implementation": {
-        "src/main/kotlin/com/thalovant/sdk/ControlPlane.kt": "b0951d20b8596560f91a8e3d7a2e2269a70d30770acf0a0752d89a250197e3c4",
+        "src/main/kotlin/com/thalovant/sdk/ControlPlane.kt": "7b0fb43091811b40219b42f7c11de0e7c918daa1a1e5ce0e2fb66aad51c59445",
         "src/main/kotlin/com/thalovant/sdk/Errors.kt": "34468984bd0064e93da523a31dc09c5cce8faf459aac41a11c876489b3975cc0"
       },
       "reason": "CreateClientIdentityOptions.connectionType is sent as spec.connection_type by createClientIdentity, which deletes a client whose answer does not echo the kind (DELETE with If-Match: its etag) and throws ThalovantUnsupportedConnectionTypeException, as it does for a 422 whose detail or code, or a validation error's loc or msg (under errors, or a detail list), names connection_type -- never the echoed input, so an unrelated 422 is an ordinary error. apiException() in Errors.kt types every control-plane refusal: 401, 423 and 403 Insufficient scopes are ThalovantAuthException, 402 and 403 plan_limit ThalovantPlanException, 409 home_assistant_already_linked ThalovantAlreadyLinkedException with clientId; all remain ThalovantApiException with statusCode, errorCode, detail and problem. deleteClient(clientId, etag = null) reads the etag with getClient when none is given, retries once on 412, and counts 404 as deleted. Run against the shared connection-kinds vectors over OkHttp and MockWebServer, recording the requests sent in order; results recorded and matching the reference.",
       "status": "required",
       "tests": {
         "src/test/kotlin/com/thalovant/sdk/HomeLinkVectorsTest.kt": "e7f1e6ae57d0e5cdc45fa5c7f0b546be72f0db94e7c4386bcca4e5131986d0b4",
-        "src/test/kotlin/com/thalovant/sdk/HomeLinkControlPlaneTest.kt": "522f099b81ae264ee8c0c71e647688af3775a5556b08305a6e53db1ee87b5ca1",
+        "src/test/kotlin/com/thalovant/sdk/HomeLinkControlPlaneTest.kt": "8d036418af245780722ec68697dfcd5847ff3ab4926cea7908ffbbe7bcb32359",
         "src/test/kotlin/com/thalovant/sdk/ConformanceRecord.kt": "ad7c7faea97edd20e2292f2e00e65a74f79ca46e262c9da3bd79b3a68b22f79c"
       },
       "vectors": {
@@ -72,7 +72,7 @@
     },
     "control": {
       "implementation": {
-        "src/main/kotlin/com/thalovant/sdk/ControlPlane.kt": "b0951d20b8596560f91a8e3d7a2e2269a70d30770acf0a0752d89a250197e3c4",
+        "src/main/kotlin/com/thalovant/sdk/ControlPlane.kt": "7b0fb43091811b40219b42f7c11de0e7c918daa1a1e5ce0e2fb66aad51c59445",
         "src/main/kotlin/com/thalovant/sdk/Hubs.kt": "7f77d01990106a91859e808359c44c1c7b17897bc5b63e81892618281294c244",
         "src/main/kotlin/com/thalovant/sdk/NativeSignIn.kt": "5ea87e2a19068cba2ccab8bc1ef7f89caa86ebcc9ebbeafc319674c83cb9f582"
       },
@@ -102,14 +102,14 @@
     },
     "device-login": {
       "implementation": {
-        "src/main/kotlin/com/thalovant/sdk/ControlPlane.kt": "b0951d20b8596560f91a8e3d7a2e2269a70d30770acf0a0752d89a250197e3c4",
+        "src/main/kotlin/com/thalovant/sdk/ControlPlane.kt": "7b0fb43091811b40219b42f7c11de0e7c918daa1a1e5ce0e2fb66aad51c59445",
         "src/main/kotlin/com/thalovant/sdk/Errors.kt": "34468984bd0064e93da523a31dc09c5cce8faf459aac41a11c876489b3975cc0"
       },
       "reason": "ThalovantControlPlane.beginDeviceLogin, pollDeviceLogin and revokeApiToken in ControlPlane.kt (an empty scope list is left out of the request, in loginWithBrowser too), with DeviceAuthorization and ApiToken; ThalovantDeviceLoginPendingException (a ThalovantApiException carrying intervalMillis) in Errors.kt, and the denied and expired exceptions, which keep their ThalovantException supertype and now carry statusCode and body. slow_down lengthens a device code's interval by five seconds for good; an approved poll stores accessToken and tokenId, and every sign-in (login, completeNativeSignIn, the device flow) sets tokenId from its own answer or clears it; revoking the token in use is idempotent -- a 401 there counts as revoked, and a second revoke sends nothing -- while another token's refusal is thrown; loginWithBrowser runs on the same steps. Run against the shared device-login vectors over OkHttp: each case's exchanges are served in order by MockWebServer, every request is checked (method, path, body, Authorization), and the message, toString and stack trace of every error are checked for the device code and the token. The results are recorded in contracts/conformance-results.json and match the reference's.",
       "status": "required",
       "tests": {
         "src/test/kotlin/com/thalovant/sdk/HomeLinkVectorsTest.kt": "e7f1e6ae57d0e5cdc45fa5c7f0b546be72f0db94e7c4386bcca4e5131986d0b4",
-        "src/test/kotlin/com/thalovant/sdk/HomeLinkControlPlaneTest.kt": "522f099b81ae264ee8c0c71e647688af3775a5556b08305a6e53db1ee87b5ca1",
+        "src/test/kotlin/com/thalovant/sdk/HomeLinkControlPlaneTest.kt": "8d036418af245780722ec68697dfcd5847ff3ab4926cea7908ffbbe7bcb32359",
         "src/test/kotlin/com/thalovant/sdk/ConformanceRecord.kt": "ad7c7faea97edd20e2292f2e00e65a74f79ca46e262c9da3bd79b3a68b22f79c"
       },
       "vectors": {

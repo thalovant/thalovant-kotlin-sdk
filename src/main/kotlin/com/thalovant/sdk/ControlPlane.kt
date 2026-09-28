@@ -506,6 +506,9 @@ public class ThalovantControlPlane(
      * kept that way (RFC 8628 §3.5). Bounded: a caller that begins sign-ins
      * and abandons them must not grow this for the life of the client.
      */
+    /** Keeps a sign-in's token and its id together against a revoke finishing at the same time. */
+    private val tokenLock = Any()
+
     /** Whether the token this client signed in with was revoked and forgotten; see [revokeApiToken]. */
     @Volatile
     private var revokedOwn = false
@@ -707,9 +710,16 @@ public class ThalovantControlPlane(
             if (!(own && error.statusCode == 401)) throw error
         }
         if (own) {
-            accessToken = null
-            this.tokenId = null
-            revokedOwn = true
+            // Only the token that was revoked is forgotten: a sign-in that
+            // completed while the DELETE was on its way installed another,
+            // and that one is still good.
+            synchronized(tokenLock) {
+                if (this.tokenId == target) {
+                    accessToken = null
+                    this.tokenId = null
+                    revokedOwn = true
+                }
+            }
         }
     }
 
@@ -770,9 +780,11 @@ public class ThalovantControlPlane(
     private fun acceptToken(token: JsonObject) {
         val accessToken = jsonText(token["access_token"])
             ?: throw ThalovantApiException("Thalovant API token response did not include access_token.")
-        this.accessToken = accessToken
-        tokenId = jsonText(token["token_id"])
-        revokedOwn = false
+        synchronized(tokenLock) {
+            this.accessToken = accessToken
+            tokenId = jsonText(token["token_id"])
+            revokedOwn = false
+        }
     }
 
     /**

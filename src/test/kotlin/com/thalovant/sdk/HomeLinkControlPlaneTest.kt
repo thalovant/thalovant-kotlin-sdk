@@ -9,6 +9,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonObject
@@ -85,6 +86,20 @@ class HomeLinkControlPlaneTest {
         // Revoked already: again is not an error, and nothing is sent.
         plane.revokeApiToken()
         assertEquals(3, server.requestCount)
+    }
+
+    @Test
+    fun `a revoke that finishes after a new sign-in forgets only the token it revoked`(): Unit = runBlocking {
+        // The DELETE is answered late; a password sign-in lands in between.
+        server.enqueue(MockResponse().setResponseCode(204).setHeadersDelay(400, java.util.concurrent.TimeUnit.MILLISECONDS))
+        answer(200, """{"access_token":"session-token","token_type":"bearer"}""")
+        val plane = api()
+        plane.tokenId = "old-token"
+        val revoking = launch(kotlinx.coroutines.Dispatchers.IO) { plane.revokeApiToken() }
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { server.takeRequest() }
+        plane.login("me@example.com", "correct horse battery")
+        revoking.join()
+        assertEquals("session-token", plane.accessToken)
     }
 
     @Test
