@@ -40,20 +40,49 @@ public suspend fun ThalovantClient.askWithHints(
 ): ThalovantReply = ask(text, timeoutMs, lang, sessionId, requestId,
     requestContext(context, sttLang, pipeline, location) ?: EMPTY_JSON_OBJECT, replySettleMs, emptyReplyWaitMs)
 
-private val optionalPattern = Regex("\\[[^\\[\\]]*\\]")
-private val groupPattern = Regex("\\(([^()]*)\\)")
 private val slotPattern = Regex("\\{([a-z_][a-z0-9_]*)\\}")
-/** One illustrative sentence, without inventing slot values. */
+
+/**
+ * One illustrative sentence, without inventing slot values.
+ *
+ * `[optional]` parts go, `(a|b)` groups keep their first branch -- or nothing,
+ * when an empty branch makes the group optional with at most one real branch
+ * -- innermost first, so a group inside an optional part goes with it. One
+ * pass each, with a stack: patterns come from hubs, and taking the innermost
+ * pair out and starting again cost a full pass per level of nesting.
+ */
 public fun speakable(pattern: String, slots: Map<String, String> = emptyMap()): String {
-    var text = pattern
-    while (optionalPattern.containsMatchIn(text)) text = optionalPattern.replace(text, "")
-    while (groupPattern.containsMatchIn(text)) text = groupPattern.replace(text) { match ->
-        val options = match.groupValues[1].split('|').map { it.trim() }
+    var text = resolveNested(resolveNested(pattern, '[', ']') { "" }, '(', ')') { inside ->
+        val options = inside.split('|').map { it.trim() }
         val real = options.filter { it.isNotEmpty() }
         if (real.size < options.size && real.size <= 1) "" else real.firstOrNull().orEmpty()
     }
     text = slotPattern.replace(text) { match -> slots[match.groupValues[1]] ?: match.groupValues[1].replace('_', ' ') }
     return text.replace(Regex("\\s{2,}"), " ").trim(' ', ',')
+}
+
+/**
+ * Replaces every balanced [opening] ... [closing] pair by [resolve] of its
+ * inside, innermost first, in one pass: a pair is resolved when its closing
+ * character arrives, with the pairs it held already resolved. An opening never
+ * closed stays in the text, and so does a closing that closes nothing -- what
+ * substituting the innermost pair until none is left does.
+ */
+private fun resolveNested(text: String, opening: Char, closing: Char, resolve: (String) -> String): String {
+    val frames = ArrayList<StringBuilder>().apply { add(StringBuilder()) }
+    for (char in text) {
+        when {
+            char == opening -> frames.add(StringBuilder())
+            char == closing && frames.size > 1 -> {
+                val inside = frames.removeAt(frames.size - 1).toString()
+                frames[frames.size - 1].append(resolve(inside))
+            }
+            else -> frames[frames.size - 1].append(char)
+        }
+    }
+    val out = StringBuilder(frames[0])
+    for (index in 1 until frames.size) out.append(opening).append(frames[index])
+    return out.toString()
 }
 
 public const val MAX_AUDIO_CLIP_BYTES: Int = 4 * 1024 * 1024

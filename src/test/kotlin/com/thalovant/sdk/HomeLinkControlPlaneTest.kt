@@ -326,7 +326,29 @@ class HomeLinkControlPlaneTest {
         answer(412, """{"detail":"ETag mismatch"}""")
         val failure = assertFailsWith<ThalovantApiException> { api().deleteClient("c-1", "e-1") }
         assertEquals(412, failure.statusCode)
-        assertEquals(3, server.requestCount)
+        assertEquals(listOf("DELETE e-1", "GET null", "DELETE e-2"), sentRequests(3))
+    }
+
+    @Test
+    fun `a delete with no etag reads it, and reads it again once after a 412, in that order`(): Unit = runBlocking {
+        answer(200, """{"id":"c-1","etag":"e1"}""")
+        answer(412, """{"detail":"ETag mismatch"}""")
+        answer(200, """{"id":"c-1","etag":"e2"}""")
+        answer(412, """{"detail":"ETag mismatch"}""")
+        val failure = assertFailsWith<ThalovantApiException> { api().deleteClient("c-1") }
+        assertEquals(412, failure.statusCode)
+        assertEquals(listOf("GET null", "DELETE e1", "GET null", "DELETE e2"), sentRequests(4))
+    }
+
+    /** The next [count] requests, as `METHOD If-Match`, each on the client's own path; and no more. */
+    private fun sentRequests(count: Int): List<String> {
+        val sent = (1..count).map {
+            val request = server.takeRequest()
+            assertEquals("/v1/clients/c-1", request.requestUrl?.encodedPath)
+            "${request.method} ${request.getHeader("If-Match")}"
+        }
+        assertEquals(count, server.requestCount, "no request after the second 412")
+        return sent
     }
 
     @Test

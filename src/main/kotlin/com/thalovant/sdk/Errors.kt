@@ -31,6 +31,33 @@ public class ThalovantHubIdentityChangedException(message: String, cause: Throwa
     ThalovantIdentityException(message, cause)
 
 /**
+ * The hub turned this client's own Noise key away: it has pinned another one
+ * for this connection.
+ *
+ * hivemind-core pins the first static key a connection presents and aborts,
+ * with nothing sent first, as soon as an XX handshake shows it another. That
+ * happens when a second program -- or a reinstalled one -- uses the same
+ * identity with a key of its own. No handshake recovers from it, so
+ * [HubSession.run] stops at once. Re-pair, or let every program that uses
+ * this identity share one key folder.
+ *
+ * Still a [ThalovantIdentityException], the refusal type existing code
+ * catches. [keyFolder] is where this client's key is; [otherKeyFolder] where
+ * another program reading the same identity likely keeps its own, when there
+ * is a likely one.
+ */
+public class ThalovantClientKeyRejectedException(
+    public val keyFolder: String?,
+    public val otherKeyFolder: String? = null,
+) : ThalovantIdentityException(clientKeyRejectedMessage(keyFolder, otherKeyFolder))
+
+private fun clientKeyRejectedMessage(keyFolder: String?, otherKeyFolder: String?): String = buildString {
+    append("The hub has pinned another key for this connection: re-pair, or share the key folder.")
+    if (keyFolder != null) append(" This client's key is in ").append(keyFolder).append('.')
+    if (otherKeyFolder != null) append(" Another program using this identity may keep its key in ").append(otherKeyFolder).append('.')
+}
+
+/**
  * Data-plane connection or handshake failures.
  *
  * Open since 0.8.0 so the admission failures, which are connection failures

@@ -25,7 +25,7 @@ public class ThalovantClient(
     private val replySettleMs: Long = 250,
     private val emptyReplyWaitMs: Long = 5000,
     userAgent: String = DEFAULT_USER_AGENT,
-    noiseStore: HiveMindNoiseStore = HiveMindNoiseStore(),
+    noiseStore: HiveMindNoiseStore = HiveMindNoiseStore.forIdentity(identity),
 ) {
     internal val transport: HiveMindRuntimeTransport =
         transport ?: transportForProtocol(identity, protocol ?: defaultRuntimeProtocol(identity), userAgent, noiseStore)

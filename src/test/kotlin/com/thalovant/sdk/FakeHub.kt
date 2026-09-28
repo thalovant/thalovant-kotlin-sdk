@@ -78,6 +78,14 @@ internal class FakeHub : AutoCloseable {
     @Volatile
     var upgradeStatus: Int? = null
 
+    /** Send one encrypted frame before a [refuseNext] close: a hub that has spoken accepted the key. */
+    @Volatile
+    var speakBeforeClosing: Boolean = false
+
+    /** Make that frame a WIRE-1 binary one instead of JSON. */
+    @Volatile
+    var speakBinary: ByteArray? = null
+
     /** Sessions that completed the handshake and were not refused, newest last. */
     val sessions = CopyOnWriteArrayList<Session>()
 
@@ -94,6 +102,13 @@ internal class FakeHub : AutoCloseable {
             val message = hiveMessage("bus", buildJsonObject { put("type", type); put("data", data); put("context", context) })
             synchronized(this) {
                 for (frame in noise.encrypt(message.toString().toByteArray())) socket.send(ByteString.of(*frame))
+            }
+        }
+
+        /** Sends a WIRE-1 binary frame through the session, as a hub renders speech. */
+        fun sendBinary(frame: ByteArray) {
+            synchronized(this) {
+                for (chunk in noise.encrypt(frame)) socket.send(ByteString.of(*chunk))
             }
         }
 
@@ -165,7 +180,7 @@ internal class FakeHub : AutoCloseable {
                     return
                 }
                 clientPin = key
-                if (!refuse) session = Session(webSocket, state.session()).also { sessions.add(it) }
+                session = Session(webSocket, state.session()).also { if (!refuse) sessions.add(it) }
             }
         }
 
@@ -173,6 +188,10 @@ internal class FakeHub : AutoCloseable {
             // The client's first encrypted frame is its HELLO. A refusing hub
             // has read the client's static key by now and hangs up.
             if (refuse) {
+                if (speakBeforeClosing) {
+                    val binary = speakBinary
+                    if (binary != null) session?.sendBinary(binary) else session?.sendBus("hub.ready")
+                }
                 webSocket.close(refusalCode, null)
                 return
             }
@@ -200,7 +219,7 @@ internal class FakeHub : AutoCloseable {
     )
 
     /** A client for this hub, with its own pin store, connected; closed again when it cannot connect. */
-    suspend fun connectedClient(password: String = PASSWORD): ThalovantClient {
+    suspend fun connectedClient(password: String = PASSWORD, stateDir: Path = this.stateDir): ThalovantClient {
         val client = ThalovantClient(identity(password), protocol = HubProtocol.WSS, replySettleMs = 10, noiseStore = HiveMindNoiseStore(stateDir))
         try {
             client.connect(10_000)

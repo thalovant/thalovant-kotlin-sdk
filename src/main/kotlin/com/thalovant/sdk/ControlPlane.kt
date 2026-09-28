@@ -244,6 +244,58 @@ public data class InstallSkillOptions(
     public val active: Boolean = true,
 )
 
+/**
+ * The `client_id` Home Assistant signs in with: a registered app, so the person
+ * approving sees it named and verified. Pass it to
+ * [ThalovantControlPlane.beginDeviceLogin] or [DeviceLoginOptions.clientId].
+ */
+public const val HOME_ASSISTANT_CLIENT_ID: String = "thalovant-home-assistant"
+
+/**
+ * A device sign-in as the person approving it sees it, read by
+ * [ThalovantControlPlane.describeDeviceLogin]: what it asks for, and who asks.
+ *
+ * [clientVerified] is true only for a registered app ([clientId] set); its
+ * [clientName] is then the platform's own name for it, and [deviceName]
+ * whatever the device called itself. For anything else, [clientName] is what
+ * the device claimed, and nothing vouches for it.
+ */
+public class DeviceLoginRequest(
+    public val scopes: List<String>,
+    public val clientName: String?,
+    public val clientId: String?,
+    public val clientVerified: Boolean,
+    public val deviceName: String?,
+    /** When the code stops working, in ISO 8601 exactly as the API sent it, or null. */
+    public val expiresAt: String?,
+) {
+    override fun equals(other: Any?): Boolean = other is DeviceLoginRequest && scopes == other.scopes &&
+        clientName == other.clientName && clientId == other.clientId && clientVerified == other.clientVerified &&
+        deviceName == other.deviceName && expiresAt == other.expiresAt
+
+    override fun hashCode(): Int = listOf(scopes, clientName, clientId, clientVerified, deviceName, expiresAt).hashCode()
+
+    override fun toString(): String =
+        "DeviceLoginRequest(scopes=$scopes, clientName=$clientName, clientId=$clientId, " +
+            "clientVerified=$clientVerified, deviceName=$deviceName, expiresAt=$expiresAt)"
+
+    public companion object {
+        /** Reads `GET /v1/auth/device/codes/{user_code}`. */
+        public fun fromJson(body: JsonObject): DeviceLoginRequest {
+            val clientId = jsonText(body["client_id"])
+            return DeviceLoginRequest(
+                scopes = (body["scopes"] as? JsonArray)?.mapNotNull(::jsonText) ?: emptyList(),
+                clientName = jsonText(body["client_name"]),
+                clientId = clientId,
+                clientVerified = clientId != null && (body["client_verified"] as? JsonPrimitive)
+                    ?.takeIf { !it.isString }?.content == "true",
+                deviceName = jsonText(body["device_name"]),
+                expiresAt = jsonText(body["expires_at"]),
+            )
+        }
+    }
+}
+
 /** Default `POST /v1/auth/device/token` poll interval when the API omits `interval`. */
 public const val DEFAULT_DEVICE_POLL_INTERVAL_MILLIS: Long = 5_000
 
@@ -401,7 +453,34 @@ public data class DeviceLoginOptions(
     public val prompt: ((JsonObject) -> Unit)? = null,
     /** How long to keep polling before [ThalovantTimeoutException]; default 900 s. */
     public val timeoutMillis: Long = 900_000,
-)
+    /**
+     * The registered app signing in, sent as `client_id` -- such as
+     * [HOME_ASSISTANT_CLIENT_ID] -- so the approval page names it as verified;
+     * left out when null. A registered app may ask only for its own scopes,
+     * and an id the API does not know is refused with 400 `unknown_client`.
+     */
+    public val clientId: String? = null,
+) {
+    /** The shape of 0.8.0, kept so code compiled against it still links. */
+    @Deprecated("Kept for binary compatibility; pass clientId as well.", level = DeprecationLevel.HIDDEN)
+    public constructor(
+        scopes: List<String>? = null,
+        clientName: String? = null,
+        openBrowser: Boolean = true,
+        prompt: ((JsonObject) -> Unit)? = null,
+        timeoutMillis: Long = 900_000,
+    ) : this(scopes, clientName, openBrowser, prompt, timeoutMillis, null)
+
+    /** The `copy` of 0.8.0, kept so code compiled against it still links; keeps [clientId]. */
+    @Deprecated("Kept for binary compatibility; copy with clientId as well.", level = DeprecationLevel.HIDDEN)
+    public fun copy(
+        scopes: List<String>? = this.scopes,
+        clientName: String? = this.clientName,
+        openBrowser: Boolean = this.openBrowser,
+        prompt: ((JsonObject) -> Unit)? = this.prompt,
+        timeoutMillis: Long = this.timeoutMillis,
+    ): DeviceLoginOptions = DeviceLoginOptions(scopes, clientName, openBrowser, prompt, timeoutMillis, clientId)
+}
 
 public data class CreateClientIdentityOptions(
     public val name: String,
@@ -454,6 +533,17 @@ public class BootstrapIdentityResult internal constructor(
      * waits for it.
      */
     public val operation: OperationResource? get() = operationOrNull(client["operation"])
+
+    /**
+     * The id of the operation the create answered with, even when [operation]
+     * is null because its status is one this SDK does not know yet: what
+     * [ThalovantControlPlane.waitForAdmission] follows, keeping polling through
+     * such a status.
+     */
+    public val operationId: String? get() = jsonText((client["operation"] as? JsonObject)?.get("id"))
+
+    /** The operation's status exactly as the API sent it, known to this SDK or not. */
+    public val operationStatus: String? get() = jsonText((client["operation"] as? JsonObject)?.get("status"))
 
     /**
      * Serializes the result. Without [includeSecrets] the hub/client secret
@@ -578,7 +668,7 @@ public class ThalovantControlPlane(
      * normalize and expand the echoed `scopes`.
      */
     public suspend fun loginWithBrowser(options: DeviceLoginOptions = DeviceLoginOptions()): JsonObject {
-        val grant = request("POST", "/v1/auth/device/authorize", body = deviceAuthorizeBody(options.scopes, options.clientName), auth = false)
+        val grant = request("POST", "/v1/auth/device/authorize", body = deviceAuthorizeBody(options.scopes, options.clientName, options.clientId), auth = false)
         val authorization = DeviceAuthorization.fromJson(grant)
 
         val prompt = options.prompt
@@ -612,7 +702,14 @@ public class ThalovantControlPlane(
         synchronized(deviceIntervals) { deviceIntervals[deviceCode] = intervalMillis }
         while (true) {
             val waitMillis = try {
-                return deviceTokenOnce(deviceCode)
+                // Each POST is bounded by what is left: one the API is slow to
+                // answer must not carry the sign-in past its deadline.
+                val left = deadline - clock()
+                return (if (left > 0) withTimeoutOrNull(left) { deviceTokenOnce(deviceCode) } else null)
+                    ?: run {
+                        synchronized(deviceIntervals) { deviceIntervals.remove(deviceCode) }
+                        throw ThalovantTimeoutException("Timed out waiting for the device sign-in to be approved.")
+                    }
             } catch (pending: ThalovantDeviceLoginPendingException) {
                 pending.intervalMillis
             }
@@ -639,18 +736,41 @@ public class ThalovantControlPlane(
      *
      * [scopes] are what the token will carry; none, or an empty list, asks for
      * the API's default, `hubs:read` and `clients:write`. A Free plan can approve only
-     * [HOME_ASSISTANT_SCOPES]. [clientName] is shown on the approval page.
+     * [HOME_ASSISTANT_SCOPES]. [clientName] is shown on the approval page, and
+     * [clientId], when given, names the registered app signing in
+     * ([HOME_ASSISTANT_CLIENT_ID]); it is left out when null.
      *
      * Throws [ThalovantApiException] when the API refuses, and when its answer
      * is incomplete or names a verification URL that is not http(s), has no
      * host, or carries credentials.
      */
-    public suspend fun beginDeviceLogin(scopes: List<String>? = null, clientName: String? = null): DeviceAuthorization {
-        val grant = request("POST", "/v1/auth/device/authorize", body = deviceAuthorizeBody(scopes, clientName), auth = false)
+    public suspend fun beginDeviceLogin(
+        scopes: List<String>? = null,
+        clientName: String? = null,
+        clientId: String? = null,
+    ): DeviceAuthorization {
+        val grant = request("POST", "/v1/auth/device/authorize", body = deviceAuthorizeBody(scopes, clientName, clientId), auth = false)
         val authorization = DeviceAuthorization.fromJson(grant)
         synchronized(deviceIntervals) { deviceIntervals[authorization.deviceCode] = authorization.intervalMillis }
         return authorization
     }
+
+    /** The shape of 0.8.0, kept so code compiled against it still links. */
+    @Deprecated("Kept for binary compatibility; call with clientId as well.", level = DeprecationLevel.HIDDEN)
+    public suspend fun beginDeviceLogin(scopes: List<String>? = null, clientName: String? = null): DeviceAuthorization =
+        beginDeviceLogin(scopes, clientName, null)
+
+    /**
+     * Reads a device sign-in as the person approving it sees it, via
+     * `GET /v1/auth/device/codes/{userCode}`: what it asks for, and which app
+     * asks. Signed in as that person. [DeviceLoginRequest.clientVerified] is
+     * true only for a registered app.
+     *
+     * A code that is unknown, expired or already answered is a
+     * [ThalovantApiException] with status 404.
+     */
+    public suspend fun describeDeviceLogin(userCode: String): DeviceLoginRequest =
+        DeviceLoginRequest.fromJson(request("GET", "/v1/auth/device/codes/${encodePathSegment(userCode)}"))
 
     /**
      * Asks once whether the device sign-in was approved.
@@ -1873,12 +1993,13 @@ private suspend fun sleepAtLeast(millis: Long) {
 }
 
 /** The body of `POST /v1/auth/device/authorize`: scopes when there are any, a client name when not empty. */
-private fun deviceAuthorizeBody(scopes: List<String>?, clientName: String?): JsonObject = buildJsonObject {
+private fun deviceAuthorizeBody(scopes: List<String>?, clientName: String?, clientId: String?): JsonObject = buildJsonObject {
     // An empty list is left out rather than sent: the API requires at least
     // one scope and answers [] with a 422, and a missing field asks for its
     // default.
     scopes?.takeIf { it.isNotEmpty() }?.let { put("scopes", JsonArray(it.map(::JsonPrimitive))) }
     clientName?.takeIf { it.isNotEmpty() }?.let { put("client_name", it) }
+    clientId?.takeIf { it.isNotEmpty() }?.let { put("client_id", it) }
 }
 
 /** A JSON string with something in it, exactly as sent; anything else, including a number, is null. */

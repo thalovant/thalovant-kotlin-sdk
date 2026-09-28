@@ -126,12 +126,17 @@ internal object ConformanceRecord {
      */
     internal fun referenceNumber(content: String): String {
         if (content == "true" || content == "false") return content
-        val decimal = content.toBigDecimalOrNull()
-            ?: error("conformance: cannot canonicalise $content: not a number")
-        runCatching { return decimal.toBigIntegerExact().toString() }
+        content.toBigDecimalOrNull() ?: error("conformance: cannot canonicalise $content: not a number")
+        // Python reads a number with no `.`, `e` or `E` as an int, whole and
+        // exact at any size, and anything else as a float.
+        if (content.none { it == '.' || it == 'e' || it == 'E' }) return content.toBigInteger().toString()
         val value = content.toDouble()
         check(value.isFinite()) { "conformance: cannot canonicalise $content: not finite" }
         val exact = BigDecimal(value)
+        // A whole float is written as the int it is -- the reference's
+        // _same_number_everywhere -- so 1e20 is 100000000000000000000, 1e300
+        // the exact value of that double, and 1.0000000000000000001 is 1.
+        if (value == Math.floor(value)) return exact.toBigIntegerExact().toString()
         var shortest: BigDecimal? = null
         for (precision in 1..17) {
             val nearest = exact.round(MathContext(precision, RoundingMode.HALF_EVEN))
@@ -213,7 +218,7 @@ internal object ConformanceRecord {
         val document = buildJsonObject {
             put("schema_version", JsonPrimitive(1))
             putJsonObject("results") {
-                for (vectorFile in results.keys.sorted()) {
+                for (vectorFile in results.keys.sortedWith(::byCodePoint)) {
                     val parsed = Json.parseToJsonElement(
                         javaClass.getResourceAsStream("/thalovant/$vectorFile")!!
                             .bufferedReader().use { it.readText() },
@@ -225,7 +230,7 @@ internal object ConformanceRecord {
                         put("digest", JsonPrimitive(vectorDigest(parsed)))
                         putJsonObject("cases") {
                             val cases = results.getValue(vectorFile)
-                            for (name in cases.keys.sorted()) {
+                            for (name in cases.keys.sortedWith(::byCodePoint)) {
                                 put(name, JsonPrimitive(cases.getValue(name)))
                             }
                         }

@@ -335,8 +335,11 @@ class TransportTest {
         val client = ThalovantClient(identity(), noiseStore = HiveMindNoiseStore(stateDir), protocol = HubProtocol.WSS, replySettleMs = 10)
         try {
             val refused = assertFailsWith<ThalovantIdentityException> { client.connect(5000) }
+            // After XX, that close is the hub rejecting this client's own key
+            // (0.9.1): still the refusal type callers catch, and it says what to do.
+            assertIs<ThalovantClientKeyRejectedException>(refused)
             assertTrue(
-                refused.message!!.contains("without accepting it"),
+                refused.message!!.contains("re-pair, or share the key folder"),
                 "a refusal has to say the hub would not have this client, not that the network failed: ${'$'}{refused.message}",
             )
         } finally {

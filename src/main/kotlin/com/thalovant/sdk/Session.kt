@@ -65,7 +65,20 @@ public data class LinkDecision(
     public val action: LinkAction,
     public val waitSeconds: Double = 0.0,
     public val reason: LinkOutcome? = null,
-)
+) {
+    /**
+     * Whether this gives up because the hub rejected this client's own key
+     * ([ThalovantClientKeyRejectedException]). [reason] is then
+     * [LinkOutcome.REFUSED]: the rejection is a refusal of its own kind,
+     * carried beside the outcome rather than as a new [LinkOutcome] entry, so
+     * a `when` written over [LinkOutcome] keeps compiling.
+     */
+    public var clientKeyRejected: Boolean = false
+        internal set
+
+    /** [reason] as the shared vectors name it: `refused`, `key_changed`, or `client_key_rejected`. */
+    public val reasonName: String? get() = if (clientKeyRejected) "client_key_rejected" else reason?.wireName
+}
 
 /**
  * How a long-lived link is kept up, as a pure function of what happened and when.
@@ -81,13 +94,28 @@ public data class LinkDecision(
  * - [LinkOutcome.REFUSED]: a new connection is refused until its hub admits
  *   it, so wait the ladder's step as for a failure, until refusals have lasted
  *   [HubSessionPolicy.refusalGraceSeconds] since the first of them; then give up;
- * - [LinkOutcome.KEY_CHANGED]: give up at once; retrying cannot change a key.
+ * - [LinkOutcome.KEY_CHANGED]: give up at once; retrying cannot change a key;
+ * - a refusal that is the hub rejecting this client's own key: give up at once
+ *   (`after(REFUSED, now, clientKeyRejected = true)`).
  *
  * Not thread-safe: one supervisor follows one link.
  */
 public class LinkSupervisor(public val policy: HubSessionPolicy = HubSessionPolicy()) {
     private var wait = policy.retrySeconds
     private var refusedSince: Double? = null
+
+    /**
+     * The decision after [outcome], observed at [nowSeconds]; [clientKeyRejected]
+     * says a [LinkOutcome.REFUSED] was the hub rejecting this client's own key
+     * ([ThalovantClientKeyRejectedException]), which gives up at once: no
+     * handshake recovers from it.
+     */
+    public fun after(outcome: LinkOutcome, nowSeconds: Double, clientKeyRejected: Boolean): LinkDecision {
+        if (clientKeyRejected && outcome == LinkOutcome.REFUSED) {
+            return LinkDecision(LinkAction.GIVE_UP, reason = LinkOutcome.REFUSED).also { it.clientKeyRejected = true }
+        }
+        return after(outcome, nowSeconds)
+    }
 
     /** The decision after [outcome], observed at [nowSeconds] on any monotonic clock. */
     public fun after(outcome: LinkOutcome, nowSeconds: Double): LinkDecision {
@@ -145,7 +173,7 @@ public class HubSession(connect: suspend () -> ThalovantClient,
     private val listeners = linkedSetOf<Listener>()
     private val closing = CompletableDeferred<Unit>()
     private val linkUp = MutableStateFlow(false)
-    private val supervisor = LinkSupervisor(policy)
+    internal val supervisor = LinkSupervisor(policy)
 
     /**
      * Whether a client is held and its link came up, as it changes: `true`
@@ -250,6 +278,8 @@ public class HubSession(connect: suspend () -> ThalovantClient,
             }
         }.await()
         target.reply(event, msgType, data, context)
+        // A reply that went out is a link that is up, as a connect is.
+        synchronized(supervisor) { supervisor.after(LinkOutcome.UP, clock()) }
     }
 
     /**
@@ -292,8 +322,9 @@ public class HubSession(connect: suspend () -> ThalovantClient,
      * refused until its hub admits it -- and then that refusal is thrown. A
      * hub whose key no longer matches the pinned one
      * ([ThalovantHubIdentityChangedException]) is thrown at once: waiting does
-     * not change a key. Anything that is not a connection failure is thrown
-     * as it happens.
+     * not change a key. Neither does a hub that rejected this client's own key
+     * ([ThalovantClientKeyRejectedException]): thrown at once too. Anything
+     * that is not a connection failure is thrown as it happens.
      *
      * Every attempt, drop and recovery is logged at `FINE` on the
      * `com.thalovant.sdk.session` logger and nowhere louder; what deserves more
@@ -317,6 +348,11 @@ public class HubSession(connect: suspend () -> ThalovantClient,
                 continue
             } catch (cancelled: CancellationException) {
                 throw cancelled
+            } catch (rejected: ThalovantClientKeyRejectedException) {
+                if (isClosed()) return
+                log.fine { "hub link: the hub rejected this client's key (${rejected.message})" }
+                synchronized(supervisor) { supervisor.after(LinkOutcome.REFUSED, clock(), clientKeyRejected = true) }
+                throw rejected
             } catch (changed: ThalovantHubIdentityChangedException) {
                 if (isClosed()) return
                 log.fine { "hub link: the hub's key changed (${changed.message})" }

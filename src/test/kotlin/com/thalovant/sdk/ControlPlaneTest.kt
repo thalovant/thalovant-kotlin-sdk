@@ -912,7 +912,9 @@ class ControlPlaneTest {
                 clock = { now },
             )
         }
-        assertEquals(3, server.requestCount)
+        // Each POST is bounded by what is left, so none is sent once the
+        // sign-in's time is spent: two polls, then the deadline.
+        assertEquals(2, server.requestCount)
         assertEquals(10_000L, now)
     }
 

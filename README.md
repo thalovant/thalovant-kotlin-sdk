@@ -19,7 +19,7 @@ Full docs: <https://docs.thalovant.com/developers/sdks/kotlin/>
 
 ```kotlin
 dependencies {
-    implementation("com.thalovant:thalovant-sdk:0.8.0")
+    implementation("com.thalovant:thalovant-sdk:0.8.1")
 }
 ```
 
@@ -155,12 +155,17 @@ hub to admit it, then answer the hub's requests on the data plane.
 and how often to poll; each `pollDeviceLogin` asks once.
 
 ```kotlin
+import com.thalovant.sdk.HOME_ASSISTANT_CLIENT_ID
 import com.thalovant.sdk.HOME_ASSISTANT_SCOPES
 import com.thalovant.sdk.ThalovantControlPlane
 import com.thalovant.sdk.ThalovantDeviceLoginPendingException
 
 val api = ThalovantControlPlane()
-val grant = api.beginDeviceLogin(scopes = HOME_ASSISTANT_SCOPES, clientName = "Home Assistant")
+val grant = api.beginDeviceLogin(
+    scopes = HOME_ASSISTANT_SCOPES,
+    clientName = "Home Assistant",
+    clientId = HOME_ASSISTANT_CLIENT_ID,
+)
 show(grant.verificationUriComplete ?: grant.verificationUri, grant.userCode)
 var wait = grant.intervalMillis
 while (true) {
@@ -184,6 +189,16 @@ refused before anything is shown. `DeviceAuthorization.asJson()` /
 store it as a secret). `api.revokeApiToken()` revokes the token when the
 integration is removed; revoking it twice is not an error. Every sign-in sets
 `api.tokenId` to the id its answer carried, or null.
+
+`clientId` (`HOME_ASSISTANT_CLIENT_ID`, `thalovant-home-assistant`) is sent as
+`client_id` and lets the approval page say which client asks; it is left out
+when not given, and `DeviceLoginOptions.clientId` does the same for
+`loginWithBrowser`. `api.describeDeviceLogin(userCode)` reads what a pending
+code asks for (`GET /v1/auth/device/codes/{user_code}`) as a
+`DeviceLoginRequest`: its scopes, client name and id, whether that id is one the
+API verified (never without an id), the device's name and when the code
+expires. Each device-token POST is bounded by what is left of the sign-in, and
+none is sent once it is over.
 
 **2. Create the connection.** Set `connectionType`; the API has to answer with
 the same kind, and a connection it made without it is deleted before the call
@@ -254,6 +269,14 @@ pinned key. `LinkSupervisor` holds these rules, for a host that drives
 handshake or within 750 ms of it, a hub answer that does not authenticate under
 the password, or an upgrade answered 401 or 403; after a failed KK handshake the
 SDK tries XX at once, which tells a changed password from a changed hub key.
+Once any frame from the hub has authenticated, a close is a dropped link, never
+a refusal. A refusal right as an XX handshake ends means the hub has pinned
+another key for this connection: `ThalovantClientKeyRejectedException` (a
+`ThalovantIdentityException`, so existing `catch`es still catch it) names this
+key folder and the other one, `run()` throws it at once, and `LinkSupervisor`
+gives up on it (`after(LinkOutcome.REFUSED, now, clientKeyRejected = true)`,
+reported as `LinkDecision.reasonName == "client_key_rejected"`). Re-pair, or
+share the key folder. A reply that goes out counts as the link being up.
 `answerHomeRequests` answers every `thalovant.home.request`:
 
 ```kotlin
@@ -660,7 +683,14 @@ remain available as standalone helpers; the WSS runtime rejects downgrade and
 plaintext application traffic. `connect()` completes after authenticated key
 exchange and sending the encrypted client HELLO.
 
-The default Noise state directory is `~/.config/thalovant-kotlin/noise`. Keep its
+An identity read with `ThalovantIdentity.fromFile` keeps its Noise key beside
+that file, in `thalovant-kotlin-noise/` (`HiveMindNoiseStore.forIdentity`), so
+two connections on one machine no longer share a client key the hub pins to one
+of them. The first time that folder meets a hub, the key and pins this SDK kept
+in the shared default are copied into it -- never moved -- when that key has
+met this hub, so an existing link keeps working.
+
+Otherwise the default Noise state directory is `~/.config/thalovant-kotlin/noise`. Keep its
 client private key and server pins across restarts; on POSIX the SDK enforces
 0700 directories and 0600 files. Atomic key publication requires filesystem
 hard-link support; unsupported filesystems fail closed. Android applications should supply an
@@ -838,7 +868,8 @@ characters or more in the request body are replaced with `[redacted]`.
 - `controlPlane.getMemoryItem(memoryId)`
 - `controlPlane.updateMemoryItem(memoryId, payload)`
 - `controlPlane.deleteMemoryItem(memoryId)`
-- `controlPlane.beginDeviceLogin(scopes, clientName)` / `controlPlane.pollDeviceLogin(authorization)` / `controlPlane.revokeApiToken(tokenId)`
+- `controlPlane.beginDeviceLogin(scopes, clientName, clientId)` / `controlPlane.pollDeviceLogin(authorization)` / `controlPlane.revokeApiToken(tokenId)`
+- `controlPlane.describeDeviceLogin(userCode)` returning a `DeviceLoginRequest`
 - `controlPlane.createClientIdentity(hubId, options)` — `options.connectionType` for a kind such as `home_assistant`
 - `controlPlane.getClient(clientId)` / `controlPlane.listClients(hubId, limit, cursor)` / `controlPlane.deleteClient(clientId, etag)`
 - `controlPlane.waitForAdmission(result, timeoutMs, pollIntervalMs)`
@@ -856,7 +887,8 @@ characters or more in the request body are replaced with `[redacted]`.
 - `client.reply(event, msgType, data, context)`
 - `client.answerHomeRequests(timeoutMs, handler)` / `session.answerHomeRequests(timeoutMs, handler)`
 - `HubSession(connect, policy).run()` / `session.connect()` / `session.connected` / `session.reply(event, msgType, data, context)`
-- `LinkSupervisor(policy).after(outcome, nowSeconds)` returning a `LinkDecision`
+- `LinkSupervisor(policy).after(outcome, nowSeconds, clientKeyRejected)` returning a `LinkDecision`
+- `HiveMindNoiseStore.forIdentity(identity)` -- the key folder an identity file keeps beside it
 - `client.close()`
 
 ## Development
