@@ -6,6 +6,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertIs
+import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlinx.coroutines.delay
@@ -79,6 +80,8 @@ class HomeLinkVectorsTest {
         }
 
         val url: String get() = server.url("/").toString()
+        val host: String get() = server.hostName
+        val port: Int get() = server.port
 
         private fun answer(request: RecordedRequest): MockResponse {
             val ifMatch = request.getHeader("If-Match")
@@ -105,6 +108,7 @@ class HomeLinkVectorsTest {
             val response = exchange.getValue("response").jsonObject
             val text = response.getValue("body").jsonPrimitive.content
             return MockResponse().setResponseCode(response.getValue("status").jsonPrimitive.int).apply {
+                for ((header, value) in response["headers"]?.jsonObject.orEmpty()) setHeader(header, value.jsonPrimitive.content)
                 if (text.isNotEmpty()) setHeader("Content-Type", response.getValue("content_type").jsonPrimitive.content)
                 setBody(text)
             }
@@ -313,9 +317,13 @@ class HomeLinkVectorsTest {
         val call = case.getValue("call").jsonObject
         val api = ScriptedApi(case["exchanges"]?.jsonArray.orEmpty().map { it.jsonObject })
         api.use {
-            val plane = ThalovantControlPlane(api.url, accessToken = "synthetic-token")
+            val url = if (call.text("api") == "unreachable") "http://127.0.0.1:${closedPort()}/" else api.url
+            val plane = ThalovantControlPlane(url, accessToken = "synthetic-token")
             val operation = (call["operation"] as? JsonObject)?.let {
-                ThalovantJson.decodeFromJsonElement(OperationResource.serializer(), it)
+                val placed = ThalovantJson.parseToJsonElement(
+                    it.toString().replace("{api_host}", api.host).replace("{api_port}", api.port.toString()),
+                )
+                ThalovantJson.decodeFromJsonElement(OperationResource.serializer(), placed)
             }
             val expect = case.getValue("expect").jsonObject
             val started = System.nanoTime()
@@ -332,11 +340,25 @@ class HomeLinkVectorsTest {
                 // A connection error and a timeout at once: it may still be admitted.
                 assertIs<ThalovantConnectionException>(error)
                 assertIs<ThalovantTimeout>(error)
+                assertTrue(error.message.orEmpty().endsWith("it may still admit it later."), error.message)
                 produced["outcome"] = JsonPrimitive("timeout")
                 if ("polls" in expect) produced["polls"] = JsonPrimitive(api.sent.size)
             } catch (error: ThalovantAdmissionFailedException) {
                 produced["outcome"] = JsonPrimitive("failed")
                 produced["error_code"] = JsonPrimitive(error.errorCode)
+                produced["status"] = JsonPrimitive(error.statusCode)
+                if (error.statusCode != null) {
+                    produced["code"] = JsonPrimitive(error.code)
+                    produced["detail"] = JsonPrimitive(error.detail)
+                }
+                produced["polls"] = JsonPrimitive(api.sent.size)
+            } catch (_: java.io.IOException) {
+                // The API out of reach: this SDK's own error for that, as it is.
+                produced["outcome"] = JsonPrimitive("unreachable")
+                produced["polls"] = JsonPrimitive(api.sent.size)
+            } catch (error: ThalovantAuthException) {
+                produced["outcome"] = JsonPrimitive("auth")
+                produced["status"] = JsonPrimitive(error.statusCode)
                 produced["polls"] = JsonPrimitive(api.sent.size)
             } catch (_: ThalovantApiException) {
                 produced["outcome"] = JsonPrimitive("error")
@@ -363,16 +385,21 @@ class HomeLinkVectorsTest {
         }
     }
 
+    /** A loopback port nothing listens on. */
+    private fun closedPort(): Int = java.net.ServerSocket(0, 0, java.net.InetAddress.getLoopbackAddress()).use { it.localPort }
+
     // -- the home link --------------------------------------------------------
 
     /** A transport that keeps what the client sent, so the reply is checked as sent. */
-    private class Outbox : HiveMindRuntimeTransport {
+    private class Outbox(private val sendMs: Long = 0) : HiveMindRuntimeTransport {
         override var connected: Boolean = false
         override val handshakeComplete: Boolean get() = connected
         val emitted = CopyOnWriteArrayList<Triple<String, JsonObject, JsonObject>>()
         override suspend fun connect(timeoutMs: Long) { connected = true }
         override suspend fun disconnect() { connected = false }
         override suspend fun emitBus(eventType: String, data: JsonObject, context: JsonObject) {
+            // A transport that takes sendMs to put a frame on the wire.
+            if (sendMs > 0) delay(sendMs)
             emitted += Triple(eventType, data, context)
         }
         override fun addBusListener(listener: (ThalovantEvent) -> Unit): ThalovantSubscription = ThalovantSubscription {}
@@ -405,25 +432,58 @@ class HomeLinkVectorsTest {
     fun `the home link runs every shared vector`() {
         for (case in home.cases()) {
             val name = case.text("name")!!
-            val produced: JsonObject = if (case.text("kind") == "reply_context") {
-                replyContext(case.getValue("context").jsonObject)
-            } else {
-                val outbox = Outbox()
-                val event = ThalovantEvent(
-                    ThalovantHome.REQUEST,
-                    data = case.getValue("request").jsonObject,
-                    context = buildJsonObject { put("source", "skill") },
-                )
-                val timeoutMs = case["timeout_ms"]?.jsonPrimitive?.long ?: ThalovantHome.DEFAULT_HANDLER_TIMEOUT_MS
-                val payload = runBlocking {
-                    client(outbox).answerHomeRequest(event, timeoutMs, handler(case.getValue("handler").jsonObject))
+            val produced: JsonElement = when (case.text("kind")) {
+                "reply_context" -> replyContext(case.getValue("context").jsonObject)
+                "speech" -> JsonPrimitive(plainSpeech(case.text("text")))
+                "deadline" -> deadlineCase(case)
+                else -> {
+                    val outbox = Outbox()
+                    val event = homeRequest(case)
+                    val timeoutMs = case["timeout_ms"]?.jsonPrimitive?.long ?: ThalovantHome.DEFAULT_HANDLER_TIMEOUT_MS
+                    val payload = runBlocking {
+                        client(outbox).answerHomeRequest(event, timeoutMs, handler = handler(case.getValue("handler").jsonObject))
+                    }
+                    assertNotNull(payload, name)
+                    // Exactly one answer, the payload returned, sent back along the route.
+                    assertEquals(listOf(Triple(ThalovantHome.RESPONSE, payload, replyContext(event.context))), outbox.emitted.toList(), name)
+                    payload
                 }
-                // Exactly one answer, the payload returned, sent back along the route.
-                assertEquals(listOf(Triple(ThalovantHome.RESPONSE, payload, replyContext(event.context))), outbox.emitted.toList(), name)
-                payload
             }
             ConformanceRecord.record("home-link-vectors.json", name, produced)
             assertEquals(case.getValue("expect"), produced, name)
+        }
+    }
+
+    private fun homeRequest(case: JsonObject) = ThalovantEvent(
+        ThalovantHome.REQUEST,
+        data = case.getValue("request").jsonObject,
+        context = buildJsonObject { put("source", "skill") },
+    )
+
+    /** The hub's bound, from arrival, covers the handler and the sending both; nothing is sent late. */
+    private fun deadlineCase(case: JsonObject): JsonObject {
+        val outbox = Outbox(sendMs = case.getValue("send_ms").jsonPrimitive.long)
+        val hubTimeoutMs = case.getValue("hub_timeout_ms").jsonPrimitive.long
+        val started = System.nanoTime()
+        val sent = runBlocking {
+            client(outbox).answerHomeRequest(
+                homeRequest(case),
+                timeoutMs = case.getValue("timeout_ms").jsonPrimitive.long,
+                hubTimeoutMs = hubTimeoutMs,
+                handler = handler(case.getValue("handler").jsonObject),
+            )
+        }
+        val tookMs = (System.nanoTime() - started) / 1_000_000
+        // Never past the hub's bound, whatever the handler or the transport did.
+        assertTrue(tookMs <= hubTimeoutMs + 100, "took $tookMs ms")
+        return buildJsonObject {
+            put("replied", sent != null)
+            if (sent != null) {
+                assertEquals(listOf(sent), outbox.emitted.map { it.second })
+                put("response", sent)
+            } else {
+                assertTrue(outbox.emitted.isEmpty(), "a reply was sent after the hub gave up")
+            }
         }
     }
 

@@ -161,6 +161,16 @@ public class HiveMindWssTransport(
     @Volatile
     private var heardFromHub: Boolean = false
 
+    /** When the current connection's handshake completed, for [closeRefuses]. */
+    @Volatile
+    private var handshakeCompletedNs: Long? = null
+
+    /**
+     * The KK attempt just made did not authenticate, so the next attempt of
+     * this connect uses XX; see [connect].
+     */
+    private var xxRetry: Boolean = false
+
     public val authorization: String
         get() = Base64.getEncoder().encodeToString("$userAgent:${identity.accessKey}".toByteArray(Charsets.UTF_8))
 
@@ -185,10 +195,30 @@ public class HiveMindWssTransport(
             return "ws" + authorized.substring(4)
         }
 
+    /**
+     * Connects and authenticates. A KK attempt that fails is followed at once,
+     * inside the same connect and the same deadline, by one XX attempt.
+     *
+     * A KK handshake that does not authenticate -- the hub closing on its first
+     * message, or its answer failing here -- means the password or the hub's
+     * key is not what was pinned, and only XX can say which: a wrong password
+     * is a refusal ([ThalovantIdentityException]), a changed hub key a
+     * [ThalovantHubIdentityChangedException]. XX is not a downgrade: the pin is
+     * still checked when it completes. The XX attempt's outcome is the connect's.
+     */
     override suspend fun connect(timeoutMs: Long) {
         require(timeoutMs > 0) { "timeoutMs must be positive." }
         val ready = withTimeoutOrNull(timeoutMs) {
-            connectMutex.withLock { connectOnce() }
+            connectMutex.withLock {
+                try {
+                    connectOnce()
+                } catch (refused: ThalovantIdentityException) {
+                    if (refused is ThalovantHubIdentityChangedException || !synchronized(sendLock) { xxRetry }) throw refused
+                    connectOnce()
+                } finally {
+                    synchronized(sendLock) { xxRetry = false }
+                }
+            }
             true
         }
         // withTimeoutOrNull catches only this call's timeout; an enclosing
@@ -212,6 +242,7 @@ public class HiveMindWssTransport(
             handshake = CompletableDeferred()
             ended = CompletableDeferred()
             heardFromHub = false
+            handshakeCompletedNs = null
             generation
         }
         val request = Request.Builder()
@@ -365,24 +396,44 @@ public class HiveMindWssTransport(
             }
             fun offered(name: String): List<String> = (noise[name] as? JsonArray)?.mapNotNull { (it as? kotlinx.serialization.json.JsonPrimitive)?.content } ?: emptyList()
             val pin = noiseStore.pin(nodeId)
-            val pattern = if (pin != null && "KKpsk0" in offered("patterns")) "KKpsk0"
+            val pattern = if (pin != null && !xxRetry && "KKpsk0" in offered("patterns")) "KKpsk0"
                 else if ("XXpsk2" in offered("patterns")) "XXpsk2" else error("No supported Noise pattern offered.")
             val suite = Noise.suites.firstOrNull { it in offered("suites") } ?: error("No supported Noise suite offered.")
             val psk = cachedPsk?.takeIf { it.first == nodeId }?.second
                 ?: Noise.derivePsk(identity.password, nodeId).also { cachedPsk = nodeId to it }
-            val state = NoiseHandshake(pattern, suite, psk, Noise.prologue(hello, payload, "Noise_${pattern}_$suite"), noiseStore.staticKey(), pin)
+            // Only KK is sealed to the pinned key. XX learns the hub's key and
+            // meets the pin once it has completed, below, so a hub that is not
+            // the pinned one is told apart from a password that is wrong.
+            val state = NoiseHandshake(pattern, suite, psk, Noise.prologue(hello, payload, "Noise_${pattern}_$suite"),
+                noiseStore.staticKey(), pin.takeIf { pattern == "KKpsk0" })
             noiseHandshake = state
             val first = state.write("{\"binarize\":false,\"encodings\":[]}".toByteArray())
             sendHandshake(buildJsonObject { put("pattern", pattern); put("suite", suite); put("msg", Noise.hex(first)) })
         } else {
             val state = noiseHandshake ?: error("Noise message arrived before offer.")
-            state.read(Noise.unhex(message))
-            if (!state.finished) sendHandshake(buildJsonObject { put("msg", Noise.hex(state.write())) })
+            try {
+                state.read(Noise.unhex(message))
+            } catch (_: org.bouncycastle.crypto.InvalidCipherTextException) {
+                // The hub's answer does not authenticate under the key this
+                // password derives: the hub turned the credentials away (or
+                // the negotiation was tampered with, which retrying will not
+                // fix either). After KK it may equally be a hub whose key
+                // changed, so the next attempt uses XX, which can tell.
+                if (state.pattern == "KKpsk0") xxRetry = true
+                throw ThalovantIdentityException(
+                    "The hub did not accept this client's password. Pair this client with the hub again.",
+                )
+            }
+            // The hub's key meets the pin before this side answers with its
+            // own: XX learns that key in the hub's message, and a hub that is
+            // not the pinned one gets nothing more from this client.
             noiseStore.verifyOrPin(nodeId, state.remoteStatic ?: error("Missing authenticated server static key."))
+            if (!state.finished) sendHandshake(buildJsonObject { put("msg", Noise.hex(state.write())) })
             noiseSession = state.session()
             noiseHandshake = null
             sendHiveMessage(helloMessage())
             handshakeComplete = true
+            handshakeCompletedNs = System.nanoTime()
             phase = "ready"
             connectDurationMs = connectStartedNs?.let { (System.nanoTime() - it) / 1_000_000.0 }
             handshake.complete(Unit)
@@ -495,53 +546,91 @@ public class HiveMindWssTransport(
          * so; an internal error or a restart right after the handshake is an
          * ordinary failure, as the reference reads it.
          */
-        private fun closedAfterHandshake(code: Int): ThalovantException = when {
-            heardFromHub || code !in REFUSAL_CLOSE_CODES -> ThalovantConnectionException("HiveMind WSS closed ($code).")
-            else -> ThalovantIdentityException(
-                "The hub closed this connection without accepting it. Pair this client with the hub again.",
-            )
+        private fun closedAfterHandshake(code: Int): ThalovantException {
+            val afterMs = handshakeCompletedNs?.let { (System.nanoTime() - it) / 1_000_000 } ?: 0
+            return when {
+                heardFromHub || !closeRefuses(code, closedAfterHandshakeMs = afterMs) ->
+                    ThalovantConnectionException("HiveMind WSS closed ($code).")
+                else -> ThalovantIdentityException(
+                    "The hub closed this connection without accepting it. Pair this client with the hub again.",
+                )
+            }
         }
 
         /**
          * The close code says whose problem this is, so it decides the type.
          *
-         * A hub that refuses an access key closes with 1008, RFC 6455's policy
-         * violation. Reporting that as a connection failure sends somebody to
+         * A hub that refuses an access key closes during the handshake --
+         * with no status for a key it does not know and after a Noise abort,
+         * with 1008 for a malformed authorization, with 1000 from hubs that
+         * close politely -- at any step of it, between its HELLO and its offer
+         * included. Reporting that as a connection failure sends somebody to
          * check their network for a credential the hub has already read and
          * rejected -- the one thing their network cannot fix. The identity type
          * already exists and already means "the hub would not accept this
          * client", so a refusal raises that instead.
          *
+         * A close during a KK attempt is also what a hub does when it cannot
+         * read a KK first message, because the password changed or its own
+         * key did; the next attempt uses XX, which can tell.
+         *
          * The server's own `reason` is never echoed: it is remote text, and the
          * code carries everything a caller should branch on.
          */
-        private fun closedBeforeHandshake(code: Int): ThalovantException = when (code) {
-            POLICY_VIOLATION -> ThalovantIdentityException(
+        private fun closedBeforeHandshake(code: Int): ThalovantException {
+            if (!closeRefuses(code)) {
+                return ThalovantConnectionException("HiveMind WSS closed before Noise handshake completed ($code).")
+            }
+            if (noiseHandshake?.pattern == "KKpsk0") xxRetry = true
+            return ThalovantIdentityException(
                 "The hub refused this client's credentials. Pair this client with the hub again.",
             )
-            else -> ThalovantConnectionException("HiveMind WSS closed before Noise handshake completed ($code).")
         }
     }
 
     private companion object {
-        /** RFC 6455 policy violation. HiveMind closes with it on a refused key. */
-        const val POLICY_VIOLATION = 1008
-
-        /**
-         * The closes a hub refuses a client with, right after the handshake:
-         * a normal closure (hivemind-core's abort path calls `disconnect()`,
-         * whose default it is), no status at all (1005), and a policy
-         * violation. Any other code -- 1001 going away, 1011 an internal
-         * error, 1012 a restart, 1013 try again later -- is the hub's trouble
-         * or the network's, not a verdict on this client's credentials, and
-         * telling somebody to pair again over it would throw away a good one.
-         */
-        val REFUSAL_CLOSE_CODES = setOf(1000, 1005, POLICY_VIOLATION)
 
         val defaultClient: OkHttpClient = OkHttpClient.Builder()
             .pingInterval(30, TimeUnit.SECONDS)
             .build()
     }
+}
+
+/**
+ * The close codes (RFC 6455) a hub turns credentials away with: no status at
+ * all (1005) for an access key it does not know and after a Noise abort, 1008
+ * for a malformed authorization, and 1000 from hubs that close politely --
+ * hivemind-core's abort path calls `disconnect()`, whose default it is. Any
+ * other code -- 1001 going away, 1011 an internal error, 1013 try again later,
+ * a socket that ended with no close frame (1006) -- is the hub's trouble or
+ * the network's, not a verdict on the credentials, and telling somebody to
+ * pair again over it would throw away a good one.
+ */
+internal val REFUSAL_CLOSE_CODES: Set<Int> = setOf(1000, 1005, 1008)
+
+/** How long after the handshake a close is still the hub's answer to it; [DEFAULT_ACCEPTANCE_WINDOW_MS]. */
+internal const val REFUSAL_SETTLE_MS: Long = DEFAULT_ACCEPTANCE_WINDOW_MS
+
+/**
+ * How late a transport may learn a close's code and still have it count. Some
+ * (URLSession) report that a socket closed before they report how; OkHttp
+ * hands the code over with the close.
+ */
+internal const val CLOSE_CODE_GRACE_MS: Long = 250
+
+/**
+ * Whether a close is the hub refusing the credentials rather than a drop.
+ *
+ * [code] is the RFC 6455 close code, null when the socket ended without one.
+ * [closedAfterHandshakeMs] is when the close happened, counted from the end of
+ * the handshake, or null for a close during it: the close's own time decides,
+ * not when the transport reported it. [codeLateMs] is how long after the close
+ * the transport learnt the code. `link-keeping-vectors.json` holds every SDK to
+ * this rule.
+ */
+internal fun closeRefuses(code: Int?, closedAfterHandshakeMs: Long? = null, codeLateMs: Long = 0): Boolean {
+    if (code == null || code !in REFUSAL_CLOSE_CODES || codeLateMs > CLOSE_CODE_GRACE_MS) return false
+    return closedAfterHandshakeMs == null || closedAfterHandshakeMs <= REFUSAL_SETTLE_MS
 }
 
 internal fun hiveMessage(msgType: String, payload: JsonObject, metadata: JsonObject = EMPTY_JSON_OBJECT): JsonObject =

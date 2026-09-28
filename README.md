@@ -231,18 +231,30 @@ and counts a client already gone (HTTP 404) as deleted.
 api.waitForAdmission(result)   // up to DEFAULT_ADMISSION_TIMEOUT_MS, 180 s
 ```
 
-It follows the operation the create returned, riding out a 5xx and a 429 (for
-the `retry_after_seconds` it names). A failed operation throws
-`ThalovantAdmissionFailedException` with the operation's `errorCode`; running out
-of time throws `ThalovantAdmissionTimeoutException`, which is a
-`ThalovantConnectionException` and a `ThalovantTimeout` at once -- the connection
-may still be admitted, so connecting later can work. An operation link to
-another origin than the API's is never fetched.
+It follows the operation the create returned, and no read runs past its
+deadline. A 5xx is ridden out, and so is a 429, for as long as it says
+(`retryAfterSeconds`: its body, else `Retry-After`, else `RateLimit-Reset`). A
+failed operation throws `ThalovantAdmissionFailedException` with the operation's
+`errorCode`; so does any other refusal of the wait, with the API's `statusCode`,
+`code` and `detail`. A 401 or 403 is the API's own `ThalovantAuthException` --
+sign in again -- and an API out of reach the `IOException` it is. Running out of
+time throws `ThalovantAdmissionTimeoutException` ("... it may still admit it
+later"), which is a `ThalovantConnectionException` and a `ThalovantTimeout` at
+once -- the connection may still be admitted, so connecting later can work. An
+operation link to another origin than the API's (scheme, host and port) is never
+fetched.
 
 **4. Keep the link and answer.** `HubSession.run()` keeps the connection:
-reconnecting on a 10 s to 120 s ladder, noticing a dropped link as it drops, and
-reading a refusal as "not admitted yet" for `refusalGraceSeconds` (600 s) before
-throwing it. `answerHomeRequests` answers every `thalovant.home.request`:
+reconnecting on a 10 s to 120 s ladder, noticing a dropped link as it drops and
+dialling again at once, and reading a refusal as "not admitted yet" for
+`refusalGraceSeconds` (600 s) before throwing it. A hub whose key changed ends it
+at once with `ThalovantHubIdentityChangedException`: the SDK never replaces a
+pinned key. `LinkSupervisor` holds these rules, for a host that drives
+`connect()` itself. A refusal is a close with 1000, 1005 or 1008 during the
+handshake or within 750 ms of it, a hub answer that does not authenticate under
+the password, or an upgrade answered 401 or 403; after a failed KK handshake the
+SDK tries XX at once, which tells a changed password from a changed hub key.
+`answerHomeRequests` answers every `thalovant.home.request`:
 
 ```kotlin
 import com.thalovant.sdk.HomeAnswer
@@ -266,17 +278,20 @@ scope.launch {
 scope.launch { session.connected.collect { up -> showLinked(up) } }
 ```
 
-Every request gets exactly one answer, sent back along the route it came
-(`replyContext`, OVOS-MSG-1 §5.2) and within the hub's ten seconds. A handler
-that throws is answered `failed_to_handle`, one that runs past `timeoutMs`
-(9 s by default) `timeout`, and one that answers outside the contract -- a
-`responseType` other than `action_done`, `query_answer` or `error`, or an
-`error` whose code is not one of `ThalovantHome.ERROR_CODES` -- `unknown`; each
-with empty speech, because the hub speaks its own sentence for the code in the
-device's language. Speech is sent as plain text: markup is stripped, character
-references decoded and whitespace collapsed (`plainSpeech`). The answer never
-waits behind a running `session.ask`. `ThalovantClient.answerHomeRequests` and
-`client.reply(event, msgType, data)` do the same on a bare client.
+Every request gets at most one answer, sent back along the route it came
+(`replyContext`, OVOS-MSG-1 §5.2) and never after the hub's ten seconds from its
+arrival: a reply that could only arrive late is withdrawn. A handler that throws
+is answered `failed_to_handle`, one that runs past `timeoutMs` (9 s by default)
+`timeout` -- at the deadline, even if the handler ignores cancellation -- and one
+that answers outside the contract -- a `responseType` other than `action_done`,
+`query_answer` or `error`, or an `error` whose code is not one of
+`ThalovantHome.ERROR_CODES` -- `unknown`; each with empty speech, because the hub
+speaks its own sentence for the code in the device's language. Speech is sent as
+plain text (`plainSpeech`): tags, comments and processing instructions are
+removed ("5 < 6" stays), numeric references, the five XML entities and `&nbsp;`
+are decoded and nothing else, and Unicode white space collapses. The answer
+never waits behind a running `session.ask`. `ThalovantClient.answerHomeRequests`
+and `client.reply(event, msgType, data)` do the same on a bare client.
 
 ## List Your Hubs
 
@@ -841,6 +856,7 @@ characters or more in the request body are replaced with `[redacted]`.
 - `client.reply(event, msgType, data, context)`
 - `client.answerHomeRequests(timeoutMs, handler)` / `session.answerHomeRequests(timeoutMs, handler)`
 - `HubSession(connect, policy).run()` / `session.connect()` / `session.connected` / `session.reply(event, msgType, data, context)`
+- `LinkSupervisor(policy).after(outcome, nowSeconds)` returning a `LinkDecision`
 - `client.close()`
 
 ## Development

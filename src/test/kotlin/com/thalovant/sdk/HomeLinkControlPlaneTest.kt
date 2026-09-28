@@ -207,6 +207,64 @@ class HomeLinkControlPlaneTest {
     }
 
     @Test
+    fun `no read of an admission runs past its deadline`(): Unit = runBlocking {
+        // The API accepts the read and never answers it.
+        server.enqueue(MockResponse().setSocketPolicy(okhttp3.mockwebserver.SocketPolicy.NO_RESPONSE))
+        val operation = OperationResource(
+            id = "op-1", kind = "client.sync", aggregateType = "client", status = OperationStatus.REQUESTED,
+            createdAt = "2026-09-27T10:00:00Z", updatedAt = "2026-09-27T10:00:00Z",
+        )
+        val started = System.nanoTime()
+        val timedOut = assertFailsWith<ThalovantAdmissionTimeoutException> {
+            api().waitForAdmission(operation, timeoutMs = 300, pollIntervalMs = 10)
+        }
+        val tookMs = (System.nanoTime() - started) / 1_000_000
+        assertTrue(tookMs < 2_000, "waited $tookMs ms")
+        assertTrue(timedOut.message.orEmpty().endsWith("it may still admit it later."))
+    }
+
+    @Test
+    fun `an origin is scheme, host and port, with the default port spelled out`(): Unit = runBlocking {
+        fun operation(link: String) = OperationResource(
+            id = "op-1", kind = "client.sync", aggregateType = "client", status = OperationStatus.REQUESTED,
+            createdAt = "2026-09-27T10:00:00Z", updatedAt = "2026-09-27T10:00:00Z", links = mapOf("self" to link),
+        )
+        val plane = ThalovantControlPlane("https://api.thalovant.invalid", accessToken = "synthetic-token")
+        // The same origin spelled with its default port is followed: the read is
+        // attempted, and fails only because nothing answers there.
+        assertFailsWith<java.io.IOException> {
+            plane.waitForAdmission(operation("https://api.thalovant.invalid:443/v1/operations/op-1"), timeoutMs = 5_000)
+        }
+        for (other in listOf("http://api.thalovant.invalid:443/v1/operations/op-1", "https://api.thalovant.invalid:8443/v1/operations/op-1")) {
+            val refused = assertFailsWith<ThalovantApiException> { plane.waitForAdmission(operation(other), timeoutMs = 5_000) }
+            assertTrue("outside" in refused.message.orEmpty(), other)
+        }
+    }
+
+    @Test
+    fun `an empty scope list asks for the API's default, in both sign-ins`(): Unit = runBlocking {
+        answer(200, """{"device_code":"dc-1","user_code":"U","verification_uri":"https://thalovant.com/activate","interval":0}""")
+        api(null).beginDeviceLogin(scopes = emptyList())
+        assertEquals("{}", server.takeRequest().body.readUtf8())
+        answer(200, """{"device_code":"dc-1","user_code":"U","verification_uri":"https://thalovant.com/activate","interval":0}""")
+        answer(200, """{"access_token":"tvt-1"}""")
+        api(null).loginWithBrowser(DeviceLoginOptions(scopes = emptyList(), openBrowser = false, prompt = {}))
+        assertEquals("{}", server.takeRequest().body.readUtf8())
+    }
+
+    @Test
+    fun `a 429 says how long to wait, from its body or its headers`(): Unit = runBlocking {
+        server.enqueue(MockResponse().setResponseCode(429).setHeader("Retry-After", "7").setBody("""{"detail":{"retry_after_seconds":3}}"""))
+        assertEquals(3.0, assertFailsWith<ThalovantApiException> { api().getHub("h") }.retryAfterSeconds)
+        server.enqueue(MockResponse().setResponseCode(429).setHeader("Retry-After", "7").setBody("Too Many Requests"))
+        assertEquals(7.0, assertFailsWith<ThalovantApiException> { api().getHub("h") }.retryAfterSeconds)
+        server.enqueue(MockResponse().setResponseCode(429).setHeader("RateLimit-Reset", "12").setBody("Too Many Requests"))
+        assertEquals(12.0, assertFailsWith<ThalovantApiException> { api().getHub("h") }.retryAfterSeconds)
+        server.enqueue(MockResponse().setResponseCode(429).setHeader("Retry-After", "Wed, 21 Oct 2026 07:28:00 GMT"))
+        assertNull(assertFailsWith<ThalovantApiException> { api().getHub("h") }.retryAfterSeconds)
+    }
+
+    @Test
     fun `a failed clean-up is said, and the refusal is still unsupported`(): Unit = runBlocking {
         answer(201, """{"id":"c-1","etag":"e-1","spec":{"version":"1"}}""")
         answer(500, """{"detail":"boom"}""")

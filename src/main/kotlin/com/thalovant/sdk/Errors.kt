@@ -64,16 +64,28 @@ public class ThalovantAdmissionTimeoutException(message: String) :
     ThalovantConnectionException(message), ThalovantTimeout
 
 /**
- * The operation that admits a new connection failed, or the platform gave up on it.
+ * A new connection will not be admitted.
  *
+ * Either the operation that admits it failed, or the platform gave up on it --
  * [errorCode] is the operation's own code, such as `gitops_push_rejected` or
- * `convergence_timeout`, when it had one. Waiting longer will not help: the
- * connection has to be created again.
+ * `convergence_timeout`, and [statusCode] is null -- or the API refused the
+ * wait itself, and then [statusCode], [code], [detail] and [problem] keep what
+ * it answered, as a [ThalovantApiException] does. Waiting longer will not
+ * help. An authentication refusal is never this: it is thrown as the API's
+ * own [ThalovantAuthException].
  */
 public class ThalovantAdmissionFailedException(
     message: String,
     public val errorCode: String? = null,
     cause: Throwable? = null,
+    /** The HTTP status of the API's refusal of the wait, or null when the operation itself failed. */
+    public val statusCode: Int? = null,
+    /** The refusal's machine-readable code, as [ThalovantApiException.errorCode] reads it. */
+    public val code: String? = null,
+    /** The refusal's sentence, whole, as [ThalovantApiException.detail] reads it. */
+    public val detail: String? = null,
+    /** The refusal's body parsed, when it was a JSON object. */
+    public val problem: JsonObject? = null,
 ) : ThalovantConnectionException(message, cause)
 
 /** The hub reported a runtime failure while handling a request. */
@@ -360,6 +372,28 @@ public open class ThalovantApiException(
      * every image a caller may pin instead runs past any display limit.
      */
     public val detail: String? = problemMember(problem, "detail")
+
+    /**
+     * How long the API asked to wait before trying again, in seconds, when it
+     * said: a 429's `retry_after_seconds` -- at the top of [problem], or inside
+     * its `detail` object, where the API's per-token limit puts it -- else its
+     * `Retry-After` header, else its `RateLimit-Reset`, which is all the API's
+     * own rate limiter sends with its plain-text "Too Many Requests". Null
+     * otherwise.
+     */
+    public var retryAfterSeconds: Double? = retryAfterOf(problem)
+        internal set
+}
+
+/** A problem's `retry_after_seconds`, at its top or inside a `detail` object: a number, not negative. */
+private fun retryAfterOf(problem: JsonObject?): Double? {
+    if (problem == null) return null
+    for (source in listOfNotNull(problem, problem["detail"] as? JsonObject)) {
+        val value = source["retry_after_seconds"] as? JsonPrimitive ?: continue
+        if (value.isString || value.content == "true" || value.content == "false") continue
+        value.content.toDoubleOrNull()?.takeIf { it.isFinite() && it >= 0 }?.let { return it }
+    }
+    return null
 }
 
 /**

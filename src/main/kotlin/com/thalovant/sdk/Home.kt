@@ -1,8 +1,9 @@
 package com.thalovant.sdk
 
-import java.math.BigInteger
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.channels.Channel
@@ -10,8 +11,7 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.supervisorScope
-import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
@@ -24,8 +24,10 @@ import kotlinx.serialization.json.put
  * conversation agent and answers with [RESPONSE]. The rules every SDK keeps
  * (`home-link-vectors.json`):
  *
- * - every request gets exactly one answer, within the hub's
- *   [REQUEST_TIMEOUT_MS];
+ * - every request gets at most one answer, and never after the hub's
+ *   [REQUEST_TIMEOUT_MS], counted from its arrival: the handler's time and the
+ *   reply's own sending both come out of that bound, and a reply that could
+ *   only arrive late is not sent at all;
  * - the answer is a reply (OVOS-MSG-1 §5.2), so it goes back the way the
  *   request came ([replyContext]);
  * - `speech` is plain text, never markup ([plainSpeech]);
@@ -145,36 +147,42 @@ public data class HomeAnswer(
 )
 
 /**
- * Speech a device can say as it is: markup removed, character references
- * decoded, whitespace collapsed to single spaces and trimmed.
+ * Speech a device can say as it is, made in this order, as every SDK makes it
+ * (`home-link-vectors.json`):
  *
- * `<speak>It is 21&nbsp;degrees</speak>` becomes `It is 21 degrees`. Tags go
- * first, so an escaped `&lt;b&gt;` survives as the text `<b>`. References are
- * decoded exactly as Python's `html.unescape` decodes them -- the HTML5 table,
- * numeric references, and the legacy names HTML accepts without `;` -- which
- * is what the reference SDK does.
+ * 1. Markup is removed: a tag -- `<` or `</` immediately followed by an ASCII
+ *    letter, then everything up to the next `>` outside a quoted attribute
+ *    value -- a comment (`<!--` to `-->`) or a processing instruction (`<?` to
+ *    `?>`). Any other `<` is text, so "5 < 6 and 7 > 3" stays whole, and so
+ *    does an unclosed `<b`.
+ * 2. Character references are decoded once, left to right: numeric ones
+ *    (`&#72;`, `&#x48;`), except 0, surrogates and anything past U+10FFFF,
+ *    which stay as written; the five XML entities; and `&nbsp;`. Nothing
+ *    else -- `&eacute;` stays `&eacute;` -- and a reference needs its `;`.
+ *    An escaped `&lt;b&gt;` is therefore the text `<b>`.
+ * 3. Every run of Unicode White_Space becomes one space, and the ends are
+ *    trimmed.
+ *
+ * No platform HTML library is used: their entity tables differ.
  */
 public fun plainSpeech(text: String?): String {
     if (text.isNullOrEmpty()) return ""
-    val unmarked = SSML_TAG.replace(text, "")
-    val decoded = HtmlEntities.unescape(unmarked)
+    val decoded = decodeReferences(stripMarkup(text))
     val out = StringBuilder(decoded.length)
-    var pendingSpace = false
     var index = 0
     while (index < decoded.length) {
         val point = decoded.codePointAt(index)
-        if (isListingSpace(point)) {
-            pendingSpace = out.isNotEmpty()
+        index += Character.charCount(point)
+        if (isWhiteSpace(point)) {
+            // A run becomes one space; a space is itself White_Space, so a
+            // space at the end of what is built can only be this run's.
+            if (out.isEmpty() || out[out.length - 1] != ' ') out.append(' ')
         } else {
-            if (pendingSpace) out.append(' ')
-            pendingSpace = false
             out.appendCodePoint(point)
         }
-        index += Character.charCount(point)
     }
-    return out.toString()
+    return out.toString().trim { isListingSpace(it.code) }
 }
-
 /**
  * The `thalovant.home.response` payload for [answer], held to the contract.
  *
@@ -206,67 +214,93 @@ public fun homeResponse(request: HomeRequest, answer: HomeAnswer?): JsonObject {
 }
 
 /**
- * Answers one request: runs [handler], then replies whatever happened.
+ * Answers one request: runs [handler], then replies whatever happened, within
+ * [hubTimeoutMs] of the request's arrival at [arrivedAtNanos].
  *
- * The handler runs in a child coroutine and is given [timeoutMs]; the reply
- * goes out at that deadline even when the handler does not stop, and the
- * handler is cancelled. A handler that throws is answered `failed_to_handle`,
- * one that is too slow `timeout`, one that answers null or outside the
- * contract `unknown`. [send] delivers the payload. Returns what was sent.
+ * The hub gives up on a request after its bound, and an answer it has given
+ * up on only confuses the next one. So the handler gets [timeoutMs] or what is
+ * left of the bound, whichever is less, and the reply gets what the handler
+ * left: it is never started after the bound, and one not sent when the bound
+ * passes is withdrawn. Returns the payload sent, or null when there was no
+ * time left to send one.
+ *
+ * The handler runs detached, and the answer goes out at its deadline whether
+ * or not it has returned: a handler stuck in a call that ignores cancellation
+ * must not hold the reply back. It is cancelled and left to finish on its
+ * own; what it returns later is dropped.
  */
 internal suspend fun answerHomeRequestWith(
     event: ThalovantEvent,
     timeoutMs: Long,
     handler: suspend (HomeRequest) -> HomeAnswer?,
+    hubTimeoutMs: Long = ThalovantHome.REQUEST_TIMEOUT_MS,
+    arrivedAtNanos: Long = System.nanoTime(),
     send: suspend (ThalovantEvent, JsonObject) -> Unit,
-): JsonObject {
-    require(timeoutMs > 0) { "timeoutMs must be positive." }
+): JsonObject? {
+    require(timeoutMs > 0 && hubTimeoutMs > 0) { "timeoutMs and hubTimeoutMs must be positive." }
+    fun remainingMs(): Long = hubTimeoutMs - (System.nanoTime() - arrivedAtNanos) / 1_000_000
     val request = HomeRequest.fromEvent(event)
-    return supervisorScope {
-        val work = async { handler(request) }
-        val answer = try {
-            withTimeout(timeoutMs) { work.await() }
-        } catch (timeout: TimeoutCancellationException) {
-            work.cancel()
-            HomeAnswer(responseType = ThalovantHome.ERROR, errorCode = ThalovantHome.TIMEOUT)
-        } catch (cancelled: CancellationException) {
-            work.cancel()
-            // Our own caller was cancelled: stop. Otherwise the handler
-            // cancelled itself, which is a failure to handle like any other.
-            if (!currentCoroutineContext().isActive) throw cancelled
-            HomeAnswer(responseType = ThalovantHome.ERROR, errorCode = ThalovantHome.FAILED_TO_HANDLE)
-        } catch (_: Throwable) {
-            // An Error too: a handler still at TODO() throws NotImplementedError,
-            // and the hub is owed an answer all the same.
-            HomeAnswer(responseType = ThalovantHome.ERROR, errorCode = ThalovantHome.FAILED_TO_HANDLE)
-        }
-        val payload = homeResponse(request, answer)
-        send(event, payload)
-        payload
+    val answer = runHandler(request, handler, minOf(timeoutMs, remainingMs()))
+    val payload = homeResponse(request, answer)
+    val left = remainingMs()
+    if (left <= 0) return null
+    return withTimeoutOrNull(left) { send(event, payload); payload }
+}
+
+private class Answered(val answer: HomeAnswer?)
+
+/** The handler's answer, or the SDK's own for it; see [answerHomeRequestWith]. */
+private suspend fun runHandler(
+    request: HomeRequest,
+    handler: suspend (HomeRequest) -> HomeAnswer?,
+    timeoutMs: Long,
+): HomeAnswer? {
+    val timedOut = HomeAnswer(responseType = ThalovantHome.ERROR, errorCode = ThalovantHome.TIMEOUT)
+    if (timeoutMs <= 0) return timedOut
+    // Not a child: a scope waits for its children, and a handler that ignores
+    // cancellation would hold the answer until it chose to finish.
+    val work = CoroutineScope(currentCoroutineContext().minusKey(Job) + SupervisorJob()).async { handler(request) }
+    return try {
+        val done = withTimeoutOrNull(timeoutMs) { Answered(work.await()) }
+        if (done != null) done.answer else timedOut
+    } catch (cancelled: CancellationException) {
+        // Our own caller was cancelled: stop. Otherwise the handler cancelled
+        // itself, which is a failure to handle like any other.
+        if (!currentCoroutineContext().isActive) throw cancelled
+        HomeAnswer(responseType = ThalovantHome.ERROR, errorCode = ThalovantHome.FAILED_TO_HANDLE)
+    } catch (_: Throwable) {
+        // An Error too: a handler still at TODO() throws NotImplementedError,
+        // and the hub is owed an answer all the same.
+        HomeAnswer(responseType = ThalovantHome.ERROR, errorCode = ThalovantHome.FAILED_TO_HANDLE)
+    } finally {
+        if (!work.isCompleted) work.cancel()
     }
 }
 
 /**
  * Answers every request coming through [subscribe] until the caller is
  * cancelled; each on a coroutine of its own, so a slow one never holds up the
- * next. Cancelling stops the answers still running. A reply that cannot be
- * sent is dropped: the hub times the request out on its own.
+ * next, and each within the hub's bound from its own arrival. Cancelling
+ * stops the answers still running. A reply that cannot be sent is dropped:
+ * the hub times the request out on its own.
  */
 internal suspend fun serveHomeRequests(
     subscribe: ((ThalovantEvent) -> Unit) -> ThalovantSubscription,
     timeoutMs: Long,
+    hubTimeoutMs: Long = ThalovantHome.REQUEST_TIMEOUT_MS,
     handler: suspend (HomeRequest) -> HomeAnswer?,
     send: suspend (ThalovantEvent, JsonObject) -> Unit,
 ): Nothing {
     require(timeoutMs > 0) { "timeoutMs must be positive." }
     coroutineScope {
-        val requests = Channel<ThalovantEvent>(Channel.UNLIMITED)
-        val subscription = subscribe { requests.trySend(it) }
+        val requests = Channel<Pair<ThalovantEvent, Long>>(Channel.UNLIMITED)
+        // Stamped as it arrives, before any queue: the hub's bound runs from here.
+        val subscription = subscribe { requests.trySend(it to System.nanoTime()) }
         try {
-            for (event in requests) {
+            for ((event, arrived) in requests) {
                 launch {
                     try {
-                        answerHomeRequestWith(event, timeoutMs, handler, send)
+                        answerHomeRequestWith(event, timeoutMs, handler, hubTimeoutMs, arrived, send)
                     } catch (cancelled: CancellationException) {
                         throw cancelled
                     } catch (_: Throwable) {
@@ -285,14 +319,17 @@ internal suspend fun serveHomeRequests(
 
 /**
  * Answers one `thalovant.home.request` this client received: runs [handler],
- * then replies with [ThalovantHome.RESPONSE] whatever happened. Returns the
- * payload sent. See [ThalovantHome] for the rules the answer keeps.
+ * then replies with [ThalovantHome.RESPONSE] whatever happened, all within
+ * [hubTimeoutMs] from now. Returns the payload sent, or null when no reply
+ * could be sent before the hub gave up on the request. See [ThalovantHome]
+ * for the rules the answer keeps.
  */
 public suspend fun ThalovantClient.answerHomeRequest(
     event: ThalovantEvent,
     timeoutMs: Long = ThalovantHome.DEFAULT_HANDLER_TIMEOUT_MS,
+    hubTimeoutMs: Long = ThalovantHome.REQUEST_TIMEOUT_MS,
     handler: suspend (HomeRequest) -> HomeAnswer?,
-): JsonObject = answerHomeRequestWith(event, timeoutMs, handler) { request, payload ->
+): JsonObject? = answerHomeRequestWith(event, timeoutMs, handler, hubTimeoutMs) { request, payload ->
     reply(request, ThalovantHome.RESPONSE, payload)
 }
 
@@ -311,8 +348,8 @@ public suspend fun ThalovantClient.answerHomeRequest(
  * ```
  *
  * Each request is answered on a coroutine of its own, so a slow one does not
- * hold up the next, and within [timeoutMs] (a second inside the hub's 10 s by
- * default). For a link that must survive a dropped connection, use
+ * hold up the next; its handler gets [timeoutMs] (a second inside the hub's
+ * 10 s by default), and nothing is sent after the hub's 10 s from its arrival. For a link that must survive a dropped connection, use
  * [HubSession.answerHomeRequests].
  */
 public suspend fun ThalovantClient.answerHomeRequests(
@@ -324,64 +361,84 @@ public suspend fun ThalovantClient.answerHomeRequests(
     handler = handler,
 ) { request, payload -> reply(request, ThalovantHome.RESPONSE, payload) }
 
-/** Tags, as the reference strips them: anything from `<` to the next `>`. */
-private val SSML_TAG = Regex("</?[^>]*>")
-
-/** Python's `html.unescape`, ported rule for rule. */
-internal object HtmlEntities {
-    private val REFERENCE = Regex("&(#[0-9]+;?|#[xX][0-9a-fA-F]+;?|[^\\t\\n\\u000C <&#;]{1,32};?)")
-
-    private val table: Map<String, String> by lazy {
-        val entries = HashMap<String, String>(2400)
-        HtmlEntities::class.java.getResourceAsStream("/thalovant/html-entities.tsv")!!
-            .bufferedReader(Charsets.UTF_8).useLines { lines ->
-                for (line in lines) {
-                    if (line.isEmpty() || line.startsWith("#")) continue
-                    val (name, points) = line.split('\t', limit = 2)
-                    entries[name] = points.split(' ').joinToString("") { String(Character.toChars(it.toInt(16))) }
-                }
-            }
-        entries
-    }
-
-    /** Windows-1252 for the C1 range, as HTML maps a numeric reference into it. */
-    private val INVALID_CHARREFS: Map<Int, String> = mapOf(
-        0x00 to "�", 0x0D to "\r", 0x80 to "€", 0x81 to "\u0081", 0x82 to "‚",
-        0x83 to "ƒ", 0x84 to "„", 0x85 to "…", 0x86 to "†", 0x87 to "‡",
-        0x88 to "ˆ", 0x89 to "‰", 0x8A to "Š", 0x8B to "‹", 0x8C to "Œ",
-        0x8D to "\u008D", 0x8E to "Ž", 0x8F to "\u008F", 0x90 to "\u0090", 0x91 to "‘",
-        0x92 to "’", 0x93 to "“", 0x94 to "”", 0x95 to "•", 0x96 to "–",
-        0x97 to "—", 0x98 to "˜", 0x99 to "™", 0x9A to "š", 0x9B to "›",
-        0x9C to "œ", 0x9D to "\u009D", 0x9E to "ž", 0x9F to "Ÿ",
-    )
-
-    /** Code points a numeric reference may not produce; each decodes to nothing. */
-    private fun invalidCodePoint(point: Int): Boolean =
-        point in 0x01..0x08 || point == 0x0B || point in 0x0E..0x1F || point in 0x7F..0x9F ||
-            point in 0xFDD0..0xFDEF || (point and 0xFFFE) == 0xFFFE
-
-    fun unescape(text: String): String {
-        if ('&' !in text) return text
-        return REFERENCE.replace(text) { match -> replacement(match.groupValues[1]) }
-    }
-
-    private fun replacement(reference: String): String {
-        if (reference[0] == '#') {
-            val hex = reference[1] == 'x' || reference[1] == 'X'
-            val digits = reference.substring(if (hex) 2 else 1).trimEnd(';')
-            val number = BigInteger(digits, if (hex) 16 else 10)
-            if (number > BigInteger.valueOf(0x10FFFF)) return "�"
-            val point = number.toInt()
-            INVALID_CHARREFS[point]?.let { return it }
-            if (point in 0xD800..0xDFFF) return "�"
-            if (invalidCodePoint(point)) return ""
-            return String(Character.toChars(point))
+/**
+ * Removes markup -- tags, comments, processing instructions -- and nothing
+ * else; see [plainSpeech]. A scanner rather than a regular expression: the
+ * reference's pattern repeats a group per attribute character, which the JVM's
+ * regex engine walks by recursion, one stack frame each.
+ */
+internal fun stripMarkup(text: String): String {
+    if ('<' !in text) return text
+    val out = StringBuilder(text.length)
+    var index = 0
+    while (index < text.length) {
+        val end = if (text[index] == '<') markupEnd(text, index) else -1
+        if (end < 0) {
+            out.append(text[index])
+            index++
+        } else {
+            index = end
         }
-        table[reference]?.let { return it }
-        // The longest name that is a prefix, as the standard defines it.
-        for (length in reference.length - 1 downTo 2) {
-            table[reference.substring(0, length)]?.let { return it + reference.substring(length) }
+    }
+    return out.toString()
+}
+
+/** Where the markup construct opening at [start] ends, or -1 when none opens there. */
+private fun markupEnd(text: String, start: Int): Int {
+    if (text.startsWith("<!--", start)) {
+        text.indexOf("-->", start + 4).takeIf { it >= 0 }?.let { return it + 3 }
+    }
+    if (text.startsWith("<?", start)) {
+        text.indexOf("?>", start + 2).takeIf { it >= 0 }?.let { return it + 2 }
+    }
+    var index = start + 1
+    if (index < text.length && text[index] == '/') index++
+    if (index >= text.length || !isAsciiLetter(text[index])) return -1
+    index++
+    while (index < text.length && (isAsciiLetter(text[index]) || text[index].isAsciiDigit() || text[index] in "._:-")) index++
+    if (text.startsWith(">", index)) return index + 1
+    if (text.startsWith("/>", index)) return index + 2
+    if (index >= text.length || !isPythonSpace(text[index].code)) return -1
+    // Attributes: anything but `<` and `>`, a quoted value holding anything.
+    while (index < text.length) {
+        when (val char = text[index]) {
+            '>' -> return index + 1
+            '<' -> return -1
+            '"', '\'' -> index = text.indexOf(char, index + 1).takeIf { it >= 0 }?.plus(1) ?: return -1
+            else -> index++
         }
-        return "&$reference"
+    }
+    return -1
+}
+
+private fun isAsciiLetter(char: Char): Boolean = char in 'a'..'z' || char in 'A'..'Z'
+
+private fun Char.isAsciiDigit(): Boolean = this in '0'..'9'
+
+/** White space as the reference's regular expressions read it inside a tag: Python's `str.isspace`. */
+private fun isPythonSpace(point: Int): Boolean = isListingSpace(point)
+
+/**
+ * The Unicode White_Space property, spelled out so every SDK collapses the
+ * same characters: a regex `\s` differs between languages, and the JVM's
+ * `Character.isWhitespace` counts U+001C..U+001F and not U+00A0.
+ */
+internal fun isWhiteSpace(point: Int): Boolean = point in 0x09..0x0D || point == 0x20 || point == 0x85 ||
+    point == 0xA0 || point == 0x1680 || point in 0x2000..0x200A || point == 0x2028 || point == 0x2029 ||
+    point == 0x202F || point == 0x205F || point == 0x3000
+
+/** The one small set of references every SDK decodes; see [plainSpeech]. */
+private val REFERENCE = Regex("&(?:#([0-9]{1,7})|#[xX]([0-9A-Fa-f]{1,6})|(amp|lt|gt|quot|apos|nbsp));")
+
+private val NAMED_REFERENCES = mapOf("amp" to "&", "lt" to "<", "gt" to ">", "quot" to "\"", "apos" to "'", "nbsp" to "\u00A0")
+
+/** Decodes numeric references, the five XML entities and `&nbsp;`, once, left to right. */
+internal fun decodeReferences(text: String): String {
+    if ('&' !in text) return text
+    return REFERENCE.replace(text) { match ->
+        val (decimal, hexadecimal, name) = match.destructured
+        if (name.isNotEmpty()) return@replace NAMED_REFERENCES.getValue(name)
+        val value = if (decimal.isNotEmpty()) decimal.toInt() else hexadecimal.toInt(16)
+        if (value == 0 || value in 0xD800..0xDFFF || value > 0x10FFFF) match.value else String(Character.toChars(value))
     }
 }

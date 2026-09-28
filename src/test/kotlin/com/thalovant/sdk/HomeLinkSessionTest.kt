@@ -280,25 +280,63 @@ class HomeLinkSessionTest {
     }
 
     @Test
-    fun `a handler that ignores cancellation still gets its answer sent at the deadline`(): Unit = runBlocking {
+    fun `a handler that ignores cancellation neither holds the answer back nor the call`(): Unit = runBlocking {
         val outbox = Outbox()
         val client = outbox.client()
         val release = CompletableDeferred<Unit>()
+        val finished = CompletableDeferred<Unit>()
         val started = System.nanoTime()
-        val answering = async(Dispatchers.Default) {
+        // The call returns at the deadline, not when the handler chooses to stop.
+        val sent = withTimeout(2_000) {
             client.answerHomeRequest(ThalovantEvent(ThalovantHome.REQUEST, request), timeoutMs = 100) {
-                // Blocks its thread and never looks at cancellation.
-                withContext(Dispatchers.IO) { while (!release.isCompleted) Thread.sleep(5) }
+                try {
+                    // Blocks its thread and never looks at cancellation.
+                    withContext(Dispatchers.IO) { while (!release.isCompleted) Thread.sleep(5) }
+                } finally {
+                    finished.complete(Unit)
+                }
                 HomeAnswer(speech = "too late")
             }
         }
-        withTimeout(2_000) { while (outbox.emitted.isEmpty()) delay(5) }
         val tookMs = (System.nanoTime() - started) / 1_000_000
-        assertTrue(tookMs < 1_500, "sent after $tookMs ms")
+        assertTrue(tookMs < 1_500, "answered after $tookMs ms")
+        assertFalse(finished.isCompleted, "the handler was still running")
+        assertEquals(ThalovantHome.TIMEOUT, sent?.get("error_code")?.jsonPrimitive?.content)
         assertEquals(ThalovantHome.TIMEOUT, outbox.emitted.single().second["error_code"]?.jsonPrimitive?.content)
         release.complete(Unit)
-        answering.await()
-        assertEquals(1, outbox.emitted.size, "exactly one answer")
+        withTimeout(2_000) { finished.await() }
+        delay(50)
+        assertEquals(1, outbox.emitted.size, "its late answer is dropped")
+    }
+
+    @Test
+    fun `a served request is answered within the hub's bound from its arrival, or not at all`(): Unit = runBlocking {
+        val outbox = Outbox()
+        val client = outbox.client()
+        val delivered = CompletableDeferred<(ThalovantEvent) -> Unit>()
+        val link = launch(Dispatchers.Default) {
+            serveHomeRequests(
+                subscribe = { listener -> delivered.complete(listener); ThalovantSubscription {} },
+                timeoutMs = ThalovantHome.DEFAULT_HANDLER_TIMEOUT_MS,
+                hubTimeoutMs = 300,
+                handler = { request -> if (request.requestId == "slow") delay(200); HomeAnswer(speech = "Done.") },
+            ) { event, payload ->
+                // A transport stuck behind other frames for the slow one.
+                if (payload["request_id"]?.jsonPrimitive?.content == "slow") delay(200)
+                client.reply(event, ThalovantHome.RESPONSE, payload)
+            }
+        }
+        try {
+            val deliver = withTimeout(2_000) { delivered.await() }
+            deliver(ThalovantEvent(ThalovantHome.REQUEST, buildJsonObject { put("request_id", "slow") }))
+            deliver(ThalovantEvent(ThalovantHome.REQUEST, buildJsonObject { put("request_id", "quick") }))
+            eventually { outbox.emitted.isNotEmpty() }
+            delay(500)
+            // 200 ms of handler and 200 ms of sending do not fit in 300: withdrawn, never sent late.
+            assertEquals(listOf("quick"), outbox.emitted.map { it.second["request_id"]?.jsonPrimitive?.content })
+        } finally {
+            link.cancelAndJoin()
+        }
     }
 
     @Test
@@ -308,7 +346,7 @@ class HomeLinkSessionTest {
         val payload = client.answerHomeRequest(ThalovantEvent(ThalovantHome.REQUEST, request)) {
             throw kotlinx.coroutines.CancellationException("gave up")
         }
-        assertEquals(ThalovantHome.FAILED_TO_HANDLE, payload["error_code"]?.jsonPrimitive?.content)
+        assertEquals(ThalovantHome.FAILED_TO_HANDLE, payload?.get("error_code")?.jsonPrimitive?.content)
         outbox.emitted.clear()
         val answering = launch { client.answerHomeRequest(ThalovantEvent(ThalovantHome.REQUEST, request)) { delay(60_000); null } }
         delay(50)
@@ -358,16 +396,20 @@ class HomeLinkSessionTest {
     }
 
     @Test
-    fun `speech is decoded the way the reference decodes it`() {
+    fun `speech keeps to the portable rules beyond the vectors`() {
         assertEquals("It is 21 degrees & rising.", plainSpeech("<speak>It is 21&nbsp;degrees\n  &amp; rising.</speak>"))
-        assertEquals("Il fait 21 °C à Paris", plainSpeech("Il fait 21&#160;&deg;C &agrave; Paris"))
-        assertEquals("<b> is a tag", plainSpeech("&lt;b&gt; is a tag"))
-        assertEquals("fish & chips ©2026", plainSpeech("fish &amp chips &copy2026"))
-        assertEquals("€ and �", plainSpeech("&#x80; and &#xD800;"))
-        assertEquals("&unknown; stays", plainSpeech("&unknown; stays"))
-        assertEquals("😀", plainSpeech("&#128512;"))
+        // Only the portable set: a named reference HTML alone knows stays as written.
+        assertEquals("Il fait 21 &deg;C \u00E0 Paris", plainSpeech("Il fait 21&#160;&deg;C &#224; Paris"))
+        assertEquals("fish &amp chips", plainSpeech("fish &amp chips"))
+        // Numeric references are code points, never Windows-1252.
+        assertEquals("\u0080 is \u0080", plainSpeech("&#x80; is &#128;"))
+        assertEquals("\uD83D\uDE00", plainSpeech("&#128512;"))
         assertEquals("", plainSpeech(null))
         assertEquals("", plainSpeech(" <break time=\"1s\"/> "))
+        // A long attribute is scanned, not recursed through.
+        assertEquals("Ding", plainSpeech("<audio src='" + "a".repeat(200_000) + "'>Ding</audio>"))
+        // U+001C is not White_Space: kept inside, and trimmed at the ends as Python's strip() does.
+        assertEquals("a\u001Cb", plainSpeech("\u001Ca\u001Cb\u001F"))
     }
 
     @Test

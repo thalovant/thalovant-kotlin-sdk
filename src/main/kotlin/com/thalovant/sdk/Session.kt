@@ -30,6 +30,89 @@ public data class HubSessionPolicy(public val retrySeconds: Double = 10.0,
     init { require(listOf(retrySeconds,retryCeilingSeconds,probeSeconds,probeDownSeconds,refusalGraceSeconds).all { it.isFinite() && it > 0 } && retryCeilingSeconds >= retrySeconds) }
     public fun nextWait(current: Double): Double = minOf(current*2,retryCeilingSeconds)
 }
+/** What happened to one attempt at keeping a link up; see [LinkSupervisor]. */
+public enum class LinkOutcome(public val wireName: String) {
+    /** The link came up. */
+    UP("up"),
+
+    /** An established link went down. */
+    DROPPED("dropped"),
+
+    /** The hub or the network could not be reached. */
+    FAILED("failed"),
+
+    /** The hub turned the credentials away ([ThalovantIdentityException]). */
+    REFUSED("refused"),
+
+    /** The hub's Noise key is not the pinned one ([ThalovantHubIdentityChangedException]). */
+    KEY_CHANGED("key_changed"),
+}
+
+/** What a [LinkSupervisor] says to do next. */
+public enum class LinkAction(public val wireName: String) {
+    /** The link is up: keep it, and probe it. */
+    HOLD("hold"),
+
+    /** Dial again after [LinkDecision.waitSeconds]. */
+    RETRY("retry"),
+
+    /** Stop: retrying cannot help. [LinkDecision.reason] says why. */
+    GIVE_UP("give_up"),
+}
+
+/** One decision of a [LinkSupervisor]: [action], after [waitSeconds], for [reason] when giving up. */
+public data class LinkDecision(
+    public val action: LinkAction,
+    public val waitSeconds: Double = 0.0,
+    public val reason: LinkOutcome? = null,
+)
+
+/**
+ * How a long-lived link is kept up, as a pure function of what happened and when.
+ *
+ * [HubSession.run] asks it after every attempt, and a host that drives
+ * [HubSession.connect] on its own schedule can ask it too. Every SDK keeps the
+ * same rules (`link-keeping-vectors.json`):
+ *
+ * - [LinkOutcome.UP]: hold, and start the ladder and the refusal clock afresh;
+ * - [LinkOutcome.DROPPED]: dial again at once;
+ * - [LinkOutcome.FAILED]: wait the ladder's step -- [HubSessionPolicy.retrySeconds],
+ *   doubling to [HubSessionPolicy.retryCeilingSeconds] -- and stop counting refusals;
+ * - [LinkOutcome.REFUSED]: a new connection is refused until its hub admits
+ *   it, so wait the ladder's step as for a failure, until refusals have lasted
+ *   [HubSessionPolicy.refusalGraceSeconds] since the first of them; then give up;
+ * - [LinkOutcome.KEY_CHANGED]: give up at once; retrying cannot change a key.
+ *
+ * Not thread-safe: one supervisor follows one link.
+ */
+public class LinkSupervisor(public val policy: HubSessionPolicy = HubSessionPolicy()) {
+    private var wait = policy.retrySeconds
+    private var refusedSince: Double? = null
+
+    /** The decision after [outcome], observed at [nowSeconds] on any monotonic clock. */
+    public fun after(outcome: LinkOutcome, nowSeconds: Double): LinkDecision {
+        when (outcome) {
+            LinkOutcome.UP -> {
+                wait = policy.retrySeconds
+                refusedSince = null
+                return LinkDecision(LinkAction.HOLD)
+            }
+            LinkOutcome.DROPPED -> return LinkDecision(LinkAction.RETRY, 0.0)
+            LinkOutcome.KEY_CHANGED -> return LinkDecision(LinkAction.GIVE_UP, reason = LinkOutcome.KEY_CHANGED)
+            LinkOutcome.REFUSED -> {
+                val since = refusedSince ?: nowSeconds.also { refusedSince = it }
+                if (nowSeconds - since >= policy.refusalGraceSeconds) {
+                    return LinkDecision(LinkAction.GIVE_UP, reason = LinkOutcome.REFUSED)
+                }
+            }
+            LinkOutcome.FAILED -> refusedSince = null
+        }
+        val step = wait
+        wait = policy.nextWait(wait)
+        return LinkDecision(LinkAction.RETRY, step)
+    }
+}
+
 public fun alive(client: ThalovantClient?): Boolean = client != null && client.transport.connected && client.transport.handshakeComplete
 /**
  * Owns one hub connection, kept by policy rather than by luck.
@@ -62,6 +145,7 @@ public class HubSession(connect: suspend () -> ThalovantClient,
     private val listeners = linkedSetOf<Listener>()
     private val closing = CompletableDeferred<Unit>()
     private val linkUp = MutableStateFlow(false)
+    private val supervisor = LinkSupervisor(policy)
 
     /**
      * Whether a client is held and its link came up, as it changes: `true`
@@ -178,6 +262,7 @@ public class HubSession(connect: suspend () -> ThalovantClient,
             }
             log.fine { "hub link: connecting" }
             ensure()
+            synchronized(supervisor) { supervisor.after(LinkOutcome.UP, clock()) }
             log.fine { "hub link: up" }
         }
     }
@@ -186,10 +271,11 @@ public class HubSession(connect: suspend () -> ThalovantClient,
      * Stays connected until [close], by policy; returns once the session is closed.
      *
      * A link [connect] already opened is the one kept; it is not dialled
-     * again. While a link is held this watches it, and notices a drop as it
-     * happens rather than at the next probe. After a failed attempt it waits
-     * [HubSessionPolicy.retrySeconds], doubling up to
-     * [HubSessionPolicy.retryCeilingSeconds].
+     * again. While a link is held this watches it, notices a drop as it
+     * happens rather than at the next probe, and dials again at once. After a
+     * failed attempt it waits [HubSessionPolicy.retrySeconds], doubling up to
+     * [HubSessionPolicy.retryCeilingSeconds]. [LinkSupervisor] holds these
+     * rules, and every SDK keeps them.
      *
      * A hub refusing the credentials ([ThalovantIdentityException]) is retried
      * like any other failure until the refusals have lasted
@@ -205,7 +291,6 @@ public class HubSession(connect: suspend () -> ThalovantClient,
      * is for the application to say.
      */
     public suspend fun run() {
-        var refusedSince: Double? = null
         while (!isClosed()) {
             val current = synchronized(lock) { client }
             if (current != null && alive(current)) {
@@ -214,36 +299,37 @@ public class HubSession(connect: suspend () -> ThalovantClient,
                 if (!alive(current)) {
                     log.fine { "hub link: dropped" }
                     busy.withLock { if (synchronized(lock) { client } === current) drop() }
+                    decide(LinkOutcome.DROPPED)
                 }
                 continue
             }
-            val wait = retryWait
-            try {
+            val decision = try {
                 connect()
-                refusedSince = null
                 continue
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (changed: ThalovantHubIdentityChangedException) {
                 if (isClosed()) return
+                log.fine { "hub link: the hub's key changed (${changed.message})" }
+                decide(LinkOutcome.KEY_CHANGED)
                 throw changed
             } catch (refusal: ThalovantIdentityException) {
                 if (isClosed()) return
-                val now = clock()
-                val since = refusedSince ?: now.also { refusedSince = it }
                 log.fine { "hub link: refused (${refusal.message})" }
-                if (now - since >= policy.refusalGraceSeconds) throw refusal
+                decide(LinkOutcome.REFUSED).also { if (it.action == LinkAction.GIVE_UP) throw refusal }
             } catch (failure: Exception) {
                 if (isClosed()) return
                 if (failure !is ThalovantConnectionException && failure !is ThalovantTimeoutException &&
                     failure !is java.io.IOException) throw failure
-                refusedSince = null
                 log.fine { "hub link: attempt failed (${failure.message})" }
+                decide(LinkOutcome.FAILED)
             }
-            log.fine { "hub link: next attempt in ${wait}s" }
-            withTimeoutOrNull(millis(wait)) { closing.await() }
+            log.fine { "hub link: next attempt in ${decision.waitSeconds}s" }
+            if (decision.waitSeconds > 0) withTimeoutOrNull(millis(decision.waitSeconds)) { closing.await() }
         }
     }
+
+    private fun decide(outcome: LinkOutcome): LinkDecision = synchronized(supervisor) { supervisor.after(outcome, clock()) }
 
     private fun isClosed(): Boolean = synchronized(lock) { closed }
 
@@ -283,14 +369,16 @@ public class HubSession(connect: suspend () -> ThalovantClient,
 
 /**
  * Answers one `thalovant.home.request` this session received, on the live
- * link and without waiting behind a running [HubSession.ask]. See
+ * link and without waiting behind a running [HubSession.ask], within
+ * [hubTimeoutMs] from now; null when no reply could be sent in time. See
  * [ThalovantClient.answerHomeRequest].
  */
 public suspend fun HubSession.answerHomeRequest(
     event: ThalovantEvent,
     timeoutMs: Long = ThalovantHome.DEFAULT_HANDLER_TIMEOUT_MS,
+    hubTimeoutMs: Long = ThalovantHome.REQUEST_TIMEOUT_MS,
     handler: suspend (HomeRequest) -> HomeAnswer?,
-): JsonObject = answerHomeRequestWith(event, timeoutMs, handler) { request, payload ->
+): JsonObject? = answerHomeRequestWith(event, timeoutMs, handler, hubTimeoutMs) { request, payload ->
     reply(request, ThalovantHome.RESPONSE, payload)
 }
 

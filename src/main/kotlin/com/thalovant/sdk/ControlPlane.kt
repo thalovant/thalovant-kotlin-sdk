@@ -7,6 +7,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.suspendCancellableCoroutine
 import java.io.IOException
 import kotlin.math.roundToLong
@@ -628,8 +629,8 @@ public class ThalovantControlPlane(
      * [DeviceAuthorization.intervalMillis]. [loginWithBrowser] is the same
      * flow with the loop run for you.
      *
-     * [scopes] are what the token will carry; the API defaults to `hubs:read`
-     * and `clients:write` when none are given. A Free plan can approve only
+     * [scopes] are what the token will carry; none, or an empty list, asks for
+     * the API's default, `hubs:read` and `clients:write`. A Free plan can approve only
      * [HOME_ASSISTANT_SCOPES]. [clientName] is shown on the approval page.
      *
      * Throws [ThalovantApiException] when the API refuses, and when its answer
@@ -1427,18 +1428,25 @@ public class ThalovantControlPlane(
      * - `failed` and `timed_out` throw [ThalovantAdmissionFailedException] with
      *   the operation's own code; the connection has to be created again;
      * - an answer in the 5xx range is ridden out, and so is a 429, waiting
-     *   the `retry_after_seconds` it names (or the poll interval, when that is
-     *   longer) -- a timeout at once when that is more than is left; any
-     *   other refusal is
-     *   thrown as it came -- a token revoked while waiting is
-     *   [ThalovantAuthException];
+     *   what it names -- [ThalovantApiException.retryAfterSeconds], read from
+     *   its body, else its `Retry-After`, else its `RateLimit-Reset` -- or the
+     *   poll interval, when that is longer; a timeout at once when that is
+     *   more than is left;
+     * - a 401 or 403 is thrown as it came -- a token revoked while waiting is
+     *   [ThalovantAuthException]: sign in again, not a failed admission;
+     * - any other refusal of the wait is [ThalovantAdmissionFailedException]
+     *   keeping the API's `statusCode`, `code`, `detail` and `problem`;
+     * - an API out of reach throws the `IOException` it is, never a failed
+     *   admission;
      * - [timeoutMs] passing first throws [ThalovantAdmissionTimeoutException],
      *   which is a [ThalovantConnectionException] and a [ThalovantTimeout] at
-     *   once: the connection may still be admitted later.
+     *   once: the connection may still be admitted later. No read runs past
+     *   [timeoutMs].
      *
      * A connection a hub has not admitted yet is refused by it, the way a
      * wrong credential is; this is how to tell the two apart. An operation
-     * whose `links.self` names another origin than [apiUrl] is refused before
+     * whose `links.self` names another origin than [apiUrl] -- scheme, host
+     * and port, the scheme's default port spelled out -- is refused before
      * anything is fetched, with [ThalovantApiException]: the token goes to the
      * API and nowhere else.
      */
@@ -1468,43 +1476,50 @@ public class ThalovantControlPlane(
     private suspend fun awaitAdmission(id: String?, link: String?, timeoutMs: Long, pollIntervalMs: Long) {
         require(timeoutMs > 0 && pollIntervalMs > 0) { "timeoutMs and pollIntervalMs must be positive." }
         if (id.isNullOrEmpty() && link.isNullOrEmpty()) return
-        if (link != null && (link.startsWith("http://", ignoreCase = true) || link.startsWith("https://", ignoreCase = true))) {
-            val theirs = runCatching { java.net.URI(link).rawAuthority }.getOrNull()
-            val ours = runCatching { java.net.URI(apiUrl).rawAuthority }.getOrNull()
-            if (theirs == null || theirs != ours) {
-                // The token goes to the API's own origin and nowhere else.
-                throw ThalovantApiException("The admission operation points outside the Thalovant API.")
-            }
+        if (link != null && "://" in link && origin(link).let { it == null || it != origin(apiUrl) }) {
+            // The token goes to the API's own origin -- scheme, host and port
+            // -- and nowhere else.
+            throw ThalovantApiException("The admission operation points outside the Thalovant API.")
         }
         val operationId = id?.takeIf { it.isNotEmpty() } ?: operationIdFromLink(link.orEmpty())
             ?: throw ThalovantApiException("An operation needs an id to wait on.")
         val started = System.nanoTime()
         fun remaining(): Long = timeoutMs - (System.nanoTime() - started) / 1_000_000
+        fun timedOut(why: String = "") = ThalovantAdmissionTimeoutException(
+            "The hub did not admit the connection within ${timeoutMs / 1_000.0}s$why; it may still admit it later.",
+        )
         while (true) {
             var wait = pollIntervalMs
             val current = try {
-                request("GET", "/v1/operations/${encodePathSegment(operationId)}")
+                // Every read is bounded by what is left of the wait: a read the
+                // API is slow to answer must not carry the wait past it.
+                withTimeoutOrNull(remaining().coerceAtLeast(1)) {
+                    request("GET", "/v1/operations/${encodePathSegment(operationId)}")
+                } ?: throw timedOut()
             } catch (error: ThalovantApiException) {
+                val status = error.statusCode
                 when {
-                    error.statusCode == 404 -> return
-                    (error.statusCode ?: 0) >= 500 -> null
+                    status == 404 -> return
+                    status != null && status >= 500 -> null
                     // A rate limit is ridden out too, for as long as it says --
                     // unless that is longer than is left: waiting it out would
                     // only end in the same timeout, later.
-                    error.statusCode == 429 -> {
-                        wait = maxOf(pollIntervalMs, retryAfterMs(error) ?: 0)
-                        if (wait > remaining()) {
-                            throw ThalovantAdmissionTimeoutException(
-                                "The hub did not admit the connection within ${timeoutMs / 1_000.0}s " +
-                                    "(the API asked to slow down); it may still.",
-                            )
-                        }
+                    status == 429 -> {
+                        wait = maxOf(pollIntervalMs, error.retryAfterSeconds?.let { (it * 1_000).roundToLong() } ?: 0)
+                        if (wait > remaining()) throw timedOut(" (the API asked to slow down)")
                         null
                     }
-                    // Anything else is about this call, not the connection: a
-                    // token revoked mid-wait is ThalovantAuthException, and
-                    // "sign in again" is the answer to it.
-                    else -> throw error
+                    // The token, not the connection: signing in again fixes it.
+                    status == 401 || status == 403 -> throw error
+                    else -> throw ThalovantAdmissionFailedException(
+                        "The hub could not admit the connection: ${error.message}",
+                        errorCode = if (status == null) error.errorCode else null,
+                        cause = error,
+                        statusCode = status,
+                        code = error.errorCode,
+                        detail = error.detail,
+                        problem = error.problem,
+                    )
                 }
             }
             if (current != null) {
@@ -1521,12 +1536,8 @@ public class ThalovantControlPlane(
                 }
             }
             val left = remaining()
-            if (left <= 0) {
-                throw ThalovantAdmissionTimeoutException(
-                    "The hub did not admit the connection within ${timeoutMs / 1_000.0}s; it may still.",
-                )
-            }
-            delay(minOf(wait, left))
+            if (left <= 0) throw timedOut()
+            sleepAtLeast(minOf(wait, left))
         }
     }
 
@@ -1767,7 +1778,22 @@ private fun apiErrorMessage(statusCode: Int, body: String, secrets: List<String>
  */
 private fun apiError(response: Response, secrets: List<String>): ThalovantApiException {
     val text = response.body?.bytes()?.decodeToString()?.removePrefix("\uFEFF").orEmpty()
-    return apiException(apiErrorMessage(response.code, text, secrets), statusCode = response.code, body = text)
+    return apiException(apiErrorMessage(response.code, text, secrets), statusCode = response.code, body = text).also {
+        if (it.retryAfterSeconds == null) it.retryAfterSeconds = retryAfterHeader(response)
+    }
+}
+
+/**
+ * `Retry-After` in whole seconds, else `RateLimit-Reset`. The API's own rate
+ * limiter answers a 429 in plain text with only `RateLimit-Reset` to say how
+ * long. An HTTP-date `Retry-After` is not read.
+ */
+private fun retryAfterHeader(response: Response): Double? {
+    for (name in listOf("Retry-After", "RateLimit-Reset")) {
+        val value = response.header(name)?.trim() ?: continue
+        if (value.isNotEmpty() && value.all { it in '0'..'9' }) return value.toBigInteger().toDouble()
+    }
+    return null
 }
 
 /**
@@ -1802,20 +1828,34 @@ private fun refusesConnectionType(error: ThalovantApiException): Boolean {
     return said.any { "connection_type" in it || "connectionType" in it }
 }
 
-/**
- * How long a 429 asked to wait: `retry_after_seconds` on the problem, or on a
- * `detail` object inside it, where the API's quota refusals put their fields.
- */
-private fun retryAfterMs(error: ThalovantApiException): Long? {
-    val problem = error.problem ?: return null
-    val seconds = jsonNumber(problem["retry_after_seconds"])
-        ?: jsonNumber((problem["detail"] as? JsonObject)?.get("retry_after_seconds"))
-    return seconds?.takeIf { it >= 0 }?.let { (it * 1_000).roundToLong() }
+/** A URL's origin: scheme, host and port, the scheme's default port spelled out; null when unreadable. */
+private fun origin(url: String): Triple<String, String, Int>? {
+    val uri = runCatching { java.net.URI(url) }.getOrNull() ?: return null
+    val scheme = uri.scheme?.lowercase() ?: return null
+    val host = uri.host?.lowercase() ?: return null
+    val port = uri.port.takeIf { it >= 0 } ?: when (scheme) { "https" -> 443; "http" -> 80; else -> -1 }
+    return Triple(scheme, host, port)
 }
 
-/** The body of `POST /v1/auth/device/authorize`: scopes when given, a client name when not empty. */
+/**
+ * Sleeps the whole of [millis] on the monotonic clock, never less: a wait the
+ * API asked for must not end before it is up, whatever the timer's resolution.
+ */
+private suspend fun sleepAtLeast(millis: Long) {
+    val end = System.nanoTime() + millis * 1_000_000
+    while (true) {
+        val left = end - System.nanoTime()
+        if (left <= 0) return
+        delay((left + 999_999) / 1_000_000)
+    }
+}
+
+/** The body of `POST /v1/auth/device/authorize`: scopes when there are any, a client name when not empty. */
 private fun deviceAuthorizeBody(scopes: List<String>?, clientName: String?): JsonObject = buildJsonObject {
-    scopes?.let { put("scopes", JsonArray(it.map(::JsonPrimitive))) }
+    // An empty list is left out rather than sent: the API requires at least
+    // one scope and answers [] with a 422, and a missing field asks for its
+    // default.
+    scopes?.takeIf { it.isNotEmpty() }?.let { put("scopes", JsonArray(it.map(::JsonPrimitive))) }
     clientName?.takeIf { it.isNotEmpty() }?.let { put("client_name", it) }
 }
 

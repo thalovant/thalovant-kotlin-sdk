@@ -266,9 +266,10 @@ public fun carryConversation(previous: JsonObject?, session: JsonObject): JsonOb
  * waiting on the answer matches -- with the route turned round: the reply goes
  * to whoever sent the request (`destination` becomes the old `source`) and
  * comes from whoever it was sent to (`source` becomes the old `destination`,
- * its first entry when that is a list). A key the request did not have, or had
- * as null, is left as it was. A hub routes the answer back to whoever asked
- * with this, across bridges and NAT.
+ * its first entry when that is a list). A request with a destination and no
+ * source gets a reply with no destination. A key the request did not have, or
+ * had as null, is otherwise left as it was. A hub routes the answer back to
+ * whoever asked with this, across bridges and NAT.
  *
  * A [JsonObject] is immutable, so the copy is as deep as a deep copy: nothing
  * done to the reply can reach the request.
@@ -280,7 +281,15 @@ public fun replyContext(context: JsonObject): JsonObject {
     if (destination != null) {
         swapped["source"] = if (destination is JsonArray && destination.isNotEmpty()) destination[0] else destination
     }
-    if (source != null) swapped["destination"] = source
+    if (source != null) {
+        swapped["destination"] = source
+    } else if (destination != null) {
+        // Nobody to send it back to: the request said who it was for and not
+        // who sent it. Keeping the old destination would address the reply
+        // to its own sender, so it carries none and the hub routes it as it
+        // routes any message without one.
+        swapped.remove("destination")
+    }
     return JsonObject(swapped)
 }
 
