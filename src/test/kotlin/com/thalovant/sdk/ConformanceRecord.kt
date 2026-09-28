@@ -73,14 +73,16 @@ internal object ConformanceRecord {
     /**
      * Spell a number of a *vector file* the way the reference spells it.
      *
-     * The reference digests each vector file as it parsed it, and the Home
-     * Assistant vectors carry fractions -- `poll_interval_seconds: 0.01`,
-     * `timeout_seconds: 0.2` -- which Python writes with its own float repr.
-     * That digest identifies the vectors rather than anything this SDK
-     * produced, so it has to be spelled Python's way: a whole number as an
-     * integer, anything else as the shortest decimal that reads back as the
-     * same double, positional down to 1e-4 and `1e-05` style below. What a
-     * case produced is still held to [wholeNumber].
+     * The reference digests each vector file as it parsed it, with Python's
+     * float repr for any fraction. The vectors keep to whole numbers now --
+     * durations are whole milliseconds -- but the first Home Assistant vectors
+     * did not (`poll_interval_seconds: 0.01`), and refusing one here fails in
+     * a shutdown hook, where it writes no results and fails no build. That
+     * digest identifies the vectors rather than anything this SDK produced,
+     * so it is spelled Python's way: a whole number as an integer, anything
+     * else as the shortest decimal that reads back as the same double,
+     * positional down to 1e-4 and `1e-05` style below. What a case produced
+     * is still held to [wholeNumber].
      */
     internal fun referenceNumber(content: String): String {
         if (content == "true" || content == "false") return content

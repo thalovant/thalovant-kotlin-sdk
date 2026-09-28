@@ -182,7 +182,8 @@ verification URL that is not http(s), has no host, or carries credentials is
 refused before anything is shown. `DeviceAuthorization.asJson()` /
 `fromJson()` let a sign-in resume in another process (the device code is in it:
 store it as a secret). `api.revokeApiToken()` revokes the token when the
-integration is removed.
+integration is removed; revoking it twice is not an error. Every sign-in sets
+`api.tokenId` to the id its answer carried, or null.
 
 **2. Create the connection.** Set `connectionType`; the API has to answer with
 the same kind, and a connection it made without it is deleted before the call
@@ -230,7 +231,8 @@ and counts a client already gone (HTTP 404) as deleted.
 api.waitForAdmission(result)   // up to DEFAULT_ADMISSION_TIMEOUT_MS, 180 s
 ```
 
-It follows the operation the create returned. A failed operation throws
+It follows the operation the create returned, riding out a 5xx and a 429 (for
+the `retry_after_seconds` it names). A failed operation throws
 `ThalovantAdmissionFailedException` with the operation's `errorCode`; running out
 of time throws `ThalovantAdmissionTimeoutException`, which is a
 `ThalovantConnectionException` and a `ThalovantTimeout` at once -- the connection

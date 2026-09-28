@@ -24,6 +24,7 @@ import kotlinx.serialization.json.int
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.long
 import kotlinx.serialization.json.put
 import okhttp3.mockwebserver.Dispatcher
 import okhttp3.mockwebserver.MockResponse
@@ -216,6 +217,10 @@ class HomeLinkVectorsTest {
                         assertNull(plane.tokenId)
                         produced.clear()
                         produced += buildJsonObject { put("outcome", "revoked") }
+                        // Idempotent: revoking again sends nothing and succeeds.
+                        val sent = api.sent.size
+                        plane.revokeApiToken()
+                        assertEquals(sent, api.sent.size)
                     }
                 }
             }
@@ -312,24 +317,38 @@ class HomeLinkVectorsTest {
             val operation = (call["operation"] as? JsonObject)?.let {
                 ThalovantJson.decodeFromJsonElement(OperationResource.serializer(), it)
             }
-            val produced = try {
+            val expect = case.getValue("expect").jsonObject
+            val started = System.nanoTime()
+            val produced = LinkedHashMap<String, JsonElement>()
+            try {
                 plane.waitForAdmission(
                     operation,
-                    timeoutMs = (call.getValue("timeout_seconds").jsonPrimitive.double * 1_000).toLong(),
-                    pollIntervalMs = (call.getValue("poll_interval_seconds").jsonPrimitive.double * 1_000).toLong(),
+                    timeoutMs = call.getValue("timeout_ms").jsonPrimitive.long,
+                    pollIntervalMs = call.getValue("poll_interval_ms").jsonPrimitive.long,
                 )
-                buildJsonObject { put("outcome", "admitted"); put("polls", api.sent.size) }
+                produced["outcome"] = JsonPrimitive("admitted")
+                produced["polls"] = JsonPrimitive(api.sent.size)
             } catch (error: ThalovantAdmissionTimeoutException) {
                 // A connection error and a timeout at once: it may still be admitted.
                 assertIs<ThalovantConnectionException>(error)
                 assertIs<ThalovantTimeout>(error)
-                buildJsonObject { put("outcome", "timeout") }
+                produced["outcome"] = JsonPrimitive("timeout")
+                if ("polls" in expect) produced["polls"] = JsonPrimitive(api.sent.size)
             } catch (error: ThalovantAdmissionFailedException) {
-                buildJsonObject { put("outcome", "failed"); put("error_code", error.errorCode); put("polls", api.sent.size) }
+                produced["outcome"] = JsonPrimitive("failed")
+                produced["error_code"] = JsonPrimitive(error.errorCode)
+                produced["polls"] = JsonPrimitive(api.sent.size)
             } catch (_: ThalovantApiException) {
-                buildJsonObject { put("outcome", "error"); put("polls", api.sent.size) }
+                produced["outcome"] = JsonPrimitive("error")
+                produced["polls"] = JsonPrimitive(api.sent.size)
             }
-            produced to api
+            expect["waited_at_least_ms"]?.let {
+                // Recorded as the bound it met, so every SDK records the same value.
+                val waitedMs = (System.nanoTime() - started) / 1_000_000
+                val bound = it.jsonPrimitive.long
+                produced["waited_at_least_ms"] = JsonPrimitive(if (waitedMs >= bound) bound else waitedMs)
+            }
+            JsonObject(produced) to api
         }
     }
 
@@ -361,7 +380,7 @@ class HomeLinkVectorsTest {
 
     private fun handler(spec: JsonObject): suspend (HomeRequest) -> HomeAnswer? = {
         if ((spec["raises"] as? JsonPrimitive)?.boolean == true) throw IllegalStateException("the conversation agent is gone")
-        spec["sleep_seconds"]?.let { delay((it.jsonPrimitive.double * 1_000).toLong()) }
+        spec["sleep_ms"]?.let { delay(it.jsonPrimitive.long) }
         HomeAnswer(
             speech = spec.text("speech") ?: "",
             responseType = spec.text("response_type") ?: ThalovantHome.ACTION_DONE,
@@ -395,7 +414,7 @@ class HomeLinkVectorsTest {
                     data = case.getValue("request").jsonObject,
                     context = buildJsonObject { put("source", "skill") },
                 )
-                val timeoutMs = ((case["timeout_seconds"]?.jsonPrimitive?.double ?: 9.0) * 1_000).toLong()
+                val timeoutMs = case["timeout_ms"]?.jsonPrimitive?.long ?: ThalovantHome.DEFAULT_HANDLER_TIMEOUT_MS
                 val payload = runBlocking {
                     client(outbox).answerHomeRequest(event, timeoutMs, handler(case.getValue("handler").jsonObject))
                 }
@@ -410,9 +429,9 @@ class HomeLinkVectorsTest {
 
     @Test
     fun `a vector's fractions are spelled as the reference spells them`() {
-        // The admission and home-link vectors carry fractions, and the
-        // reference digests each vector file with Python's float repr. These
-        // are what Python's repr() writes for each.
+        // The reference digests each vector file with Python's float repr.
+        // The vectors are whole milliseconds now, but a fraction must still
+        // digest as the reference's does. These are what repr() writes.
         val python = mapOf(
             "0.01" to "0.01", "0.2" to "0.2", "0.05" to "0.05", "0.02" to "0.02", "1e-05" to "1e-05",
             "1.5" to "1.5", "0.30000000000000004" to "0.30000000000000004", "123.456" to "123.456",
@@ -429,7 +448,8 @@ class HomeLinkVectorsTest {
         assertEquals(home.getValue("error_codes").jsonArray.map { it.jsonPrimitive.content }, ThalovantHome.ERROR_CODES)
         assertEquals(home.text("request_type"), ThalovantHome.REQUEST)
         assertEquals(home.text("response_type"), ThalovantHome.RESPONSE)
-        assertEquals(home.getValue("reply_timeout_seconds").jsonPrimitive.int * 1_000L, ThalovantHome.REQUEST_TIMEOUT_MS)
+        assertEquals(home.getValue("reply_timeout_ms").jsonPrimitive.long, ThalovantHome.REQUEST_TIMEOUT_MS)
+        assertEquals(9_000L, ThalovantHome.DEFAULT_HANDLER_TIMEOUT_MS)
         assertTrue(ThalovantHome.DEFAULT_HANDLER_TIMEOUT_MS < ThalovantHome.REQUEST_TIMEOUT_MS)
         assertEquals(device.getValue("home_assistant_scopes").jsonArray.map { it.jsonPrimitive.content }, HOME_ASSISTANT_SCOPES)
         assertEquals(JsonNull, replyContext(buildJsonObject { put("source", JsonNull) })["source"])

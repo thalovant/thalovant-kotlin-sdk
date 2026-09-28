@@ -492,8 +492,10 @@ public class ThalovantControlPlane(
     public val apiUrl: String = normalizeControlApiUrl(apiUrl)
 
     /**
-     * The id of the API token in [accessToken], when a device login on this
-     * client minted it; what [revokeApiToken] revokes by default.
+     * The id of the API token in [accessToken], when the sign-in that minted
+     * it said (a device login, a native sign-in); what [revokeApiToken]
+     * revokes by default. Every sign-in on this client sets it, to null when
+     * its answer carried no id.
      */
     @Volatile
     public var tokenId: String? = null
@@ -503,6 +505,10 @@ public class ThalovantControlPlane(
      * kept that way (RFC 8628 §3.5). Bounded: a caller that begins sign-ins
      * and abandons them must not grow this for the life of the client.
      */
+    /** Whether the token this client signed in with was revoked and forgotten; see [revokeApiToken]. */
+    @Volatile
+    private var revokedOwn = false
+
     private val deviceIntervals = object : LinkedHashMap<String, Long>() {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Long>?): Boolean = size > 32
     }
@@ -538,11 +544,7 @@ public class ThalovantControlPlane(
             if (recoveryCode != null) put("recovery_code", recoveryCode)
         }
         val token = request("POST", "/v1/auth/token", body = body, auth = false)
-        val accessToken = (token["access_token"] as? JsonPrimitive)?.takeIf { it.isString }?.content
-        if (accessToken.isNullOrEmpty()) {
-            throw ThalovantApiException("Thalovant API token response did not include access_token.")
-        }
-        this.accessToken = accessToken
+        acceptToken(token)
         return token
     }
 
@@ -680,16 +682,33 @@ public class ThalovantControlPlane(
      * Revoking the token in use forgets it here too -- [accessToken] and
      * [tokenId] become null -- so a later call fails locally rather than with
      * a 401.
+     *
+     * Revoking the token in use is idempotent. A token already revoked, or
+     * expired, cannot authenticate its own revoke, so the API answers 401;
+     * the token is dead either way, so that counts as revoked and it is
+     * forgotten, and revoking again then sends nothing until the next
+     * sign-in. Revoking another token by id is not: the API's own answer --
+     * a 404 for one it does not know -- is thrown as usual.
      */
     public suspend fun revokeApiToken(tokenId: String? = null) {
         val target = tokenId?.takeIf { it.isNotEmpty() } ?: this.tokenId
-            ?: throw ThalovantApiException(
-                "No API token id to revoke: pass tokenId, or sign in with a device login first.",
-            )
-        request("DELETE", "/v1/auth/api-tokens/${encodePathSegment(target)}")
-        if (target == this.tokenId) {
+        if (target == null) {
+            // Revoked and forgotten already: revoking again changes nothing.
+            if (revokedOwn && accessToken == null) return
+            throw ThalovantApiException("No API token id to revoke: pass tokenId, or sign in with a device login first.")
+        }
+        val own = target == this.tokenId
+        try {
+            request("DELETE", "/v1/auth/api-tokens/${encodePathSegment(target)}")
+        } catch (error: ThalovantApiException) {
+            // Revoking the token in use with a token that no longer works: it
+            // is revoked already, which is what was asked.
+            if (!(own && error.statusCode == 401)) throw error
+        }
+        if (own) {
             accessToken = null
             this.tokenId = null
+            revokedOwn = true
         }
     }
 
@@ -739,12 +758,20 @@ public class ThalovantControlPlane(
         return token
     }
 
-    /** Keeps an approved device login's token, and its id, for later calls. */
+    /**
+     * Keeps a sign-in's token, and its id, for later calls.
+     *
+     * Every sign-in goes through here, so [tokenId] always describes the
+     * token in [accessToken]: the id the answer carried, or null. A device
+     * token's id left behind by a later password sign-in would have had
+     * [revokeApiToken] revoke the wrong token.
+     */
     private fun acceptToken(token: JsonObject) {
         val accessToken = jsonText(token["access_token"])
             ?: throw ThalovantApiException("Thalovant API token response did not include access_token.")
         this.accessToken = accessToken
         tokenId = jsonText(token["token_id"])
+        revokedOwn = false
     }
 
     /**
@@ -772,11 +799,7 @@ public class ThalovantControlPlane(
             put("redirect_uri", redirectUri)
         }
         val token = request("POST", "/v1/auth/native/token", body = body, auth = false)
-        val accessToken = (token["access_token"] as? JsonPrimitive)?.takeIf { it.isString }?.content
-        if (accessToken.isNullOrEmpty()) {
-            throw ThalovantApiException("Thalovant API token response did not include access_token.")
-        }
-        this.accessToken = accessToken
+        acceptToken(token)
         return token
     }
 
@@ -1403,7 +1426,10 @@ public class ThalovantControlPlane(
      *   returns at once -- there is nothing to wait on;
      * - `failed` and `timed_out` throw [ThalovantAdmissionFailedException] with
      *   the operation's own code; the connection has to be created again;
-     * - an answer in the 5xx range is ridden out, and any other refusal is
+     * - an answer in the 5xx range is ridden out, and so is a 429, waiting
+     *   the `retry_after_seconds` it names (or the poll interval, when that is
+     *   longer) -- a timeout at once when that is more than is left; any
+     *   other refusal is
      *   thrown as it came -- a token revoked while waiting is
      *   [ThalovantAuthException];
      * - [timeoutMs] passing first throws [ThalovantAdmissionTimeoutException],
@@ -1455,12 +1481,26 @@ public class ThalovantControlPlane(
         val started = System.nanoTime()
         fun remaining(): Long = timeoutMs - (System.nanoTime() - started) / 1_000_000
         while (true) {
+            var wait = pollIntervalMs
             val current = try {
                 request("GET", "/v1/operations/${encodePathSegment(operationId)}")
             } catch (error: ThalovantApiException) {
                 when {
                     error.statusCode == 404 -> return
                     (error.statusCode ?: 0) >= 500 -> null
+                    // A rate limit is ridden out too, for as long as it says --
+                    // unless that is longer than is left: waiting it out would
+                    // only end in the same timeout, later.
+                    error.statusCode == 429 -> {
+                        wait = maxOf(pollIntervalMs, retryAfterMs(error) ?: 0)
+                        if (wait > remaining()) {
+                            throw ThalovantAdmissionTimeoutException(
+                                "The hub did not admit the connection within ${timeoutMs / 1_000.0}s " +
+                                    "(the API asked to slow down); it may still.",
+                            )
+                        }
+                        null
+                    }
                     // Anything else is about this call, not the connection: a
                     // token revoked mid-wait is ThalovantAuthException, and
                     // "sign in again" is the answer to it.
@@ -1486,7 +1526,7 @@ public class ThalovantControlPlane(
                     "The hub did not admit the connection within ${timeoutMs / 1_000.0}s; it may still.",
                 )
             }
-            delay(minOf(pollIntervalMs, left))
+            delay(minOf(wait, left))
         }
     }
 
@@ -1730,11 +1770,47 @@ private fun apiError(response: Response, secrets: List<String>): ThalovantApiExc
     return apiException(apiErrorMessage(response.code, text, secrets), statusCode = response.code, body = text)
 }
 
-/** A 422 whose problem is about `connection_type`: the API does not know the kind asked for. */
+/**
+ * A 422 whose problem is about `connection_type`: the API does not know the kind asked for.
+ *
+ * Read from the problem's `detail` and code, and from each validation error's
+ * `loc` and `msg` (under `errors`, or under `detail` when that is a list) --
+ * never from the rest of the body. A validation error echoes what was sent as
+ * `input`, and the request always carries `spec.connection_type`, so a 422
+ * about any other field would otherwise read as "this kind is not supported".
+ */
 private fun refusesConnectionType(error: ThalovantApiException): Boolean {
     if (error.statusCode != 422) return false
-    val text = error.problem?.toString() ?: error.message.orEmpty()
-    return "connection_type" in text || "connectionType" in text
+    val said = mutableListOf<String>()
+    error.detail?.let(said::add)
+    error.errorCode?.let(said::add)
+    val problem = error.problem ?: EMPTY_JSON_OBJECT
+    for (key in listOf("errors", "detail")) {
+        val entries = problem[key] as? JsonArray ?: continue
+        for (entry in entries) {
+            val row = entry as? JsonObject ?: continue
+            when (val location = row["loc"]) {
+                is JsonArray -> said += location.joinToString(".") { part ->
+                    (part as? JsonPrimitive)?.takeIf { it.isString }?.content ?: part.toString()
+                }
+                is JsonPrimitive -> if (location.isString) said += location.content
+                else -> Unit
+            }
+            (row["msg"] as? JsonPrimitive)?.takeIf { it.isString }?.let { said += it.content }
+        }
+    }
+    return said.any { "connection_type" in it || "connectionType" in it }
+}
+
+/**
+ * How long a 429 asked to wait: `retry_after_seconds` on the problem, or on a
+ * `detail` object inside it, where the API's quota refusals put their fields.
+ */
+private fun retryAfterMs(error: ThalovantApiException): Long? {
+    val problem = error.problem ?: return null
+    val seconds = jsonNumber(problem["retry_after_seconds"])
+        ?: jsonNumber((problem["detail"] as? JsonObject)?.get("retry_after_seconds"))
+    return seconds?.takeIf { it >= 0 }?.let { (it * 1_000).roundToLong() }
 }
 
 /** The body of `POST /v1/auth/device/authorize`: scopes when given, a client name when not empty. */

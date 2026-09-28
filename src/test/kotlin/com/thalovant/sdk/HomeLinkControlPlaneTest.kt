@@ -82,8 +82,8 @@ class HomeLinkControlPlaneTest {
         assertEquals("Bearer tvt-1", revoke.getHeader("Authorization"))
         assertNull(plane.accessToken)
         assertNull(plane.tokenId)
-        // Nothing left to revoke, and nothing is sent.
-        assertFailsWith<ThalovantApiException> { plane.revokeApiToken() }
+        // Revoked already: again is not an error, and nothing is sent.
+        plane.revokeApiToken()
         assertEquals(3, server.requestCount)
     }
 
@@ -140,6 +140,70 @@ class HomeLinkControlPlaneTest {
         assertNull(result.connectionType)
         assertNull(result.operation)
         assertEquals(1, server.requestCount)
+    }
+
+    @Test
+    fun `every sign-in sets the token id, so a revoke never reaches another token`(): Unit = runBlocking {
+        answer(200, """{"access_token":"device-token","token_id":"device-1"}""")
+        val plane = api(null)
+        plane.pollDeviceLogin("dc-1")
+        assertEquals("device-1", plane.tokenId)
+        // A password sign-in answers with no id: the device token's is not kept.
+        answer(200, """{"access_token":"session-token","token_type":"bearer"}""")
+        plane.login("me@example.com", "correct horse battery")
+        assertEquals("session-token", plane.accessToken)
+        assertNull(plane.tokenId)
+        assertFailsWith<ThalovantApiException> { plane.revokeApiToken() }
+        // A native sign-in mints an API token and says which.
+        answer(200, """{"access_token":"native-token","token_id":"native-1"}""")
+        plane.completeNativeSignIn("code", "verifier", "thalovant-android", "com.thalovant.app:/callback")
+        assertEquals("native-1", plane.tokenId)
+    }
+
+    @Test
+    fun `revoking the token in use twice is not an error, and another token's 401 still is`(): Unit = runBlocking {
+        answer(401, """{"detail":"Could not validate credentials"}""")
+        val plane = api()
+        plane.tokenId = "mine"
+        plane.revokeApiToken()
+        assertNull(plane.accessToken)
+        assertNull(plane.tokenId)
+        // Revoked and forgotten: again sends nothing and succeeds, until the next sign-in.
+        plane.revokeApiToken()
+        assertEquals(1, server.requestCount)
+        answer(401, """{"detail":"Could not validate credentials"}""")
+        val other = api().also { it.tokenId = "mine" }
+        assertFailsWith<ThalovantAuthException> { other.revokeApiToken("theirs") }
+        assertEquals("synthetic-token", other.accessToken)
+        assertEquals("mine", other.tokenId)
+    }
+
+    @Test
+    fun `a 422 about another field is not an unsupported kind, even when it echoes the kind back`(): Unit = runBlocking {
+        answer(422, """{"detail":[{"type":"string_too_long","loc":["body","name"],"msg":"String should have at most 64 characters","input":{"name":"x","spec":{"connection_type":"home_assistant"}}}]}""")
+        val other = assertFailsWith<ThalovantApiException> {
+            api().createClientIdentity(hub, CreateClientIdentityOptions(name = "HA", connectionType = CONNECTION_TYPE_HOME_ASSISTANT))
+        }
+        assertEquals(ThalovantApiException::class, other::class)
+        answer(422, """{"detail":[{"type":"literal_error","loc":["body","spec","connection_type"],"msg":"Input should be 'voice_satellite'","input":"home_assistant"}]}""")
+        assertFailsWith<ThalovantUnsupportedConnectionTypeException> {
+            api().createClientIdentity(hub, CreateClientIdentityOptions(name = "HA", connectionType = CONNECTION_TYPE_HOME_ASSISTANT))
+        }
+    }
+
+    @Test
+    fun `a rate limit while waiting is ridden out for as long as it says`(): Unit = runBlocking {
+        answer(429, """{"detail":{"code":"rate_limited","retry_after_seconds":0.3}}""")
+        answer(200, """{"id":"op-1","status":"ready"}""")
+        val operation = OperationResource(
+            id = "op-1", kind = "client.sync", aggregateType = "client", status = OperationStatus.REQUESTED,
+            createdAt = "2026-09-27T10:00:00Z", updatedAt = "2026-09-27T10:00:00Z",
+        )
+        val started = System.nanoTime()
+        api().waitForAdmission(operation, timeoutMs = 5_000, pollIntervalMs = 5)
+        val tookMs = (System.nanoTime() - started) / 1_000_000
+        assertEquals(2, server.requestCount)
+        assertTrue(tookMs >= 300, "waited $tookMs ms")
     }
 
     @Test
