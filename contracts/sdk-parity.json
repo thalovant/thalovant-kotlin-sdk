@@ -28,7 +28,7 @@
       "tests": {
         "src/test/kotlin/com/thalovant/sdk/BinaryFrameTest.kt": "a47fbd74ae197d24393b8de56594fbbb3e647ca930f9cb3016933160cd980251",
         "src/test/kotlin/com/thalovant/sdk/ConformanceRecord.kt": "2c847de0ad9a9a615be85590242141477c3728d7bb90d5008fbaeebb4a8a4361",
-        "src/test/kotlin/com/thalovant/sdk/ReviewFindingsTest.kt": "785f6b6d272f7d1c7f4ec8c8a58fa81c4787e20ea1726a62a460e4344c86ac6d"
+        "src/test/kotlin/com/thalovant/sdk/ReviewFindingsTest.kt": "21fa8459c61d031ed527e7a0a8fcc25b11a53284ae3afe785fbf9be6e4bac6c0"
       },
       "vectors": {
         "binary-frames.json": "src/test/resources/thalovant/binary-frames.json",
@@ -66,7 +66,7 @@
         "src/test/kotlin/com/thalovant/sdk/ConformanceRecord.kt": "2c847de0ad9a9a615be85590242141477c3728d7bb90d5008fbaeebb4a8a4361",
         "src/test/kotlin/com/thalovant/sdk/HomeLinkControlPlaneTest.kt": "bb82686f935cfc10b46c480595f59d65d2fda4e7b93a9d4055f20827b5ef89f9",
         "src/test/kotlin/com/thalovant/sdk/HomeLinkVectorsTest.kt": "08d19d0c4957b674319c1fbd9274f78f2631c22d17692a8e49861a991b15fd5c",
-        "src/test/kotlin/com/thalovant/sdk/ReviewFindingsTest.kt": "785f6b6d272f7d1c7f4ec8c8a58fa81c4787e20ea1726a62a460e4344c86ac6d"
+        "src/test/kotlin/com/thalovant/sdk/ReviewFindingsTest.kt": "21fa8459c61d031ed527e7a0a8fcc25b11a53284ae3afe785fbf9be6e4bac6c0"
       },
       "vectors": {
         "connection-kinds-vectors.json": "src/test/resources/thalovant/connection-kinds-vectors.json"
@@ -113,7 +113,7 @@
         "src/test/kotlin/com/thalovant/sdk/ConformanceRecord.kt": "2c847de0ad9a9a615be85590242141477c3728d7bb90d5008fbaeebb4a8a4361",
         "src/test/kotlin/com/thalovant/sdk/HomeLinkControlPlaneTest.kt": "bb82686f935cfc10b46c480595f59d65d2fda4e7b93a9d4055f20827b5ef89f9",
         "src/test/kotlin/com/thalovant/sdk/HomeLinkVectorsTest.kt": "08d19d0c4957b674319c1fbd9274f78f2631c22d17692a8e49861a991b15fd5c",
-        "src/test/kotlin/com/thalovant/sdk/ReviewFindingsTest.kt": "785f6b6d272f7d1c7f4ec8c8a58fa81c4787e20ea1726a62a460e4344c86ac6d"
+        "src/test/kotlin/com/thalovant/sdk/ReviewFindingsTest.kt": "21fa8459c61d031ed527e7a0a8fcc25b11a53284ae3afe785fbf9be6e4bac6c0"
       },
       "vectors": {
         "device-login-vectors.json": "src/test/resources/thalovant/device-login-vectors.json"
@@ -135,7 +135,7 @@
         "src/test/kotlin/com/thalovant/sdk/HomeLinkSessionTest.kt": "b5d10523a21ad87b76d4033a8f1a1a6a9e6d1f70cfc0d909ae301d182fccb5b6",
         "src/test/kotlin/com/thalovant/sdk/HomeLinkVectorsTest.kt": "08d19d0c4957b674319c1fbd9274f78f2631c22d17692a8e49861a991b15fd5c",
         "src/test/kotlin/com/thalovant/sdk/LinkKeepingVectorsTest.kt": "1e1555d02c44b9ec63b514ef68c931688c79009b5777f30aa9f1628b3347ec40",
-        "src/test/kotlin/com/thalovant/sdk/ReviewFindingsTest.kt": "785f6b6d272f7d1c7f4ec8c8a58fa81c4787e20ea1726a62a460e4344c86ac6d"
+        "src/test/kotlin/com/thalovant/sdk/ReviewFindingsTest.kt": "21fa8459c61d031ed527e7a0a8fcc25b11a53284ae3afe785fbf9be6e4bac6c0"
       },
       "vectors": {
         "home-link-vectors.json": "src/test/resources/thalovant/home-link-vectors.json",
@@ -145,7 +145,7 @@
     "identity": {
       "implementation": {
         "src/main/kotlin/com/thalovant/sdk/Identity.kt": "9746344453b826add1fe0233116f20774c590c96f791e1534ea8eaa73cd513a4",
-        "src/main/kotlin/com/thalovant/sdk/NoiseStore.kt": "4d98e580bc23245c17d598e7611a032b7994ab1780d28ab7839edd32855b8d9a",
+        "src/main/kotlin/com/thalovant/sdk/NoiseStore.kt": "083170a3a9ee0d854e431f85021023d44ce975dec2db6107c51d081798809348",
         "src/main/kotlin/com/thalovant/sdk/Protocols.kt": "24f103b3ca1897d5ee2661f9acfe73daaa18a6951fb0fb842291afade9c87bae"
       },
       "reason": "Applicable public behavior is implemented and exercised by the named regression suites and shared fixtures. An identity read from a file (ThalovantIdentity.sourcePath) keeps its Noise key in HiveMindNoiseStore.forIdentity's folder beside that file, copying -- never moving -- the key and pins this SDK kept in the shared default when that key has met the hub (ReviewFindingsTest).",
@@ -153,7 +153,7 @@
       "tests": {
         "src/test/kotlin/com/thalovant/sdk/IdentityTest.kt": "b0175ee7cb24c2b82aaa8aaf8dfc5c02b745b2aa0abd50ee52d826b8c5f35b0b",
         "src/test/kotlin/com/thalovant/sdk/ProtocolsTest.kt": "e38ed5cda9a2354ee016d0ab40293d6e6285c0f49336f4e047afbce38a8e698d",
-        "src/test/kotlin/com/thalovant/sdk/ReviewFindingsTest.kt": "785f6b6d272f7d1c7f4ec8c8a58fa81c4787e20ea1726a62a460e4344c86ac6d"
+        "src/test/kotlin/com/thalovant/sdk/ReviewFindingsTest.kt": "21fa8459c61d031ed527e7a0a8fcc25b11a53284ae3afe785fbf9be6e4bac6c0"
       }
     },
     "inventory": {
@@ -178,13 +178,13 @@
       "implementation": {
         "src/main/kotlin/com/thalovant/sdk/Intents.kt": "7f2a1ad7b09eee6ec23fd869eedbdb8994dd2a55650a25a027b7d5ccbefccbae",
         "src/main/kotlin/com/thalovant/sdk/Listing.kt": "3a8c71c5d0e51102d73038ca4fc949bc172ca80c9e8472ec21c8f94ca5f24c5b",
-        "src/main/kotlin/com/thalovant/sdk/RequestHelpers.kt": "2142996cd667ca20b6dfe75979fd0a19d03704e2b8ef3545b50348cc2d44eac9"
+        "src/main/kotlin/com/thalovant/sdk/RequestHelpers.kt": "88e3a683252666388d1218e778612cfec12c68557e60e4dd63cac03192d31605"
       },
-      "reason": "Applicable public behavior is implemented and exercised by the named regression suites and shared fixtures. speakable() resolves optional parts and groups in one pass each with a stack (RequestHelpers.kt), not a regex pass per nesting level.",
+      "reason": "Applicable public behavior is implemented and exercised by the named regression suites and shared fixtures. speakable() is linear (RequestHelpers.kt): one stack pass each for optional parts and groups, a group's chosen branch linked into the enclosing one rather than copied per level, checked against the reference's resolve-on-close on 50,000 random patterns (ReviewFindingsTest).",
       "status": "required",
       "tests": {
         "src/test/kotlin/com/thalovant/sdk/ListingTest.kt": "cbc0760072031b5a8d32de630282458ea3f5534b5c82dbba38eaeda05f234fa1",
-        "src/test/kotlin/com/thalovant/sdk/ReviewFindingsTest.kt": "785f6b6d272f7d1c7f4ec8c8a58fa81c4787e20ea1726a62a460e4344c86ac6d",
+        "src/test/kotlin/com/thalovant/sdk/ReviewFindingsTest.kt": "21fa8459c61d031ed527e7a0a8fcc25b11a53284ae3afe785fbf9be6e4bac6c0",
         "src/test/resources/thalovant/question-vectors.json": "a6ae21cb27eac6a33cf1026677f0c36be50f0e13faa7ce724bedc9a3b8bb8386"
       },
       "vectors": {

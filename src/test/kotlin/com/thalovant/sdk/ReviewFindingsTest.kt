@@ -107,6 +107,47 @@ class ReviewFindingsTest {
         val started = System.nanoTime()
         assertEquals("x", speakable(deep))
         assertTrue((System.nanoTime() - started) / 1_000_000 < 2_000, "a pass per nesting level")
+        // A long branch nested deep is linked into each group around it, not
+        // copied at every level: 16,000 x 16,000 would be 256 million visits.
+        val long = "(".repeat(16_000) + "x".repeat(16_000) + ")".repeat(16_000)
+        val startedLong = System.nanoTime()
+        assertEquals("x".repeat(16_000), speakable(long))
+        assertTrue((System.nanoTime() - startedLong) / 1_000_000 < 2_000, "a copy per nesting level")
+    }
+
+    @Test
+    fun `speakable says what the reference's resolve-on-close says, on any pattern`() {
+        // The reference's _resolve_nested and _choose_branch, as written.
+        fun resolveNested(text: String, opening: Char, closing: Char, resolve: (String) -> String): String {
+            val frames = ArrayList<StringBuilder>().apply { add(StringBuilder()) }
+            for (char in text) {
+                when {
+                    char == opening -> frames.add(StringBuilder())
+                    char == closing && frames.size > 1 -> {
+                        val inside = frames.removeAt(frames.size - 1).toString()
+                        frames[frames.size - 1].append(resolve(inside))
+                    }
+                    else -> frames[frames.size - 1].append(char)
+                }
+            }
+            val out = StringBuilder(frames[0])
+            for (index in 1 until frames.size) out.append(opening).append(frames[index])
+            return out.toString()
+        }
+        fun reference(pattern: String): String {
+            val text = resolveNested(resolveNested(pattern, '[', ']') { "" }, '(', ')') { inside ->
+                val options = inside.split('|').map { it.trim() }
+                val real = options.filter { it.isNotEmpty() }
+                if (real.size < options.size && real.size <= 1) "" else real.firstOrNull().orEmpty()
+            }
+            return text.replace(Regex("\\s{2,}"), " ").trim(' ', ',')
+        }
+        val alphabet = "()[]| \tab,"
+        val random = java.util.Random(91)
+        repeat(50_000) {
+            val pattern = String(CharArray(random.nextInt(24)) { alphabet[random.nextInt(alphabet.length)] })
+            assertEquals(reference(pattern), speakable(pattern), pattern)
+        }
     }
 
     private fun deflate(bytes: ByteArray, whole: Boolean = true): ByteArray {
@@ -203,6 +244,19 @@ class ReviewFindingsTest {
             val fresh = HiveMindNoiseStore.forIdentity(ThalovantIdentity.fromFile(identityFile("fresh")))
             assertNull(fresh.pin("hub-b"))
             assertFalse(legacyKey.contentEquals(fresh.staticKey()))
+            // A pin that cannot be copied leaves the old key behind too: the
+            // old key without its pin would let an XX handshake pin anything.
+            legacy.verifyOrPin("hub-c", ByteArray(32) { 3 })
+            val unreadable = Files.list(legacy.directory).use { files ->
+                files.filter { it.fileName.toString().startsWith("noise-pin-") }.toList()
+            }.first { runCatching { Files.readString(it).trim() == "03".repeat(32) }.getOrDefault(false) }
+            runCatching { Files.setPosixFilePermissions(unreadable, java.nio.file.attribute.PosixFilePermissions.fromString("---------")) }
+            if (!Files.isReadable(unreadable)) {
+                val partial = HiveMindNoiseStore.forIdentity(ThalovantIdentity.fromFile(identityFile("partial")))
+                partial.pin("hub-c")
+                assertFalse(Files.exists(partial.directory.resolve("noise-static.key")), "no key without its pin")
+                assertFalse(legacyKey.contentEquals(partial.staticKey()))
+            }
             // An identity from anywhere else keeps the shared default.
             val plain = ThalovantIdentity(buildJsonObject { put("access_key", "a"); put("password", "p"); put("site_id", "s"); put("default_master", "wss://h") })
             assertEquals(HiveMindNoiseStore.defaultDirectory(), HiveMindNoiseStore.forIdentity(plain).directory)

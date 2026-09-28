@@ -59,7 +59,11 @@ public class HiveMindNoiseStore(public val directory: Path = defaultDirectory())
         try {
             val old = HiveMindNoiseStore(legacy)
             if (!Files.exists(legacy.resolve(STATIC_KEY), NOFOLLOW_LINKS) || !Files.exists(old.pinFile(nodeId), NOFOLLOW_LINKS)) return
-            writeNew(key, Noise.hex(old.readKey(legacy.resolve(STATIC_KEY))))
+            val legacyKey = old.readKey(legacy.resolve(STATIC_KEY))
+            // Pins first, the key last: a copy that fails half way leaves
+            // pins and a fresh key -- the hub's key still checked against its
+            // pin -- never the old key without the pin that went with it,
+            // which would let the next XX handshake pin whatever answers.
             Files.newDirectoryStream(legacy, "noise-pin-*.key").use { pins ->
                 for (pin in pins) {
                     val target = directory.resolve(pin.fileName.toString())
@@ -68,6 +72,8 @@ public class HiveMindNoiseStore(public val directory: Path = defaultDirectory())
                     }
                 }
             }
+            if (!Files.exists(pinFile(nodeId), NOFOLLOW_LINKS)) return
+            writeNew(key, Noise.hex(legacyKey))
         } catch (_: java.nio.file.FileAlreadyExistsException) {
             // Another process adopted it first.
         } catch (_: Exception) {
