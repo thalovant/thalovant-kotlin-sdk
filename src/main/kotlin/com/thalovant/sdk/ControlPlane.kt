@@ -485,7 +485,7 @@ public class BootstrapIdentityResult internal constructor(
  */
 public class ThalovantControlPlane(
     apiUrl: String = DEFAULT_CONTROL_API_URL,
-    public var accessToken: String? = null,
+    @Volatile public var accessToken: String? = null,
     public val userAgent: String = DEFAULT_USER_AGENT,
     httpClient: OkHttpClient = defaultHttpClient,
 ) {
@@ -506,7 +506,12 @@ public class ThalovantControlPlane(
      * kept that way (RFC 8628 §3.5). Bounded: a caller that begins sign-ins
      * and abandons them must not grow this for the life of the client.
      */
-    /** Keeps a sign-in's token and its id together against a revoke finishing at the same time. */
+    /**
+     * Keeps a sign-in's token and its id together against a revoke finishing at
+     * the same time, on another thread: a sign-in writes both under it, and a
+     * revoke checks and clears both under it -- never across its DELETE -- so
+     * one can never land between the other's two writes.
+     */
     private val tokenLock = Any()
 
     /** Whether the token this client signed in with was revoked and forgotten; see [revokeApiToken]. */

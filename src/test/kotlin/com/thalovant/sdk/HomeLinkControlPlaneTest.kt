@@ -113,6 +113,25 @@ class HomeLinkControlPlaneTest {
     }
 
     @Test
+    fun `a revoke racing a sign-in on other threads never splits a token from its id`(): Unit = runBlocking {
+        server.dispatcher = object : okhttp3.mockwebserver.Dispatcher() {
+            override fun dispatch(request: okhttp3.mockwebserver.RecordedRequest): MockResponse =
+                if (request.method == "DELETE") MockResponse().setResponseCode(204)
+                else MockResponse().setResponseCode(200).setHeader("Content-Type", "application/json")
+                    .setBody("""{"access_token":"new-token","token_id":"new-id"}""")
+        }
+        repeat(100) {
+            val plane = api("old-token").also { it.tokenId = "old-id" }
+            val revoking = launch(kotlinx.coroutines.Dispatchers.IO) { plane.revokeApiToken() }
+            val signing = launch(kotlinx.coroutines.Dispatchers.Default) { plane.pollDeviceLogin("dc-1") }
+            revoking.join()
+            signing.join()
+            // Whichever finished first, the new sign-in survives whole.
+            assertEquals("new-token" to "new-id", plane.accessToken to plane.tokenId)
+        }
+    }
+
+    @Test
     fun `revoking another token keeps the one in use`(): Unit = runBlocking {
         answer(204)
         val plane = api()

@@ -459,6 +459,18 @@ class HomeLinkSessionTest {
         assertEquals("", plainSpeech(" <break time=\"1s\"/> "))
         // A long attribute is scanned, not recursed through.
         assertEquals("Ding", plainSpeech("<audio src='" + "a".repeat(200_000) + "'>Ding</audio>"))
+        // The documented rule, not a pattern's: a tag runs from `<` and a letter to
+        // the next `>` outside quotes, whatever lies between.
+        assertEquals("x", plainSpeech("<a,b>x"))
+        assertEquals("c", plainSpeech("<a <b>c"))
+        assertEquals("xz", plainSpeech("x<a \"q>\" y>z"))
+        assertEquals("<a \"unclosed>t", plainSpeech("<a \"unclosed>t"))
+        // Linear on text built to make a scan per `<`, or a backtracking pattern, crawl.
+        val started = System.nanoTime()
+        for (evil in listOf("<a" + " ".repeat(200_000), "<a".repeat(100_000), "<!--".repeat(50_000), "<?".repeat(100_000), "<a '".repeat(50_000))) {
+            plainSpeech(evil)
+        }
+        assertTrue((System.nanoTime() - started) / 1_000_000 < 2_000, "not linear")
         // U+001C..U+001F are not White_Space: kept, at the ends too.
         assertEquals("\u001Ca\u001Cb\u001F", plainSpeech(" \u001Ca\u001Cb\u001F\u3000"))
     }

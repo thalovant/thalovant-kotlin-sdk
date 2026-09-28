@@ -367,60 +367,86 @@ public suspend fun ThalovantClient.answerHomeRequests(
 
 /**
  * Removes markup -- tags, comments, processing instructions -- and nothing
- * else; see [plainSpeech]. A scanner rather than a regular expression: the
- * reference's pattern repeats a group per attribute character, which the JVM's
- * regex engine walks by recursion, one stack frame each.
+ * else; see [plainSpeech]. A tag is `<` or `</` immediately followed by an
+ * ASCII letter, then everything up to the next `>` that is not inside a
+ * quoted value; a quote with no partner means there is no tag.
+ *
+ * Linear whatever the text holds, which comes off the network: where a tag
+ * scanned from each position would end is computed once, in one pass from the
+ * end, and a comment or instruction closer found missing from some point on is
+ * not searched for again from any later one. A regular expression for the same
+ * rule backtracks, and a scan per `<` is quadratic on text such as `<a<a<a...`.
  */
 internal fun stripMarkup(text: String): String {
     if ('<' !in text) return text
+    var ends: IntArray? = null
+    val missing = HashMap<String, Int>(2)
     val out = StringBuilder(text.length)
     var index = 0
     while (index < text.length) {
-        val end = if (text[index] == '<') markupEnd(text, index) else -1
-        if (end < 0) {
-            out.append(text[index])
-            index++
-        } else {
-            index = end
+        if (text[index] != '<') {
+            val next = text.indexOf('<', index).let { if (it < 0) text.length else it }
+            out.append(text, index, next)
+            index = next
+            continue
         }
+        val closer = when {
+            text.startsWith("<!--", index) -> "-->"
+            text.startsWith("<?", index) -> "?>"
+            else -> null
+        }
+        if (closer != null) {
+            val begin = index + if (closer == "-->") 4 else 2
+            val found = if (begin < (missing[closer] ?: Int.MAX_VALUE)) {
+                text.indexOf(closer, begin).also { if (it < 0) missing[closer] = begin }
+            } else {
+                -1
+            }
+            if (found >= 0) {
+                index = found + closer.length
+                continue
+            }
+        } else {
+            val name = if (index + 1 < text.length && text[index + 1] == '/') index + 2 else index + 1
+            if (name < text.length && isAsciiLetter(text[name])) {
+                val end = (ends ?: tagEnds(text).also { ends = it })[name + 1]
+                if (end >= 0) {
+                    index = end + 1
+                    continue
+                }
+            }
+        }
+        out.append('<')
+        index++
     }
     return out.toString()
 }
 
-/** Where the markup construct opening at [start] ends, or -1 when none opens there. */
-private fun markupEnd(text: String, start: Int): Int {
-    if (text.startsWith("<!--", start)) {
-        text.indexOf("-->", start + 4).takeIf { it >= 0 }?.let { return it + 3 }
-    }
-    if (text.startsWith("<?", start)) {
-        text.indexOf("?>", start + 2).takeIf { it >= 0 }?.let { return it + 2 }
-    }
-    var index = start + 1
-    if (index < text.length && text[index] == '/') index++
-    if (index >= text.length || !isAsciiLetter(text[index])) return -1
-    index++
-    while (index < text.length && (isAsciiLetter(text[index]) || text[index].isAsciiDigit() || text[index] in "._:-")) index++
-    if (text.startsWith(">", index)) return index + 1
-    if (text.startsWith("/>", index)) return index + 2
-    if (index >= text.length || !isPythonSpace(text[index].code)) return -1
-    // Attributes: anything but `<` and `>`, a quoted value holding anything.
-    while (index < text.length) {
+/**
+ * For every position, where a tag's `>` is when scanning from there, or -1.
+ * A `>` ends the scan; a quote skips to its partner, and one with no partner
+ * ends it with no tag; anything else moves on. So the answer from one
+ * position is the answer from the next, or from just past the partner quote.
+ */
+private fun tagEnds(text: String): IntArray {
+    val ends = IntArray(text.length + 1) { -1 }
+    var afterDouble = -1
+    var afterSingle = -1
+    for (index in text.length - 1 downTo 0) {
         when (val char = text[index]) {
-            '>' -> return index + 1
-            '<' -> return -1
-            '"', '\'' -> index = text.indexOf(char, index + 1).takeIf { it >= 0 }?.plus(1) ?: return -1
-            else -> index++
+            '>' -> ends[index] = index
+            '"', '\'' -> {
+                val partner = if (char == '"') afterDouble else afterSingle
+                ends[index] = if (partner < 0) -1 else ends[partner + 1]
+                if (char == '"') afterDouble = index else afterSingle = index
+            }
+            else -> ends[index] = ends[index + 1]
         }
     }
-    return -1
+    return ends
 }
 
 private fun isAsciiLetter(char: Char): Boolean = char in 'a'..'z' || char in 'A'..'Z'
-
-private fun Char.isAsciiDigit(): Boolean = this in '0'..'9'
-
-/** White space as the reference's regular expressions read it inside a tag: Python's `str.isspace`. */
-private fun isPythonSpace(point: Int): Boolean = isListingSpace(point)
 
 /**
  * The Unicode White_Space property, spelled out so every SDK collapses the
