@@ -118,7 +118,7 @@
     },
     "home-link": {
       "implementation": {
-        "src/main/kotlin/com/thalovant/sdk/Home.kt": "25f938fc27eecd0a59ed5841d0b9b2c14d2baf28860ae688e71fb89fe40b5ee8",
+        "src/main/kotlin/com/thalovant/sdk/Home.kt": "073c11ee060ff358ea51577d9cc61f1cc67037e7427f7d0736e04f74534752ed",
         "src/main/kotlin/com/thalovant/sdk/Client.kt": "69b91df89b0b69e5fe1258830888787008126af851913c3eee1f2f64d0388535",
         "src/main/kotlin/com/thalovant/sdk/Events.kt": "afc9ad7ca7fa5018fc2a836e9976e1ba8a33e24b915a5ce1cdaf1efac1b948a1",
         "src/main/kotlin/com/thalovant/sdk/Session.kt": "fff21253289e18c138d45c12f23bed44360f1c1c6c1e7364def862c1feabf2f0",
@@ -129,7 +129,7 @@
       "status": "required",
       "tests": {
         "src/test/kotlin/com/thalovant/sdk/HomeLinkVectorsTest.kt": "41b75b2038b5e718c28df9d31dc12caf3bf1749ddade69653f32b5441ffa43ba",
-        "src/test/kotlin/com/thalovant/sdk/HomeLinkSessionTest.kt": "f7d5b56e639892449b465f02877aa27f00e1210b8e155083e15a9d3d0380cec2",
+        "src/test/kotlin/com/thalovant/sdk/HomeLinkSessionTest.kt": "baaf4ab470fcc4e590d178d60b8084fe8d3cf5f8efd6b7e05db385b24db7f9ed",
         "src/test/kotlin/com/thalovant/sdk/FakeHub.kt": "5308d5c85d2941fdac334f895c0bbc586aede51c833d7a1216863619afa0b5ec",
         "src/test/kotlin/com/thalovant/sdk/ConformanceRecord.kt": "2994d45b23339c3e23cd3f21d0885c9ad8c120c908d86b22ea306f7e0867353f"
       },
@@ -236,7 +236,7 @@
       "reason": "Applicable public behavior is implemented and exercised by the named regression suites and shared fixtures. The connected-client factory owns failed connection cleanup; Python performs that dial internally and retains failed retirement before replacement. HubSession.run keeps the link by the same policy as the reference's AsyncHubSession.run, and reply never waits behind a running ask (HomeLinkSessionTest).",
       "status": "required",
       "tests": {
-        "src/test/kotlin/com/thalovant/sdk/HomeLinkSessionTest.kt": "f7d5b56e639892449b465f02877aa27f00e1210b8e155083e15a9d3d0380cec2",
+        "src/test/kotlin/com/thalovant/sdk/HomeLinkSessionTest.kt": "baaf4ab470fcc4e590d178d60b8084fe8d3cf5f8efd6b7e05db385b24db7f9ed",
         "src/test/kotlin/com/thalovant/sdk/SessionInventoryTest.kt": "8564690078ffb87b9f93ad2c93df7bbef16c5328a2b99be82791c42f19e6073a"
       }
     }

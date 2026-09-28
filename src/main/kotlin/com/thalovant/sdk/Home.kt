@@ -235,7 +235,9 @@ internal suspend fun answerHomeRequestWith(
             // cancelled itself, which is a failure to handle like any other.
             if (!currentCoroutineContext().isActive) throw cancelled
             HomeAnswer(responseType = ThalovantHome.ERROR, errorCode = ThalovantHome.FAILED_TO_HANDLE)
-        } catch (_: Exception) {
+        } catch (_: Throwable) {
+            // An Error too: a handler still at TODO() throws NotImplementedError,
+            // and the hub is owed an answer all the same.
             HomeAnswer(responseType = ThalovantHome.ERROR, errorCode = ThalovantHome.FAILED_TO_HANDLE)
         }
         val payload = homeResponse(request, answer)
@@ -267,8 +269,9 @@ internal suspend fun serveHomeRequests(
                         answerHomeRequestWith(event, timeoutMs, handler, send)
                     } catch (cancelled: CancellationException) {
                         throw cancelled
-                    } catch (_: Exception) {
-                        // Nothing to answer on; see above.
+                    } catch (_: Throwable) {
+                        // Nothing to answer on; see above. One request that
+                        // could not be answered never ends the link.
                     }
                 }
             }

@@ -317,6 +317,33 @@ class HomeLinkSessionTest {
     }
 
     @Test
+    fun `a handler still at TODO is answered, and the link answers the next request`(): Unit = runBlocking {
+        val outbox = Outbox()
+        val client = outbox.client()
+        val delivered = CopyOnWriteArrayList<(ThalovantEvent) -> Unit>()
+        var calls = 0
+        val link = launch(Dispatchers.Default) {
+            serveHomeRequests(
+                subscribe = { listener -> delivered += listener; ThalovantSubscription { delivered.remove(listener) } },
+                timeoutMs = 1_000,
+                handler = { if (++calls == 1) TODO("not wired to Assist yet") else HomeAnswer(speech = "Done.") },
+            ) { event, payload -> client.reply(event, ThalovantHome.RESPONSE, payload) }
+        }
+        try {
+            eventually { delivered.isNotEmpty() }
+            delivered.single()(ThalovantEvent(ThalovantHome.REQUEST, request))
+            eventually { outbox.emitted.size == 1 }
+            assertEquals(ThalovantHome.FAILED_TO_HANDLE, outbox.emitted[0].second["error_code"]?.jsonPrimitive?.content)
+            delivered.single()(ThalovantEvent(ThalovantHome.REQUEST, request))
+            eventually { outbox.emitted.size == 2 }
+            assertEquals("Done.", outbox.emitted[1].second["speech"]?.jsonPrimitive?.content)
+        } finally {
+            link.cancelAndJoin()
+        }
+        assertTrue(delivered.isEmpty(), "cancelling the link unsubscribes it")
+    }
+
+    @Test
     fun `a null answer is unknown and conversation ids are echoed or replaced`() {
         val asked = HomeRequest("r9", "is it raining", "en-US", conversationId = "conv-1")
         val unknown = homeResponse(asked, null)
