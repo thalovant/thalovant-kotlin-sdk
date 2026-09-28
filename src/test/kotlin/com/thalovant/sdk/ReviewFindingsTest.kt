@@ -264,6 +264,19 @@ class ReviewFindingsTest {
                 assertContentEquals(legacyKey, other.staticKey())
                 assertNull(other.pin("hub-c"), "the unreadable pin is not copied")
             }
+            // Nor does an old folder that cannot be listed, once this hub's pin is across.
+            val searchOnly = java.nio.file.attribute.PosixFilePermissions.fromString("--x------")
+            runCatching { Files.setPosixFilePermissions(legacy.directory, searchOnly) }
+            try {
+                val listing = runCatching { Files.list(legacy.directory).use { it.count() } }
+                if (listing.isFailure) {
+                    val listless = HiveMindNoiseStore.forIdentity(ThalovantIdentity.fromFile(identityFile("listless")))
+                    assertContentEquals(ByteArray(32) { 1 }, listless.pin("hub-a"))
+                    assertContentEquals(legacyKey, listless.staticKey())
+                }
+            } finally {
+                runCatching { Files.setPosixFilePermissions(legacy.directory, java.nio.file.attribute.PosixFilePermissions.fromString("rwx------")) }
+            }
             // An identity from anywhere else keeps the shared default.
             val plain = ThalovantIdentity(buildJsonObject { put("access_key", "a"); put("password", "p"); put("site_id", "s"); put("default_master", "wss://h") })
             assertEquals(HiveMindNoiseStore.defaultDirectory(), HiveMindNoiseStore.forIdentity(plain).directory)

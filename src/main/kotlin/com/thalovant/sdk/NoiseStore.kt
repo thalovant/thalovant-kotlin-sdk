@@ -71,14 +71,17 @@ public class HiveMindNoiseStore(public val directory: Path = defaultDirectory())
             if (!Files.exists(own, NOFOLLOW_LINKS)) {
                 try { writeNew(own, Noise.hex(old.readKey(old.pinFile(nodeId)))) } catch (_: java.nio.file.FileAlreadyExistsException) { }
             }
-            Files.newDirectoryStream(legacy, "noise-pin-*.key").use { pins ->
-                for (pin in pins) {
-                    val target = directory.resolve(pin.fileName.toString())
-                    if (target == own || Files.exists(target, NOFOLLOW_LINKS)) continue
-                    // Best effort: that hub checks its key on first use, as any new hub does.
-                    try { writeNew(target, Noise.hex(old.readKey(pin))) } catch (_: Exception) { }
+            // Best effort, the listing too: another hub checks its key on
+            // first use, as any new hub does.
+            try {
+                Files.newDirectoryStream(legacy, "noise-pin-*.key").use { pins ->
+                    for (pin in pins) {
+                        val target = directory.resolve(pin.fileName.toString())
+                        if (target == own || Files.exists(target, NOFOLLOW_LINKS)) continue
+                        try { writeNew(target, Noise.hex(old.readKey(pin))) } catch (_: Exception) { }
+                    }
                 }
-            }
+            } catch (_: java.io.IOException) { }
             if (!Files.exists(own, NOFOLLOW_LINKS)) return
             writeNew(key, Noise.hex(legacyKey))
         } catch (_: java.nio.file.FileAlreadyExistsException) {
