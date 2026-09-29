@@ -56,20 +56,32 @@ public class HiveMindNoiseStore(public val directory: Path = defaultDirectory())
         adoptFrom = null
         val key = directory.resolve(STATIC_KEY)
         if (Files.exists(key, NOFOLLOW_LINKS) || legacy == directory) return
+        // What the old folder holds. Anything wrong there copies nothing:
+        // this folder starts afresh, as a new identity would.
+        val old: HiveMindNoiseStore
+        val legacyKey: ByteArray
+        val legacyPin: ByteArray?
         try {
-            val old = HiveMindNoiseStore(legacy)
+            old = HiveMindNoiseStore(legacy)
             if (!Files.exists(legacy.resolve(STATIC_KEY), NOFOLLOW_LINKS) || !Files.exists(old.pinFile(nodeId), NOFOLLOW_LINKS)) return
-            val legacyKey = old.readKey(legacy.resolve(STATIC_KEY))
-            // Pins first, the key last: a copy that fails half way leaves
-            // pins and a fresh key -- the hub's key still checked against its
-            // pin -- never the old key without the pin that went with it,
-            // which would let the next XX handshake pin whatever answers.
-            // This hub's pin first of all: it is the one the key needs, and
-            // another hub's pin that cannot be read must not cost this hub
-            // the key it already trusts.
+            legacyKey = old.readKey(legacy.resolve(STATIC_KEY))
+            // This hub's pin must come across, unless it already has: the old
+            // key without it would let the next XX handshake pin whatever answers.
+            legacyPin = if (Files.exists(pinFile(nodeId), NOFOLLOW_LINKS)) null else old.readKey(old.pinFile(nodeId))
+        } catch (_: Exception) {
+            return
+        }
+        try {
+            // Pins first, the key last, and a write here that fails fails the
+            // connection: it leaves no key, so the next one copies again.
+            // Going on would make a key of this store's own beside the pin,
+            // which the hub refuses, and never copy again. This hub's pin
+            // first of all: it is the one the key needs, and another hub's pin
+            // that cannot be read must not cost this hub the key it already
+            // trusts.
             val own = pinFile(nodeId)
-            if (!Files.exists(own, NOFOLLOW_LINKS)) {
-                try { writeNew(own, Noise.hex(old.readKey(old.pinFile(nodeId)))) } catch (_: java.nio.file.FileAlreadyExistsException) { }
+            if (legacyPin != null) {
+                try { writeNew(own, Noise.hex(legacyPin)) } catch (_: java.nio.file.FileAlreadyExistsException) { }
             }
             // Best effort, the listing too. This folder serves one identity
             // file, which dials one hub; the other pins in the shared folder
@@ -87,14 +99,19 @@ public class HiveMindNoiseStore(public val directory: Path = defaultDirectory())
             } catch (_: java.nio.file.DirectoryIteratorException) {
                 // What a failure part way through the listing raises: unchecked, not an IOException.
             }
-            if (!Files.exists(own, NOFOLLOW_LINKS)) return
+            beforeAdoptedKeyWrite?.invoke()
             writeNew(key, Noise.hex(legacyKey))
         } catch (_: java.nio.file.FileAlreadyExistsException) {
             // Another process adopted it first.
-        } catch (_: Exception) {
-            // An unreadable old folder is no reason to fail: this one starts afresh.
+        } catch (error: Exception) {
+            adoptFrom = legacy
+            throw error
         }
     }
+
+    /** Runs just before the copied key is written; a test makes that write fail. */
+    internal var beforeAdoptedKeyWrite: (() -> Unit)? = null
+
     internal fun verifyOrPin(nodeId: String, key: ByteArray): Unit = synchronized(lock) {
         require(key.size == 32)
         prepareDirectory()

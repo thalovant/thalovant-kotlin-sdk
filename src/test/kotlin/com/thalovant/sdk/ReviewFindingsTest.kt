@@ -277,6 +277,16 @@ class ReviewFindingsTest {
             } finally {
                 runCatching { Files.setPosixFilePermissions(legacy.directory, java.nio.file.attribute.PosixFilePermissions.fromString("rwx------")) }
             }
+            // A copy cut short before the key fails the connection and leaves
+            // no key, rather than a key of its own beside the pin, which the
+            // hub would refuse; the next use copies again.
+            val cut = HiveMindNoiseStore.forIdentity(ThalovantIdentity.fromFile(identityFile("cut")))
+            cut.beforeAdoptedKeyWrite = { throw java.io.IOException("No space left on device") }
+            assertFailsWith<java.io.IOException> { cut.pin("hub-a") }
+            assertFalse(Files.exists(cut.directory.resolve("noise-static.key")), "no key after a failed copy")
+            cut.beforeAdoptedKeyWrite = null
+            assertContentEquals(ByteArray(32) { 1 }, cut.pin("hub-a"))
+            assertContentEquals(legacyKey, cut.staticKey())
             // An identity from anywhere else keeps the shared default.
             val plain = ThalovantIdentity(buildJsonObject { put("access_key", "a"); put("password", "p"); put("site_id", "s"); put("default_master", "wss://h") })
             assertEquals(HiveMindNoiseStore.defaultDirectory(), HiveMindNoiseStore.forIdentity(plain).directory)
