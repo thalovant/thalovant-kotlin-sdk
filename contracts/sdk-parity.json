@@ -145,7 +145,7 @@
     "identity": {
       "implementation": {
         "src/main/kotlin/com/thalovant/sdk/Identity.kt": "9746344453b826add1fe0233116f20774c590c96f791e1534ea8eaa73cd513a4",
-        "src/main/kotlin/com/thalovant/sdk/NoiseStore.kt": "6625fcde81cd6fa858bc915102b3c384bf133ebf43f6a22e207f115c794b2821",
+        "src/main/kotlin/com/thalovant/sdk/NoiseStore.kt": "2550df4bdebc5863d0e4e7b385f6cd50079618723e53e29c831e31146799f360",
         "src/main/kotlin/com/thalovant/sdk/Protocols.kt": "24f103b3ca1897d5ee2661f9acfe73daaa18a6951fb0fb842291afade9c87bae"
       },
       "reason": "Applicable public behavior is implemented and exercised by the named regression suites and shared fixtures. An identity read from a file (ThalovantIdentity.sourcePath) keeps its Noise key in HiveMindNoiseStore.forIdentity's folder beside that file, copying -- never moving -- the key and pins this SDK kept in the shared default when that key has met the hub (ReviewFindingsTest).",

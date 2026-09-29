@@ -71,8 +71,10 @@ public class HiveMindNoiseStore(public val directory: Path = defaultDirectory())
             if (!Files.exists(own, NOFOLLOW_LINKS)) {
                 try { writeNew(own, Noise.hex(old.readKey(old.pinFile(nodeId)))) } catch (_: java.nio.file.FileAlreadyExistsException) { }
             }
-            // Best effort, the listing too: another hub checks its key on
-            // first use, as any new hub does.
+            // Best effort, the listing too. This folder serves one identity
+            // file, which dials one hub; the other pins in the shared folder
+            // are for hubs other identities dialled, and are copied only so
+            // nothing known is thrown away.
             try {
                 Files.newDirectoryStream(legacy, "noise-pin-*.key").use { pins ->
                     for (pin in pins) {
@@ -81,7 +83,10 @@ public class HiveMindNoiseStore(public val directory: Path = defaultDirectory())
                         try { writeNew(target, Noise.hex(old.readKey(pin))) } catch (_: Exception) { }
                     }
                 }
-            } catch (_: java.io.IOException) { }
+            } catch (_: java.io.IOException) {
+            } catch (_: java.nio.file.DirectoryIteratorException) {
+                // What a failure part way through the listing raises: unchecked, not an IOException.
+            }
             if (!Files.exists(own, NOFOLLOW_LINKS)) return
             writeNew(key, Noise.hex(legacyKey))
         } catch (_: java.nio.file.FileAlreadyExistsException) {
