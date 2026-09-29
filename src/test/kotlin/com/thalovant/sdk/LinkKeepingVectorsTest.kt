@@ -74,14 +74,18 @@ class LinkKeepingVectorsTest {
                 case["code"]?.jsonPrimitive?.intOrNull,
                 closedAfterHandshakeMs = if (case.text("when") == "after_handshake") case.millis("after_ms") else null,
                 codeLateMs = case["code_late_ms"]?.jsonPrimitive?.long ?: 0,
+                afterAuthenticatedFrame = (case["after_authenticated_frame"] as? JsonPrimitive)?.boolean ?: false,
             )
             record(case, buildJsonObject { put("outcome", if (refused) "refused" else "dropped") })
         }
     }
 
-    private suspend fun attempt(hub: FakeHub, password: String): String = try {
-        hub.connectedClient(password).close()
+    /** One connect as a kept link makes it: the handshake, then the settle window. */
+    private suspend fun attempt(hub: FakeHub, password: String, stateDir: java.nio.file.Path): String = try {
+        hub.connectedClient(password, stateDir).close()
         "connected"
+    } catch (_: ThalovantClientKeyRejectedException) {
+        "client_key_rejected"
     } catch (_: ThalovantHubIdentityChangedException) {
         "key_changed"
     } catch (_: ThalovantIdentityException) {
@@ -97,7 +101,9 @@ class LinkKeepingVectorsTest {
                 runBlocking {
                     val situation = case.text("situation")!!
                     var password = FakeHub.PASSWORD
-                    if (situation in setOf("pinned", "password_changed_since_pinning", "hub_key_changed")) {
+                    var state = hub.stateDir
+                    if (situation in setOf("pinned", "password_changed_since_pinning", "hub_key_changed",
+                            "client_key_changed", "client_key_changed_pinned_here")) {
                         hub.connectedClient().close() // first contact pins both ways
                     }
                     when (situation) {
@@ -108,9 +114,17 @@ class LinkKeepingVectorsTest {
                             hub.offerKk = case.getValue("hub_offers_kk").jsonPrimitive.boolean
                         }
                         "upgrade_status" -> hub.upgradeStatus = case.getValue("status").jsonPrimitive.int
+                        // Another program, with its own folder and so its own key.
+                        "client_key_changed" -> state = java.nio.file.Files.createTempDirectory(hub.stateDir, "another-program")
+                        // A new client key, beside the hub pins it had.
+                        "client_key_changed_pinned_here" -> replaceClientKey(state)
+                        "closed_after_first_frame" -> {
+                            hub.refuseNext.set(1)
+                            hub.speakBeforeClosing = true
+                        }
                     }
                     val before = hub.patternsChosen.size
-                    val outcome = attempt(hub, password)
+                    val outcome = attempt(hub, password, state)
                     buildJsonObject {
                         put("outcome", outcome)
                         put("patterns", JsonArray(hub.patternsChosen.drop(before).map { JsonPrimitive(it.take(2)) }))
@@ -134,19 +148,57 @@ class LinkKeepingVectorsTest {
             val supervisor = LinkSupervisor(vectorPolicy)
             val produced = JsonArray(
                 case.getValue("events").jsonArray.map { it.jsonObject }.map { event ->
-                    val outcome = LinkOutcome.entries.single { it.wireName == event.text("outcome") }
-                    val decision = supervisor.after(outcome, event.millis("at_ms") / 1_000.0)
+                    // The hub rejecting this client's own key is a refusal of its own
+                    // kind, carried beside LinkOutcome.REFUSED.
+                    val rejected = event.text("outcome") == "client_key_rejected"
+                    val outcome = if (rejected) LinkOutcome.REFUSED else LinkOutcome.entries.single { it.wireName == event.text("outcome") }
+                    val decision = supervisor.after(outcome, event.millis("at_ms") / 1_000.0, clientKeyRejected = rejected)
                     buildJsonObject {
                         put("action", decision.action.wireName)
                         when (decision.action) {
                             LinkAction.RETRY -> put("wait_ms", (decision.waitSeconds * 1_000).roundToLong())
-                            LinkAction.GIVE_UP -> put("reason", decision.reason!!.wireName)
+                            LinkAction.GIVE_UP -> put("reason", decision.reasonName!!)
                             LinkAction.HOLD -> Unit
                         }
                     }
                 },
             )
             record(case, produced)
+        }
+    }
+
+    /** Gives the client a new static key, keeping the hub pins it has. */
+    private fun replaceClientKey(state: java.nio.file.Path) {
+        val key = state.resolve("noise-static.key")
+        java.nio.file.Files.delete(key)
+        val fresh = java.nio.file.Files.createFile(
+            key, java.nio.file.attribute.PosixFilePermissions.asFileAttribute(java.nio.file.attribute.PosixFilePermissions.fromString("rw-------")),
+        )
+        java.nio.file.Files.write(fresh, Noise.hex(Noise.randomKey()).toByteArray())
+    }
+
+    @Test
+    fun `a rejected client key names the folders and stops run at once`() {
+        FakeHub().use { hub ->
+            runBlocking {
+                hub.connectedClient().close()
+                val other = java.nio.file.Files.createTempDirectory(hub.stateDir, "another-program")
+                val session = HubSession(
+                    connect = { hub.connectedClient(stateDir = other) },
+                    policy = HubSessionPolicy(retrySeconds = 0.05, retryCeilingSeconds = 0.1, probeSeconds = 0.05,
+                        probeDownSeconds = 0.05, refusalGraceSeconds = 30.0),
+                    warm = false,
+                )
+                try {
+                    val rejected = assertFailsWith<ThalovantClientKeyRejectedException> { withTimeout(10_000) { session.run() } }
+                    assertIs<ThalovantIdentityException>(rejected, "still a refusal where one is caught")
+                    assertEquals(other.toString(), rejected.keyFolder)
+                    assertTrue("re-pair, or share the key folder" in rejected.message.orEmpty())
+                    assertEquals(2, hub.attempts.get(), "the pinning connect, then one refused XX: no retry")
+                } finally {
+                    session.close()
+                }
+            }
         }
     }
 

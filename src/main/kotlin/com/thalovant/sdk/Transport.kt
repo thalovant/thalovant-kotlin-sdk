@@ -51,7 +51,7 @@ public class HiveMindWssTransport(
     public val identity: ThalovantIdentity,
     public val userAgent: String = DEFAULT_USER_AGENT,
     httpClient: OkHttpClient? = null,
-    private val noiseStore: HiveMindNoiseStore = HiveMindNoiseStore(),
+    private val noiseStore: HiveMindNoiseStore = HiveMindNoiseStore.forIdentity(identity),
     /**
      * How long to let a hub refuse this client after the handshake, before
      * [connect] reports the connection ready.
@@ -169,6 +169,10 @@ public class HiveMindWssTransport(
     @Volatile
     private var heardFromHub: Boolean = false
 
+    /** The Noise pattern the current connection's handshake completed with. */
+    @Volatile
+    private var completedPattern: String? = null
+
     /** When the current connection's handshake completed, for [closeRefuses]. */
     @Volatile
     private var handshakeCompletedNs: Long? = null
@@ -250,6 +254,7 @@ public class HiveMindWssTransport(
             handshake = CompletableDeferred()
             ended = CompletableDeferred()
             heardFromHub = false
+            completedPattern = null
             handshakeCompletedNs = null
             generation
         }
@@ -438,6 +443,7 @@ public class HiveMindWssTransport(
             noiseStore.verifyOrPin(nodeId, state.remoteStatic ?: error("Missing authenticated server static key."))
             if (!state.finished) sendHandshake(buildJsonObject { put("msg", Noise.hex(state.write())) })
             noiseSession = state.session()
+            completedPattern = state.pattern
             noiseHandshake = null
             sendHiveMessage(helloMessage())
             handshakeComplete = true
@@ -487,7 +493,14 @@ public class HiveMindWssTransport(
         override fun onMessage(webSocket: WebSocket, text: String) = receive { handleRawMessage(text) }
         override fun onMessage(webSocket: WebSocket, bytes: ByteString) = receive {
             val session = noiseSession ?: error("Binary frame received before Noise authentication.")
-            val frame = session.decrypt(bytes.toByteArray()) ?: return@receive emptyList()
+            val decryptedFrame = session.decrypt(bytes.toByteArray())
+            // Anything that decrypts under the new session's keys is the hub
+            // speaking to a connection it kept -- JSON or WIRE-1 binary, one
+            // chunk of a larger message, its own encrypted HELLO -- so a later
+            // close is its trouble, not a refusal. A decryption that fails
+            // throws before this, and is no frame from the hub.
+            heardFromHub = true
+            val frame = decryptedFrame ?: return@receive emptyList()
             check(frame.second) { "Binary HiveMind payloads were not negotiated." }
             val decrypted = frame.first
             // Text first, because that is what almost every frame is; a
@@ -556,9 +569,18 @@ public class HiveMindWssTransport(
          */
         private fun closedAfterHandshake(code: Int): ThalovantException {
             val afterMs = handshakeCompletedNs?.let { (System.nanoTime() - it) / 1_000_000 } ?: 0
+            // OkHttp hands the code over with the close itself, so it is never late here.
+            val refused = closeRefuses(code, closedAfterHandshakeMs = afterMs, codeLateMs = 0, afterAuthenticatedFrame = heardFromHub)
             return when {
-                heardFromHub || !closeRefuses(code, closedAfterHandshakeMs = afterMs) ->
-                    ThalovantConnectionException("HiveMind WSS closed ($code).")
+                !refused -> ThalovantConnectionException("HiveMind WSS closed ($code).")
+                // hivemind-core pins the first static key a connection presents
+                // and aborts as soon as an XX handshake shows it another. After
+                // KK the hub could only have completed with the key it pinned,
+                // so the same close there is a plain refusal.
+                completedPattern == "XXpsk2" -> ThalovantClientKeyRejectedException(
+                    keyFolder = noiseStore.directory.toString(),
+                    otherKeyFolder = noiseStore.otherFolder?.toString(),
+                )
                 else -> ThalovantIdentityException(
                     "The hub closed this connection without accepting it. Pair this client with the hub again.",
                 )
@@ -633,10 +655,18 @@ internal const val CLOSE_CODE_GRACE_MS: Long = 250
  * [closedAfterHandshakeMs] is when the close happened, counted from the end of
  * the handshake, or null for a close during it: the close's own time decides,
  * not when the transport reported it. [codeLateMs] is how long after the close
- * the transport learnt the code. `link-keeping-vectors.json` holds every SDK to
- * this rule.
+ * the transport learnt the code. [afterAuthenticatedFrame] says whether the hub
+ * had sent anything that decrypted under the new session's keys: a hub refuses
+ * a key before it writes a single transport frame, so a close after one is the
+ * hub's trouble. `link-keeping-vectors.json` holds every SDK to this rule.
  */
-internal fun closeRefuses(code: Int?, closedAfterHandshakeMs: Long? = null, codeLateMs: Long = 0): Boolean {
+internal fun closeRefuses(
+    code: Int?,
+    closedAfterHandshakeMs: Long? = null,
+    codeLateMs: Long = 0,
+    afterAuthenticatedFrame: Boolean = false,
+): Boolean {
+    if (afterAuthenticatedFrame) return false
     if (code == null || code !in REFUSAL_CLOSE_CODES || codeLateMs > CLOSE_CODE_GRACE_MS) return false
     return closedAfterHandshakeMs == null || closedAfterHandshakeMs <= REFUSAL_SETTLE_MS
 }

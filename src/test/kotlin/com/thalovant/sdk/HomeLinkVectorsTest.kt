@@ -11,6 +11,10 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.Dispatchers
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
@@ -143,6 +147,16 @@ class HomeLinkVectorsTest {
 
     // -- device login ---------------------------------------------------------
 
+    /** A failure, with the api-errors fields when the API answered one. */
+    private fun deviceError(error: ThalovantApiException): JsonObject = buildJsonObject {
+        put("outcome", "error")
+        put("status", error.statusCode)
+        if (error.statusCode != null) {
+            put("code", error.errorCode)
+            put("detail", error.detail)
+        }
+    }
+
     private suspend fun pollOnce(plane: ThalovantControlPlane, authorization: DeviceAuthorization): JsonObject {
         val token = try {
             plane.pollDeviceLogin(authorization)
@@ -159,14 +173,7 @@ class HomeLinkVectorsTest {
             return buildJsonObject { put("outcome", "denied"); put("status", error.statusCode) }
         } catch (error: ThalovantApiException) {
             excluded(error, device)
-            return buildJsonObject {
-                put("outcome", "error")
-                put("status", error.statusCode)
-                if (error.statusCode != null) {
-                    put("code", error.errorCode)
-                    put("detail", error.detail)
-                }
-            }
+            return deviceError(error)
         }
         assertEquals(token.accessToken, plane.accessToken)
         assertEquals(token.tokenId, plane.tokenId)
@@ -185,13 +192,29 @@ class HomeLinkVectorsTest {
         val call = case.getValue("call").jsonObject
         val api = ScriptedApi(case.getValue("exchanges").jsonArray.map { it.jsonObject })
         api.use {
-            val plane = ThalovantControlPlane(api.url)
+            // Only the approver's read is signed in; a device signing in has no token yet.
+            val plane = if (call.text("op") == "describe") ThalovantControlPlane(api.url, accessToken = "synthetic-token")
+            else ThalovantControlPlane(api.url)
             val produced = mutableListOf<JsonElement>()
             when (call.text("op")) {
+                "describe" -> try {
+                    val request = plane.describeDeviceLogin(call.text("user_code")!!)
+                    produced += buildJsonObject {
+                        put("outcome", "described")
+                        put("scopes", JsonArray(request.scopes.map(::JsonPrimitive)))
+                        put("client_name", request.clientName)
+                        put("client_id", request.clientId)
+                        put("client_verified", request.clientVerified)
+                        put("device_name", request.deviceName)
+                    }
+                } catch (error: ThalovantApiException) {
+                    produced += deviceError(error)
+                }
                 "begin" -> try {
                     val grant = plane.beginDeviceLogin(
                         scopes = call["scopes"]?.jsonArray?.map { it.jsonPrimitive.content },
                         clientName = call.text("client_name"),
+                        clientId = call.text("client_id"),
                     )
                     assertFalse(grant.deviceCode in grant.toString())
                     produced += buildJsonObject {
@@ -204,7 +227,7 @@ class HomeLinkVectorsTest {
                     }
                 } catch (error: ThalovantApiException) {
                     excluded(error, device)
-                    produced += buildJsonObject { put("outcome", "error"); put("status", error.statusCode) }
+                    produced += deviceError(error)
                 }
                 else -> {
                     val held = call.getValue("authorization").jsonObject
@@ -457,6 +480,7 @@ class HomeLinkVectorsTest {
                 "reply_context" -> replyContext(case.getValue("context").jsonObject)
                 "speech" -> JsonPrimitive(plainSpeech(case.text("text")))
                 "deadline" -> deadlineCase(case)
+                "queued" -> queuedCase(case)
                 else -> {
                     val outbox = Outbox()
                     val event = homeRequest(case)
@@ -474,6 +498,52 @@ class HomeLinkVectorsTest {
             assertEquals(case.getValue("expect"), produced, name)
         }
     }
+
+    /** A reply that waits behind another frame, over a real link to an in-process hub. */
+    private fun queuedCase(case: JsonObject): JsonObject = FakeHub().use { hub ->
+        runBlocking {
+            val client = hub.connectedClient()
+            try {
+                withTimeout(5_000) { while (hub.sessions.isEmpty()) delay(10) }
+                val peer = hub.sessions.single()
+                val transport = client.transport as HiveMindWssTransport
+                transport.sendQueue.lock() // another frame is being written ...
+                val busy = launch { delay(case.millis("busy_ms")); transport.sendQueue.unlock() } // ... for busy_ms
+                val event = ThalovantEvent(
+                    ThalovantHome.REQUEST,
+                    data = case.getValue("request").jsonObject,
+                    context = buildJsonObject { put("source", "skill"); put("destination", "ha") },
+                )
+                val sent = client.answerHomeRequest(event, hubTimeoutMs = case.millis("hub_timeout_ms"), handler = handler(case.getValue("handler").jsonObject))
+                busy.join()
+                delay(200) // time enough for a withdrawn reply to go out late, if it would
+                client.emit("still.there")
+                // Everything the hub received, up to the message that proves the link still carries one.
+                val frames = withContext(Dispatchers.IO) {
+                    val seen = mutableListOf<JsonObject>()
+                    while (true) {
+                        val frame = peer.received.poll(5, java.util.concurrent.TimeUnit.SECONDS) ?: break
+                        seen += frame
+                        if (frame["payload"]?.jsonObject?.get("type")?.jsonPrimitive?.content == "still.there") break
+                    }
+                    seen
+                }
+                fun type(frame: JsonObject) = frame["payload"]?.jsonObject?.get("type")?.jsonPrimitive?.content
+                val kept = frames.any { type(it) == "still.there" } && hub.attempts.get() == 1
+                val responses = frames.filter { type(it) == ThalovantHome.RESPONSE }.map { it.getValue("payload").jsonObject["data"] }
+                assertEquals(listOfNotNull(sent), responses, "never sent late, never twice")
+                buildJsonObject {
+                    put("replied", sent != null)
+                    put("link_kept", kept)
+                    if (sent != null) put("response", sent)
+                }
+            } finally {
+                client.close()
+            }
+        }
+    }
+
+    private fun JsonObject.millis(key: String): Long = getValue(key).jsonPrimitive.long
 
     private fun homeRequest(case: JsonObject) = ThalovantEvent(
         ThalovantHome.REQUEST,
@@ -534,6 +604,11 @@ class HomeLinkVectorsTest {
             "1e-07" to "1e-07", "5e-324" to "5e-324", "2.5e-05" to "2.5e-05", "0.0001" to "0.0001",
             "0.00012345" to "0.00012345", "-0.75" to "-0.75", "1234567890123456.7" to "1234567890123456.8",
             "0.1" to "0.1", "1.0" to "1", "900" to "900",
+            // What the reference writes once a whole float is its int (checked
+            // against Python): the exact value of the double, never its text.
+            "1e20" to "100000000000000000000", "1e+20" to "100000000000000000000", "1E+2" to "100",
+            "1.0000000000000000001" to "1", "-0.0" to "0", "100000000000000000000" to "100000000000000000000",
+            "1e300" to "1000000000000000052504760255204420248704468581108159154915854115511802457988908195786371375080447864043704443832883878176942523235360430575644792184786706982848387200926575803737830233794788090059368953234970799945081119038967640880074652742780142494579258788820056842838115669472196386865459400540160",
         )
         for ((written, spelled) in python) assertEquals(spelled, ConformanceRecord.referenceNumber(written), written)
     }
@@ -548,6 +623,7 @@ class HomeLinkVectorsTest {
         assertEquals(9_000L, ThalovantHome.DEFAULT_HANDLER_TIMEOUT_MS)
         assertTrue(ThalovantHome.DEFAULT_HANDLER_TIMEOUT_MS < ThalovantHome.REQUEST_TIMEOUT_MS)
         assertEquals(device.getValue("home_assistant_scopes").jsonArray.map { it.jsonPrimitive.content }, HOME_ASSISTANT_SCOPES)
+        assertEquals(device.text("home_assistant_client_id"), HOME_ASSISTANT_CLIENT_ID)
         assertEquals(JsonNull, replyContext(buildJsonObject { put("source", JsonNull) })["source"])
     }
 }

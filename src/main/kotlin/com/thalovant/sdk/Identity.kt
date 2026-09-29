@@ -67,6 +67,15 @@ public class MqttBrokerCredentials internal constructor(
  * leaks no secret values. Use [asJson] for a redaction-aware serialization.
  */
 public class ThalovantIdentity(input: JsonObject) {
+    /**
+     * The file this identity was read from, by [fromFile]; null otherwise.
+     * With no key folder named, a client keeps this identity's Noise key in a
+     * folder beside that file, so every program reading it presents one key;
+     * see [HiveMindNoiseStore.forIdentity].
+     */
+    public var sourcePath: Path? = null
+        internal set
+
     public val accessKey: String = requiredString(input, "access_key", "accessKey", "access_key", "api_key", "key")
     public val password: String = requiredString(input, "password", "password")
     public val defaultMaster: String = requiredString(
@@ -157,11 +166,12 @@ public class ThalovantIdentity(input: JsonObject) {
             } catch (error: Exception) {
                 throw ThalovantIdentityException("Unable to read identity file: $path", error)
             }
-            return try {
+            val identity = try {
                 fromJson(content)
             } catch (_: ThalovantIdentityException) {
                 throw ThalovantIdentityException("Identity file is not valid JSON: $path")
             }
+            return identity.also { it.sourcePath = path.toAbsolutePath() }
         }
 
         public fun fromFile(path: String): ThalovantIdentity = fromFile(Path.of(path))

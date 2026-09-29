@@ -40,20 +40,122 @@ public suspend fun ThalovantClient.askWithHints(
 ): ThalovantReply = ask(text, timeoutMs, lang, sessionId, requestId,
     requestContext(context, sttLang, pipeline, location) ?: EMPTY_JSON_OBJECT, replySettleMs, emptyReplyWaitMs)
 
-private val optionalPattern = Regex("\\[[^\\[\\]]*\\]")
-private val groupPattern = Regex("\\(([^()]*)\\)")
 private val slotPattern = Regex("\\{([a-z_][a-z0-9_]*)\\}")
-/** One illustrative sentence, without inventing slot values. */
+
+/**
+ * One illustrative sentence, without inventing slot values.
+ *
+ * `[optional]` parts go, `(a|b)` groups keep their first branch -- or nothing,
+ * when an empty branch makes the group optional with at most one real branch
+ * -- innermost first, so a group inside an optional part goes with it. Linear
+ * in the pattern, which comes from a hub: one pass for each kind of bracket,
+ * and a group's chosen branch is linked into the one around it, never copied,
+ * so a long branch nested deep is not rewritten once per level.
+ */
 public fun speakable(pattern: String, slots: Map<String, String> = emptyMap()): String {
-    var text = pattern
-    while (optionalPattern.containsMatchIn(text)) text = optionalPattern.replace(text, "")
-    while (groupPattern.containsMatchIn(text)) text = groupPattern.replace(text) { match ->
-        val options = match.groupValues[1].split('|').map { it.trim() }
-        val real = options.filter { it.isNotEmpty() }
-        if (real.size < options.size && real.size <= 1) "" else real.firstOrNull().orEmpty()
-    }
+    var text = chooseBranches(dropOptional(pattern))
     text = slotPattern.replace(text) { match -> slots[match.groupValues[1]] ?: match.groupValues[1].replace('_', ' ') }
     return text.replace(Regex("\\s{2,}"), " ").trim(' ', ',')
+}
+
+/**
+ * Removes every balanced `[` ... `]` pair and what it holds, innermost first,
+ * in one pass. An opening never closed stays in the text, with what followed
+ * it, and so does a closing that closes nothing -- what taking the innermost
+ * pair out until none is left does.
+ */
+private fun dropOptional(text: String): String {
+    val frames = ArrayList<StringBuilder>().apply { add(StringBuilder()) }
+    for (char in text) {
+        when {
+            char == '[' -> frames.add(StringBuilder())
+            char == ']' && frames.size > 1 -> frames.removeAt(frames.size - 1)
+            else -> frames[frames.size - 1].append(char)
+        }
+    }
+    val out = StringBuilder(frames[0])
+    for (index in 1 until frames.size) out.append('[').append(frames[index])
+    return out.toString()
+}
+
+/**
+ * One alternative of a `(a|b|c)` group, as parts: runs of text and the
+ * branches of the groups it held that were kept. A kept branch is trimmed and
+ * not empty, so it begins and ends with a character that is not white space.
+ */
+private class Branch {
+    val parts = ArrayList<Any>()
+    var real = false
+
+    fun append(char: Char) {
+        (parts.lastOrNull() as? StringBuilder ?: StringBuilder().also { parts.add(it) }).append(char)
+        if (!char.isWhitespace()) real = true
+    }
+
+    fun append(kept: Branch) {
+        parts.add(kept)
+        real = true
+    }
+
+    /** Takes white space off both ends, as `String.trim` would of its text. */
+    fun trimmed(): Branch {
+        (parts.firstOrNull() as? StringBuilder)?.let { first ->
+            val start = first.indexOfFirst { !it.isWhitespace() }
+            if (start < 0) parts.removeAt(0) else first.delete(0, start)
+        }
+        (parts.lastOrNull() as? StringBuilder)?.let { last ->
+            val end = last.indexOfLast { !it.isWhitespace() }
+            if (end < 0) parts.removeAt(parts.size - 1) else last.setLength(end + 1)
+        }
+        return this
+    }
+}
+
+/**
+ * Replaces every balanced `(` ... `)` group by its first real branch, or by
+ * nothing when an empty branch makes it optional with at most one real branch
+ * beside it, innermost first, in one pass. Whether a branch is real is known
+ * as it is read, and a kept branch goes into the group around it as a part,
+ * so no character is visited again at each level. An opening never closed
+ * stays in the text, with its branches joined by `|` as they were written.
+ */
+private fun chooseBranches(text: String): String {
+    val frames = ArrayList<ArrayList<Branch>>().apply { add(arrayListOf(Branch())) }
+    for (char in text) {
+        when {
+            char == '(' -> frames.add(arrayListOf(Branch()))
+            char == ')' && frames.size > 1 -> {
+                val options = frames.removeAt(frames.size - 1)
+                val real = options.count { it.real }
+                val kept = if (real < options.size && real <= 1) null else options.firstOrNull { it.real }
+                if (kept != null) frames[frames.size - 1].last().append(kept.trimmed())
+            }
+            char == '|' && frames.size > 1 -> frames[frames.size - 1].add(Branch())
+            else -> frames[frames.size - 1].last().append(char)
+        }
+    }
+    val out = StringBuilder()
+    frames.forEachIndexed { depth, options ->
+        if (depth > 0) out.append('(')
+        options.forEachIndexed { index, option ->
+            if (index > 0) out.append('|')
+            write(option, out)
+        }
+    }
+    return out.toString()
+}
+
+/** Writes a branch's text, the branches it holds included, without recursion: nesting can be deep. */
+private fun write(branch: Branch, out: StringBuilder) {
+    val stack = ArrayDeque<Iterator<Any>>().apply { addLast(branch.parts.iterator()) }
+    while (stack.isNotEmpty()) {
+        val parts = stack.last()
+        if (!parts.hasNext()) { stack.removeLast(); continue }
+        when (val part = parts.next()) {
+            is StringBuilder -> out.append(part)
+            is Branch -> stack.addLast(part.parts.iterator())
+        }
+    }
 }
 
 public const val MAX_AUDIO_CLIP_BYTES: Int = 4 * 1024 * 1024

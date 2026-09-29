@@ -12,11 +12,25 @@ import java.security.MessageDigest
  * Persistent client static key and trust-on-first-use server pins. Use an app-private
  * directory on Android; on POSIX private files are required to have mode 0600.
  * Pins are never removed automatically after an authentication failure.
+ *
+ * A hub pins one client key per connection, so every program that uses one
+ * identity must present the same key. [forIdentity] keeps an identity read
+ * from a file in a folder beside that file, and a client built with no store
+ * of its own uses it.
  */
 public class HiveMindNoiseStore(public val directory: Path = defaultDirectory()) {
+    /** Where another program using the same identity likely keeps its key, for [ThalovantClientKeyRejectedException]. */
+    internal var otherFolder: Path? = null
+
+    /**
+     * A folder this store's key used to live in, adopted on first use: see
+     * [forIdentity]. Cleared once looked at.
+     */
+    private var adoptFrom: Path? = null
+
     internal fun staticKey(): ByteArray = synchronized(lock) {
         prepareDirectory()
-        val file = directory.resolve("noise-static.key")
+        val file = directory.resolve(STATIC_KEY)
         if (!Files.exists(file, NOFOLLOW_LINKS)) {
             try { writeNew(file, Noise.hex(Noise.randomKey())) }
             catch (_: java.nio.file.FileAlreadyExistsException) { /* another process created the same key */ }
@@ -26,8 +40,78 @@ public class HiveMindNoiseStore(public val directory: Path = defaultDirectory())
     private fun pinFile(nodeId: String): Path = directory.resolve("noise-pin-${Noise.hex(Noise.hash(nodeId.toByteArray()))}.key")
     internal fun pin(nodeId: String): ByteArray? = synchronized(lock) {
         prepareDirectory()
+        adoptOnce(nodeId)
         pinFile(nodeId).let { if (Files.exists(it, NOFOLLOW_LINKS)) readKey(it) else null }
     }
+
+    /**
+     * The first time this folder is used for a hub, take over the key and pins
+     * [adoptFrom] holds -- copied, never moved, and only when that key has met
+     * this hub ([nodeId] is pinned there) and this folder has no key yet -- so
+     * a device that used to keep its key in the shared default gets no new key
+     * and is not locked out.
+     */
+    private fun adoptOnce(nodeId: String) {
+        val legacy = adoptFrom ?: return
+        adoptFrom = null
+        val key = directory.resolve(STATIC_KEY)
+        if (Files.exists(key, NOFOLLOW_LINKS) || legacy == directory) return
+        // What the old folder holds. Anything wrong there copies nothing:
+        // this folder starts afresh, as a new identity would.
+        val old: HiveMindNoiseStore
+        val legacyKey: ByteArray
+        val legacyPin: ByteArray?
+        try {
+            old = HiveMindNoiseStore(legacy)
+            if (!Files.exists(legacy.resolve(STATIC_KEY), NOFOLLOW_LINKS) || !Files.exists(old.pinFile(nodeId), NOFOLLOW_LINKS)) return
+            legacyKey = old.readKey(legacy.resolve(STATIC_KEY))
+            // This hub's pin must come across, unless it already has: the old
+            // key without it would let the next XX handshake pin whatever answers.
+            legacyPin = if (Files.exists(pinFile(nodeId), NOFOLLOW_LINKS)) null else old.readKey(old.pinFile(nodeId))
+        } catch (_: Exception) {
+            return
+        }
+        try {
+            // Pins first, the key last, and a write here that fails fails the
+            // connection: it leaves no key, so the next one copies again.
+            // Going on would make a key of this store's own beside the pin,
+            // which the hub refuses, and never copy again. This hub's pin
+            // first of all: it is the one the key needs, and another hub's pin
+            // that cannot be read must not cost this hub the key it already
+            // trusts.
+            val own = pinFile(nodeId)
+            if (legacyPin != null) {
+                try { writeNew(own, Noise.hex(legacyPin)) } catch (_: java.nio.file.FileAlreadyExistsException) { }
+            }
+            // Best effort, the listing too. This folder serves one identity
+            // file, which dials one hub; the other pins in the shared folder
+            // are for hubs other identities dialled, and are copied only so
+            // nothing known is thrown away.
+            try {
+                Files.newDirectoryStream(legacy, "noise-pin-*.key").use { pins ->
+                    for (pin in pins) {
+                        val target = directory.resolve(pin.fileName.toString())
+                        if (target == own || Files.exists(target, NOFOLLOW_LINKS)) continue
+                        try { writeNew(target, Noise.hex(old.readKey(pin))) } catch (_: Exception) { }
+                    }
+                }
+            } catch (_: java.io.IOException) {
+            } catch (_: java.nio.file.DirectoryIteratorException) {
+                // What a failure part way through the listing raises: unchecked, not an IOException.
+            }
+            beforeAdoptedKeyWrite?.invoke()
+            writeNew(key, Noise.hex(legacyKey))
+        } catch (_: java.nio.file.FileAlreadyExistsException) {
+            // Another process adopted it first.
+        } catch (error: Exception) {
+            adoptFrom = legacy
+            throw error
+        }
+    }
+
+    /** Runs just before the copied key is written; a test makes that write fail. */
+    internal var beforeAdoptedKeyWrite: (() -> Unit)? = null
+
     internal fun verifyOrPin(nodeId: String, key: ByteArray): Unit = synchronized(lock) {
         require(key.size == 32)
         prepareDirectory()
@@ -141,6 +225,38 @@ public class HiveMindNoiseStore(public val directory: Path = defaultDirectory())
     }
     public companion object {
         private val lock = Any()
+        private const val STATIC_KEY = "noise-static.key"
+
+        /** The folder beside an identity file its key is kept in. */
+        public const val IDENTITY_KEY_FOLDER: String = "thalovant-kotlin-noise"
+
+        /**
+         * The store a client uses for [identity] when it names none.
+         *
+         * An identity read from a file keeps its key in [IDENTITY_KEY_FOLDER]
+         * beside that file, so two programs reading one file present one key --
+         * a hub pins one per connection, and refuses any other. The first time
+         * that folder is used, the key and hub pins this SDK kept in
+         * [defaultDirectory] before are copied into it, when that key has met
+         * the hub. Any other identity keeps [defaultDirectory], and so does one
+         * whose folder has no [IDENTITY_KEY_FOLDER] yet and cannot be written
+         * to. On Android, pass a store in the app's private storage.
+         */
+        public fun forIdentity(identity: ThalovantIdentity): HiveMindNoiseStore {
+            val file = identity.sourcePath ?: return HiveMindNoiseStore()
+            val parent = file.parent ?: return HiveMindNoiseStore()
+            val legacy = defaultDirectory()
+            val beside = parent.resolve(IDENTITY_KEY_FOLDER)
+            // An identity this user can read but not write beside (one in
+            // /etc, say) keeps the shared default, as before, rather than
+            // failing every connection on a folder it cannot create.
+            if (!Files.isDirectory(beside, NOFOLLOW_LINKS) && !Files.isWritable(parent)) return HiveMindNoiseStore()
+            return HiveMindNoiseStore(beside).also {
+                it.otherFolder = legacy
+                it.adoptFrom = legacy
+            }
+        }
+
         // Paths.get rather than Path.of for the same reason readKey avoids
         // readString: the Java 11 spelling is not on every Android this
         // supports, and the old one means exactly the same thing.

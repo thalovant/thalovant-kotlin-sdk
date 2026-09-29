@@ -30,6 +30,9 @@ import kotlinx.serialization.json.JsonObject
  * reader scans for the first set bit rather than assuming an offset, and why
  * a BINARY payload begins part-way through a byte.
  */
+/** The most a compressed part of a binary frame may inflate to, as a reassembled Noise message may be. */
+internal const val MAX_INFLATED: Int = 32 * 1024 * 1024
+
 internal object HiveWire {
 
     /** WIRE-1 §4.3 message-type codes. A type with no code travels as text. */
@@ -106,7 +109,7 @@ internal object HiveWire {
     private fun text(bytes: ByteArray, compressed: Boolean): String =
         (if (compressed) inflate(bytes) else bytes).toString(Charsets.UTF_8)
 
-    private fun inflate(bytes: ByteArray): ByteArray {
+    internal fun inflate(bytes: ByteArray): ByteArray {
         // No early return for an empty input: a frame that says it is
         // compressed and then carries nothing is a truncated stream, not empty
         // metadata, and the loop below is what says so. Returning here let an
@@ -114,10 +117,18 @@ internal object HiveWire {
         val inflater = Inflater()
         try {
             inflater.setInput(bytes)
-            val out = java.io.ByteArrayOutputStream(bytes.size * 2)
+            val out = java.io.ByteArrayOutputStream(minOf(bytes.size * 2, MAX_INFLATED))
             val chunk = ByteArray(8192)
             while (!inflater.finished()) {
                 val read = inflater.inflate(chunk)
+                // A few kilobytes of zeros from a hub could otherwise make this
+                // client allocate gigabytes: stop at the cap a reassembled
+                // Noise message has anyway, and refuse the frame.
+                if (out.size() + read > MAX_INFLATED) {
+                    throw ThalovantRuntimeException(
+                        "Malformed HiveMind binary frame: compressed block inflates past 32 MiB.",
+                    )
+                }
                 if (read == 0 && (inflater.needsInput() || inflater.needsDictionary())) {
                     // Truncated: the stream ended mid-block. Returning what had
                     // accumulated handed back half the metadata, and the JSON
