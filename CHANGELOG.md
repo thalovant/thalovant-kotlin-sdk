@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.8.2
+
+The Python reference's 0.9.2 (`claim091/reply-claimed-meta-signal`): a skill may
+now positively assert that it genuinely answered from the fallback pipeline
+tier, so a satellite listening without a wake word no longer mistakes a real
+answer for room noise just because OVOS files it under the same `match_low`
+band as the fleet's generic catch-all skill. `ThalovantReply.claimed` checks a
+reply's own `speak` events for a literal `true` under the new
+`THALOVANT_CLAIMED_META_KEY` (`"thalovant_claimed"`) meta key before falling
+back to the existing pipeline-stage heuristic; the check runs after the
+handled/ok/no-failure gate, so it can never rescue a failed or unhandled
+reply, and it only ever turns a would-be `false` into `true`. A reply that
+never sets the key is judged exactly as before. The updated
+`reply-claim-vectors.json` is vendored byte for byte, with a `metas` array
+added alongside the existing `contexts`.
+
 ## 0.8.1
 
 The Python reference's 0.9.1 (`d33dc2be8b00`): the changed `api-error`, `device-login`, `home-link` and `link-keeping` vector files are vendored byte for byte, and every recorded case produces the reference's digests (api-error 15, device-login 20, home-link 35, link-keeping 36). `link-carriers` is declared not applicable: this SDK has only the WebSocket carrier. Nothing existing changes shape: every addition is a new type, a new function, a defaulted parameter, or a subclass of an exception already thrown there, and the 0.8.0 JVM signatures stay as hidden overloads.
