@@ -153,10 +153,24 @@ public class ThalovantReply @JvmOverloads constructor(
         return stages.isEmpty() || stages.any { !it.contains("fallback") }
     }
 
+    /**
+     * Whether a skill's own `speak` carries a positive assertion.
+     *
+     * Scoped to speak events only ([ThalovantEvents.SPEAK] /
+     * [ThalovantEvents.OVOS_UTTERANCE_SPEAK] -- not the wider [mediaEvents],
+     * which also holds a skill sound clip with no meaning as a claim, and not
+     * any other correlated event this reply collected, such as
+     * [ThalovantEvents.UTTERANCE_HANDLED]): the contract is that a skill
+     * asserts this on its own speak call, not on anything else the hub
+     * happened to stamp alongside it.
+     */
     private val hasAssertedClaim: Boolean get() = events.any { event ->
-        val meta = event.data["meta"] as? JsonObject
-        val flag = meta?.get(THALOVANT_CLAIMED_META_KEY) as? JsonPrimitive
-        flag != null && !flag.isString && flag.booleanOrNull == true
+        (event.name == ThalovantEvents.SPEAK || event.name == ThalovantEvents.OVOS_UTTERANCE_SPEAK) &&
+            run {
+                val meta = event.data["meta"] as? JsonObject
+                val flag = meta?.get(THALOVANT_CLAIMED_META_KEY) as? JsonPrimitive
+                flag != null && !flag.isString && flag.booleanOrNull == true
+            }
     }
 
     private fun contextIdentifiers(key: String): List<String> = events.mapNotNull {

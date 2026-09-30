@@ -10,10 +10,12 @@ class ReplyClaimsTest {
             val failed = row["failed"]!!.jsonPrimitive.boolean
             val contexts = row["contexts"]!!.jsonArray
             val metas = row["metas"]?.jsonArray
+            val names = row["names"]?.jsonArray
             val events = contexts.mapIndexed { index, context ->
                 val meta = metas?.getOrNull(index)?.takeUnless { it is JsonNull }?.jsonObject
                 val data = if (meta != null) buildJsonObject { put("meta", meta) } else buildJsonObject {}
-                ThalovantEvent("speak", data, context.jsonObject)
+                val name = names?.getOrNull(index)?.takeUnless { it is JsonNull }?.jsonPrimitive?.content ?: "speak"
+                ThalovantEvent(name, data, context.jsonObject)
             }
             val reply = ThalovantReply("reply", emptyList(), handled, handled && !failed, null, null,
                 events,
@@ -68,6 +70,21 @@ class ReplyClaimsTest {
             "ovos-fallback-pipeline-plugin", "thalovant-skill-home.thalovant",
             buildJsonObject { put(THALOVANT_CLAIMED_META_KEY, true) },
         )), failureEvent = ThalovantEvent("failure", buildJsonObject {}, buildJsonObject {}))
+        assertFalse(r.claimed)
+    }
+
+    @Test fun assertionOnANonSpeakEventIsIgnored() {
+        // Regression: a correlated event this reply happens to carry (e.g. the
+        // hub's own ovos.utterance.handled) carrying the same meta shape must
+        // not assert a claim -- only the skill's own speak event may.
+        val r = reply(true, listOf(ThalovantEvent(
+            ThalovantEvents.UTTERANCE_HANDLED,
+            buildJsonObject { put("meta", buildJsonObject { put(THALOVANT_CLAIMED_META_KEY, true) }) },
+            buildJsonObject {
+                put("pipeline_id", "ovos-fallback-pipeline-plugin")
+                put("skill_id", "thalovant-skill-custos-fallback.thalovant")
+            },
+        )))
         assertFalse(r.claimed)
     }
 

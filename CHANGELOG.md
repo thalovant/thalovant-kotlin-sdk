@@ -16,6 +16,15 @@ never sets the key is judged exactly as before. The updated
 `reply-claim-vectors.json` is vendored byte for byte, with a `metas` array
 added alongside the existing `contexts`.
 
+Follow-up (Python reference digest `841f3bbeec23`): the assertion scan is
+restricted to the reply's own `speak`/`ovos.utterance.speak` events, never any
+other correlated event the reply happened to collect -- a code-review finding
+on the earlier revision, since a hub-sent `ovos.utterance.handled` carrying
+the same meta shape would otherwise have wrongly asserted a claim too.
+`reply-claim-vectors.json` gains a `names` array alongside `contexts`/`metas`
+(absent means `"speak"`) and a new
+`assertion-on-a-non-speak-event-is-ignored` case.
+
 ## 0.8.1
 
 The Python reference's 0.9.1 (`d33dc2be8b00`): the changed `api-error`, `device-login`, `home-link` and `link-keeping` vector files are vendored byte for byte, and every recorded case produces the reference's digests (api-error 15, device-login 20, home-link 35, link-keeping 36). `link-carriers` is declared not applicable: this SDK has only the WebSocket carrier. Nothing existing changes shape: every addition is a new type, a new function, a defaulted parameter, or a subclass of an exception already thrown there, and the 0.8.0 JVM signatures stay as hidden overloads.
