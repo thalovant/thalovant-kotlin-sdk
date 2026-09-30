@@ -19,7 +19,7 @@
     "binary": {
       "implementation": {
         "src/main/kotlin/com/thalovant/sdk/Client.kt": "60abc14bae55aeb0f0f2940b26f7228b147c95568d779e61fa954742149b97a2",
-        "src/main/kotlin/com/thalovant/sdk/Events.kt": "64a2363c20f49273736377cc74dda202b384f238c0b7321fa90669406497b754",
+        "src/main/kotlin/com/thalovant/sdk/Events.kt": "e2ebca1fe37c14d51a9e67f1115fcc5da2378a22cd8ca4d8b18446cd52cfe39f",
         "src/main/kotlin/com/thalovant/sdk/Transport.kt": "31e3cbcc4da510ccc5e4d026e5c860190c18c6e7410b98b0d86f915519818b32",
         "src/main/kotlin/com/thalovant/sdk/Wire.kt": "3f7c99de6e13714a2a610f6a22f293d7e9141998b83b77d9ed93519be082941b"
       },
@@ -90,7 +90,7 @@
     "conversation": {
       "implementation": {
         "src/main/kotlin/com/thalovant/sdk/Client.kt": "60abc14bae55aeb0f0f2940b26f7228b147c95568d779e61fa954742149b97a2",
-        "src/main/kotlin/com/thalovant/sdk/Events.kt": "64a2363c20f49273736377cc74dda202b384f238c0b7321fa90669406497b754"
+        "src/main/kotlin/com/thalovant/sdk/Events.kt": "e2ebca1fe37c14d51a9e67f1115fcc5da2378a22cd8ca4d8b18446cd52cfe39f"
       },
       "reason": "carryConversation() and the client's per-session memory, run against the shared conversation vectors.",
       "status": "required",
@@ -122,7 +122,7 @@
     "home-link": {
       "implementation": {
         "src/main/kotlin/com/thalovant/sdk/Client.kt": "60abc14bae55aeb0f0f2940b26f7228b147c95568d779e61fa954742149b97a2",
-        "src/main/kotlin/com/thalovant/sdk/Events.kt": "64a2363c20f49273736377cc74dda202b384f238c0b7321fa90669406497b754",
+        "src/main/kotlin/com/thalovant/sdk/Events.kt": "e2ebca1fe37c14d51a9e67f1115fcc5da2378a22cd8ca4d8b18446cd52cfe39f",
         "src/main/kotlin/com/thalovant/sdk/Home.kt": "18edf6ae26aefa0cbf9c3b2f795c9b4334107c8c8c401c1a3146873626772e61",
         "src/main/kotlin/com/thalovant/sdk/Session.kt": "759f3b2d1a1ec6d5f6b01933643b1c034762df4f5c3feee949d537419a9f32e6",
         "src/main/kotlin/com/thalovant/sdk/Transport.kt": "31e3cbcc4da510ccc5e4d026e5c860190c18c6e7410b98b0d86f915519818b32"
@@ -194,7 +194,7 @@
     "mesh": {
       "implementation": {
         "src/main/kotlin/com/thalovant/sdk/Client.kt": "60abc14bae55aeb0f0f2940b26f7228b147c95568d779e61fa954742149b97a2",
-        "src/main/kotlin/com/thalovant/sdk/Events.kt": "64a2363c20f49273736377cc74dda202b384f238c0b7321fa90669406497b754",
+        "src/main/kotlin/com/thalovant/sdk/Events.kt": "e2ebca1fe37c14d51a9e67f1115fcc5da2378a22cd8ca4d8b18446cd52cfe39f",
         "src/main/kotlin/com/thalovant/sdk/Transport.kt": "31e3cbcc4da510ccc5e4d026e5c860190c18c6e7410b98b0d86f915519818b32"
       },
       "reason": "onHive() over the five hive kinds and propagate/escalate/broadcast, run against the shared mesh vectors.",
@@ -226,17 +226,17 @@
     },
     "runtime": {
       "implementation": {
-        "src/main/kotlin/com/thalovant/sdk/Events.kt": "64a2363c20f49273736377cc74dda202b384f238c0b7321fa90669406497b754",
+        "src/main/kotlin/com/thalovant/sdk/Events.kt": "e2ebca1fe37c14d51a9e67f1115fcc5da2378a22cd8ca4d8b18446cd52cfe39f",
         "src/main/kotlin/com/thalovant/sdk/Runtime.kt": "4d366a4d8338c8e3d114d9b0e55f749c7c22dee51c1e571d50eff373b53516aa",
         "src/main/kotlin/com/thalovant/sdk/Transport.kt": "31e3cbcc4da510ccc5e4d026e5c860190c18c6e7410b98b0d86f915519818b32"
       },
-      "reason": "Applicable public behavior is implemented and exercised by the named regression suites and shared fixtures. HiveMind #251/#252 only changes the Python upstream client dispatcher; this consumer uses native single-dispatch transports (MCP delegates to the Node SDK), or caller-owned frame parsing in embedded C. No Python HiveMind bus dependency or slave-protocol reinjection exists here. Python now requires fixed upstream 1.1.9a1 and removes its identity-based suppression; equal independent native frames remain distinct. Reply claim metadata follows the Python string-ID contract, with first-seen ordering, case-sensitive fallback stages and legacy unstamped success. Invalid non-string stamps are ignored. Embedded C exposes bounded extraction and claim classification while its caller retains ordered IDs.",
+      "reason": "Applicable public behavior is implemented and exercised by the named regression suites and shared fixtures. HiveMind #251/#252 only changes the Python upstream client dispatcher; this consumer uses native single-dispatch transports (MCP delegates to the Node SDK), or caller-owned frame parsing in embedded C. No Python HiveMind bus dependency or slave-protocol reinjection exists here. Python now requires fixed upstream 1.1.9a1 and removes its identity-based suppression; equal independent native frames remain distinct. Reply claim metadata follows the Python string-ID contract, with first-seen ordering, case-sensitive fallback stages and legacy unstamped success. Invalid non-string stamps are ignored. Embedded C exposes bounded extraction and claim classification while its caller retains ordered IDs. A skill may now positively assert a genuine claim from the fallback tier via a literal `true` under `THALOVANT_CLAIMED_META_KEY` (`thalovant_claimed`) in its own `speak` event's `meta` object; `ThalovantReply.claimed` checks it after the handled/ok/no-failure gate, so it can only ever turn a would-be false into true, and a reply that never sets it is judged exactly as before. The scan is restricted to that speak event alone (`ThalovantEvents.SPEAK`/`OVOS_UTTERANCE_SPEAK`), never any other correlated event the reply collected, so a correlated `ovos.utterance.handled` carrying the same meta shape cannot assert a claim (0.9.2).",
       "status": "required",
       "tests": {
-        "src/test/kotlin/com/thalovant/sdk/ReplyClaimsTest.kt": "48215df9f7ceeeb02f59298d22534506a4eb2e4bdf52075782b3cf2e2a3bb205",
+        "src/test/kotlin/com/thalovant/sdk/ReplyClaimsTest.kt": "f295dda0e752a35d488fab519e13a6f1b9b05895e41ee68f0069b916caa2cc23",
         "src/test/kotlin/com/thalovant/sdk/RuntimeTest.kt": "9a4e74cb1ca2725fe819f52fca22cd383e0e7f905a3c27ef7bb396cfb59bdebe",
         "src/test/kotlin/com/thalovant/sdk/TransportTest.kt": "4e2ca0b51a73bdf8ca0f979ef823aabb75a1d024fb7ab89050addc4e4c9be465",
-        "src/test/resources/thalovant/reply-claim-vectors.json": "45f2731589e612d5a849376d94073c57b0fef426a92e1d065c58c48442b1ffdc"
+        "src/test/resources/thalovant/reply-claim-vectors.json": "303bc10666baafbc85e67d7a9dcd6e0fbb16a99e539aed6d829fb0f4744c96b8"
       },
       "vectors": {
         "reply-claim-vectors.json": "src/test/resources/thalovant/reply-claim-vectors.json"
@@ -273,7 +273,9 @@
     "3cdc3e21b6f5505794d2d0988ea92febe3c4acce228429e84e87e93da07c4bab",
     "2460eb90bd56b1b182be3db365ba29bfef712d4ea2748061652ba0f28dcf6f50",
     "d33dc2be8b0074be4e16d89a4b615f0e6bc32d99fb513cb75e20c09cd0fab4b6",
-    "3b0acf7c8b2f03bec95d9e9bba4f82e88c79ad3d98590988852e6c06deb48af0"
+    "3b0acf7c8b2f03bec95d9e9bba4f82e88c79ad3d98590988852e6c06deb48af0",
+    "50d65c1596a99e5db78c38c0898ca01bfbb105da305e9804f394f08756af7f50",
+    "841f3bbeec23f04c5decae75c9cfd6ea6a397992c7e4d7cd4195dc9dd919cd1a"
   ],
   "schema_version": 1
 }

@@ -5,6 +5,7 @@ import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 
@@ -114,6 +115,14 @@ public class ThalovantEvent(
     public val isFailure: Boolean get() = name in ThalovantEvents.FAILURE_EVENTS
 }
 
+/**
+ * Data key under a `speak` event's own `meta` object by which a skill may
+ * positively assert that it genuinely answered, even from the fallback
+ * pipeline tier. Only a literal `true` under this key counts; anything else
+ * (absent, `false`, a string, a number) is inert. See [ThalovantReply.claimed].
+ */
+public const val THALOVANT_CLAIMED_META_KEY: String = "thalovant_claimed"
+
 /** Aggregated reply returned by [ThalovantClient.ask]. */
 public class ThalovantReply @JvmOverloads constructor(
     public val text: String,
@@ -128,9 +137,42 @@ public class ThalovantReply @JvmOverloads constructor(
 ) {
     public val pipelineIds: List<String> get() = contextIdentifiers("pipeline_id")
     public val skillIds: List<String> get() = contextIdentifiers("skill_id")
-    /** Advisory claim status; unstamped successful legacy replies remain claimed. */
-    public val claimed: Boolean get() = handled && ok && failureEvent == null &&
-        pipelineIds.let { stages -> stages.isEmpty() || stages.any { !it.contains("fallback") } }
+
+    /**
+     * Advisory claim status; unstamped successful legacy replies remain
+     * claimed. A skill may positively assert that it genuinely answered by
+     * putting a literal `true` under [THALOVANT_CLAIMED_META_KEY] in its own
+     * `speak` event's `meta` object -- this only ever turns a would-be
+     * `false` into `true`, checked after the handled/ok/no-failure gate, so
+     * it can never rescue a failed or unhandled reply.
+     */
+    public val claimed: Boolean get() {
+        if (!(handled && ok && failureEvent == null)) return false
+        if (hasAssertedClaim) return true
+        val stages = pipelineIds
+        return stages.isEmpty() || stages.any { !it.contains("fallback") }
+    }
+
+    /**
+     * Whether a skill's own `speak` carries a positive assertion.
+     *
+     * Scoped to speak events only ([ThalovantEvents.SPEAK] /
+     * [ThalovantEvents.OVOS_UTTERANCE_SPEAK] -- not the wider [mediaEvents],
+     * which also holds a skill sound clip with no meaning as a claim, and not
+     * any other correlated event this reply collected, such as
+     * [ThalovantEvents.UTTERANCE_HANDLED]): the contract is that a skill
+     * asserts this on its own speak call, not on anything else the hub
+     * happened to stamp alongside it.
+     */
+    private val hasAssertedClaim: Boolean get() = events.any { event ->
+        (event.name == ThalovantEvents.SPEAK || event.name == ThalovantEvents.OVOS_UTTERANCE_SPEAK) &&
+            run {
+                val meta = event.data["meta"] as? JsonObject
+                val flag = meta?.get(THALOVANT_CLAIMED_META_KEY) as? JsonPrimitive
+                flag != null && !flag.isString && flag.booleanOrNull == true
+            }
+    }
+
     private fun contextIdentifiers(key: String): List<String> = events.mapNotNull {
         (it.context[key] as? JsonPrimitive)?.takeIf { value -> value.isString }?.content?.takeIf(String::isNotEmpty)
     }.distinct()
