@@ -55,7 +55,11 @@ fun main() = runBlocking {
 }
 ```
 
-Keep `result.identity` secret, and do not log `result.asJson(includeSecrets = true)`.
+Keep `result.identity` secret, and treat the raw `result.hub` and
+`result.client` API resources the same way: they carry the bootstrap
+credentials. The default `result.asJson()` redacts all of them and is safe to
+log. `result.asJson(includeSecrets = true)` returns the real secrets, so never
+log or persist it.
 
 ## Documentation
 
@@ -84,7 +88,7 @@ and workspace assistants through `createMemoryItem` and `listMemoryItems`
 
 ## Security
 
-See [SECURITY.md](https://github.com/thalovant/.github/blob/main/SECURITY.md)
+See [SECURITY.md](SECURITY.md)
 for how to report a vulnerability.
 
 ## Licence
