@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.3
+
+- Automated patch release of the unreleased changes on `main` since v0.8.2.
+
 ## 0.8.2
 
 The Python reference's 0.9.2 (`claim091/reply-claimed-meta-signal`): a skill may
