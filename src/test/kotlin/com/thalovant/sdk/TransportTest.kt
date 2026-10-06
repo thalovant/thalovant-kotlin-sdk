@@ -185,6 +185,15 @@ class TransportTest {
     }
 
     @Test
+    fun `an upper-case WS master is dialled with a lower-case scheme`() {
+        val transport = HiveMindWssTransport(identity("WSS://hub.example/runtime"))
+        val endpoint = transport.endpoint
+        assertTrue(endpoint.startsWith("wss://hub.example/runtime?"), endpoint)
+        val plain = HiveMindWssTransport(identity("WS://hub.example"))
+        assertTrue(plain.endpoint.startsWith("ws://hub.example/?"), plain.endpoint)
+    }
+
+    @Test
     fun `authorized query precedes a fragment on an endpoint without a query`() {
         val transport = HiveMindWssTransport(identity("wss://hub.example/runtime#section"))
         val parsed = ("http" + transport.endpoint.substring(2)).toHttpUrl()

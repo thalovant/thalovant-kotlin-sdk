@@ -188,10 +188,14 @@ public class HiveMindWssTransport(
 
     public val endpoint: String
         get() {
-            val raw = identity.endpointFor(HubProtocol.WSS)
+            val given = identity.endpointFor(HubProtocol.WSS)
                 ?: throw ThalovantConnectionException("The identity does not include a WSS endpoint.")
-            if (!raw.startsWith("ws://") && !raw.startsWith("wss://")) {
-                throw ThalovantConnectionException("WSS endpoint must start with ws:// or wss://.")
+            // A URL scheme is case-insensitive, and endpointFor returns a
+            // WS:// master as written; lower only the scheme.
+            val raw = when {
+                given.startsWith("wss://", ignoreCase = true) -> "wss://" + given.substring(6)
+                given.startsWith("ws://", ignoreCase = true) -> "ws://" + given.substring(5)
+                else -> throw ThalovantConnectionException("WSS endpoint must start with ws:// or wss://.")
             }
             // HttpUrl owns query encoding and fragment placement. Convert only
             // the scheme for parsing, then restore the public WebSocket URL.
