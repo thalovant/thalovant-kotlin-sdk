@@ -139,6 +139,47 @@ class IdentityTest {
     }
 
     @Test
+    fun `reads a WS default master whatever its case`() {
+        val identity = ThalovantIdentity(
+            buildJsonObject {
+                put("access_key", "access")
+                put("password", "secret")
+                put("site_id", "site")
+                put("default_master", "WS://hub.local")
+            },
+        )
+
+        assertEquals("WS://hub.local", identity.endpointFor(HubProtocol.WSS))
+    }
+
+    @Test
+    fun `an explicit WSS endpoint wins and an HTTPS master gives none`() {
+        val explicit = ThalovantIdentity(
+            buildJsonObject {
+                put("access_key", "access")
+                put("password", "secret")
+                put("site_id", "site")
+                put("default_master", "wss://daily-desk.thalovant.io")
+                putJsonObject("data_plane_endpoints") {
+                    put("wss", "wss://socket.example.com/hivemind/public")
+                }
+            },
+        )
+        val https = ThalovantIdentity(
+            buildJsonObject {
+                put("access_key", "access")
+                put("password", "secret")
+                put("site_id", "site")
+                put("default_master", "https://daily-desk.thalovant.io")
+            },
+        )
+
+        assertEquals("wss://socket.example.com/hivemind/public", explicit.endpointFor(HubProtocol.WSS))
+        assertNull(https.endpointFor(HubProtocol.WSS))
+        assertNull(explicit.endpointFor(HubProtocol.MQTT))
+    }
+
+    @Test
     fun `loads MQTT credentials and redacts them by default`() {
         val identity = ThalovantIdentity(
             buildJsonObject {

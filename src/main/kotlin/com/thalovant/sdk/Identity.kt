@@ -110,8 +110,10 @@ public class ThalovantIdentity(input: JsonObject) {
             return endpointBase()
         }
         dataPlaneEndpoints.endpointFor(protocol)?.let { return it }
+        // Any case, as the Python reference and the other ports read it.
         if (protocol == HubProtocol.WSS &&
-            (defaultMaster.startsWith("wss://") || defaultMaster.startsWith("ws://"))
+            (defaultMaster.startsWith("wss://", ignoreCase = true) ||
+                defaultMaster.startsWith("ws://", ignoreCase = true))
         ) {
             return defaultMaster
         }

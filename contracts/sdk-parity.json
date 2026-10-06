@@ -20,7 +20,7 @@
       "implementation": {
         "src/main/kotlin/com/thalovant/sdk/Client.kt": "60abc14bae55aeb0f0f2940b26f7228b147c95568d779e61fa954742149b97a2",
         "src/main/kotlin/com/thalovant/sdk/Events.kt": "e2ebca1fe37c14d51a9e67f1115fcc5da2378a22cd8ca4d8b18446cd52cfe39f",
-        "src/main/kotlin/com/thalovant/sdk/Transport.kt": "31e3cbcc4da510ccc5e4d026e5c860190c18c6e7410b98b0d86f915519818b32",
+        "src/main/kotlin/com/thalovant/sdk/Transport.kt": "efd1b73bfd817e7671b7451c50e31ad2c5dcba89b2e87e110980820a00644b71",
         "src/main/kotlin/com/thalovant/sdk/Wire.kt": "3f7c99de6e13714a2a610f6a22f293d7e9141998b83b77d9ed93519be082941b"
       },
       "reason": "HiveWire.decode branches on BINARY: four bits of payload type, then the clip itself, never parsed or inflated. onBinary() delivers it. Run against the shared binary vectors and against binary-frames.json, which is hivemind-bus-client's own encoder output rather than frames this SDK built for itself. A compressed part of a WIRE-1 frame inflates to at most 32 MiB (MAX_INFLATED); beyond that, or truncated, the frame is refused (ReviewFindingsTest).",
@@ -125,7 +125,7 @@
         "src/main/kotlin/com/thalovant/sdk/Events.kt": "e2ebca1fe37c14d51a9e67f1115fcc5da2378a22cd8ca4d8b18446cd52cfe39f",
         "src/main/kotlin/com/thalovant/sdk/Home.kt": "18edf6ae26aefa0cbf9c3b2f795c9b4334107c8c8c401c1a3146873626772e61",
         "src/main/kotlin/com/thalovant/sdk/Session.kt": "759f3b2d1a1ec6d5f6b01933643b1c034762df4f5c3feee949d537419a9f32e6",
-        "src/main/kotlin/com/thalovant/sdk/Transport.kt": "31e3cbcc4da510ccc5e4d026e5c860190c18c6e7410b98b0d86f915519818b32"
+        "src/main/kotlin/com/thalovant/sdk/Transport.kt": "efd1b73bfd817e7671b7451c50e31ad2c5dcba89b2e87e110980820a00644b71"
       },
       "reason": "replyContext() in Events.kt and ThalovantClient.reply build the OVOS-MSG-1 5.2 reply from the context exactly as the hub sent it (this SDK delivers the raw context); a destination with no source gives a reply with no destination. Home.kt holds the contract (ThalovantHome), HomeRequest, HomeAnswer, homeResponse, plainSpeech (only real tags, comments and processing instructions removed, in linear time, by the reference's one-pass tag rule; numeric references, the five XML entities and &nbsp; decoded; Unicode White_Space collapsed) and answerHomeRequest(s) on a client or a HubSession: the handler runs detached with its timeout or what is left of the hub's 10 s from arrival, the answer goes out at the deadline even when the handler ignores cancellation, and the reply's sending is bounded by what the handler left and withdrawn after it. Keeping the link: closeRefuses() in Transport.kt reads 1000, 1005 and 1008 during the handshake or within 750 ms after it as a refusal; a hub answer that does not authenticate is a refusal; a failed KK attempt is followed at once by one XX attempt inside the same connect, and a hub key that is not the pinned one is ThalovantHubIdentityChangedException, checked before this side answers; an upgrade answered 401 or 403 is a refusal. LinkSupervisor in Session.kt holds the retry ladder, the immediate redial after a drop, the 600 s refusal grace and the immediate stop on a changed key, and HubSession.run follows it; HubSession.reply never waits behind a running ask. The home-link cases run through ThalovantClient.answerHomeRequest and its reply path; LinkKeepingVectorsTest runs close cases through closeRefuses, handshake cases through the real WSS transport against FakeHub (an in-process Noise hub with KK, XX, password and key changes and upgrade statuses, recording the patterns chosen) and supervise cases through LinkSupervisor. Results recorded and matching the reference. 0.9.1: any frame that decrypts after the handshake -- JSON, WIRE-1 binary, a chunk, the hub's HELLO -- makes a later refusal-code close a drop (closeRefuses afterAuthenticatedFrame); a refused close as an XX handshake ends is ThalovantClientKeyRejectedException, a ThalovantIdentityException naming the key folders, on which LinkSupervisor (after(..., clientKeyRejected = true), carried beside LinkOutcome.REFUSED rather than as a new enum entry) and HubSession.run give up at once; a reply that went out records the link as up.",
       "status": "required",
@@ -144,14 +144,14 @@
     },
     "identity": {
       "implementation": {
-        "src/main/kotlin/com/thalovant/sdk/Identity.kt": "9746344453b826add1fe0233116f20774c590c96f791e1534ea8eaa73cd513a4",
+        "src/main/kotlin/com/thalovant/sdk/Identity.kt": "e7b6f77a5e495c7e2c5419118f6a119c03b603db5b0806b3e7408f4b97dd8d1d",
         "src/main/kotlin/com/thalovant/sdk/NoiseStore.kt": "814f53787047bcff17e20697b1a0ffe4816da4ba5f2d883293e580bb05a36025",
         "src/main/kotlin/com/thalovant/sdk/Protocols.kt": "24f103b3ca1897d5ee2661f9acfe73daaa18a6951fb0fb842291afade9c87bae"
       },
-      "reason": "Applicable public behavior is implemented and exercised by the named regression suites and shared fixtures. An identity read from a file (ThalovantIdentity.sourcePath) keeps its Noise key in HiveMindNoiseStore.forIdentity's folder beside that file, copying -- never moving -- the key and pins this SDK kept in the shared default when that key has met the hub (ReviewFindingsTest).",
+      "reason": "Applicable public behavior is implemented and exercised by the named regression suites and shared fixtures. An identity read from a file (ThalovantIdentity.sourcePath) keeps its Noise key in HiveMindNoiseStore.forIdentity's folder beside that file, copying -- never moving -- the key and pins this SDK kept in the shared default when that key has met the hub (ReviewFindingsTest). 0.9.5 reference: endpointFor(WSS) reads a wss:// or ws:// default_master in any case when no WSS endpoint is named (it was lowercase-only); an explicit endpoint wins, an http(s) master gives none, the master is never MQTT (IdentityTest).",
       "status": "required",
       "tests": {
-        "src/test/kotlin/com/thalovant/sdk/IdentityTest.kt": "b0175ee7cb24c2b82aaa8aaf8dfc5c02b745b2aa0abd50ee52d826b8c5f35b0b",
+        "src/test/kotlin/com/thalovant/sdk/IdentityTest.kt": "db11939c25071bd46383a44c0a2c0356765fd74081c48cc6c5c78cdfa9f10908",
         "src/test/kotlin/com/thalovant/sdk/ProtocolsTest.kt": "e38ed5cda9a2354ee016d0ab40293d6e6285c0f49336f4e047afbce38a8e698d",
         "src/test/kotlin/com/thalovant/sdk/ReviewFindingsTest.kt": "d29411cc0414b49dce0e675c7e80934f006f3fbeafa9084e3e2df55379997a1a"
       }
@@ -195,7 +195,7 @@
       "implementation": {
         "src/main/kotlin/com/thalovant/sdk/Client.kt": "60abc14bae55aeb0f0f2940b26f7228b147c95568d779e61fa954742149b97a2",
         "src/main/kotlin/com/thalovant/sdk/Events.kt": "e2ebca1fe37c14d51a9e67f1115fcc5da2378a22cd8ca4d8b18446cd52cfe39f",
-        "src/main/kotlin/com/thalovant/sdk/Transport.kt": "31e3cbcc4da510ccc5e4d026e5c860190c18c6e7410b98b0d86f915519818b32"
+        "src/main/kotlin/com/thalovant/sdk/Transport.kt": "efd1b73bfd817e7671b7451c50e31ad2c5dcba89b2e87e110980820a00644b71"
       },
       "reason": "onHive() over the five hive kinds and propagate/escalate/broadcast, run against the shared mesh vectors.",
       "status": "required",
@@ -217,7 +217,7 @@
       "tests": {
         "src/test/kotlin/com/thalovant/sdk/RefusalVectorsTest.kt": "29cfa1696ca39a9ea468815b002645807f601312281f8b0aeafa2f6b3748e6e8",
         "src/test/kotlin/com/thalovant/sdk/RuntimeTest.kt": "9a4e74cb1ca2725fe819f52fca22cd383e0e7f905a3c27ef7bb396cfb59bdebe",
-        "src/test/kotlin/com/thalovant/sdk/TransportTest.kt": "4e2ca0b51a73bdf8ca0f979ef823aabb75a1d024fb7ab89050addc4e4c9be465",
+        "src/test/kotlin/com/thalovant/sdk/TransportTest.kt": "b672d54b82a2aeebfd9ad4f50361ca4109d766502f8c9594fcad05f14c8886ca",
         "src/test/resources/thalovant/refusal-vectors.json": "6b0f4128f1cc9fd8a54944410ce93c6515bac6cde9257284e313a4fea825bfcb"
       },
       "vectors": {
@@ -228,14 +228,14 @@
       "implementation": {
         "src/main/kotlin/com/thalovant/sdk/Events.kt": "e2ebca1fe37c14d51a9e67f1115fcc5da2378a22cd8ca4d8b18446cd52cfe39f",
         "src/main/kotlin/com/thalovant/sdk/Runtime.kt": "4d366a4d8338c8e3d114d9b0e55f749c7c22dee51c1e571d50eff373b53516aa",
-        "src/main/kotlin/com/thalovant/sdk/Transport.kt": "31e3cbcc4da510ccc5e4d026e5c860190c18c6e7410b98b0d86f915519818b32"
+        "src/main/kotlin/com/thalovant/sdk/Transport.kt": "efd1b73bfd817e7671b7451c50e31ad2c5dcba89b2e87e110980820a00644b71"
       },
       "reason": "Applicable public behavior is implemented and exercised by the named regression suites and shared fixtures. HiveMind #251/#252 only changes the Python upstream client dispatcher; this consumer uses native single-dispatch transports (MCP delegates to the Node SDK), or caller-owned frame parsing in embedded C. No Python HiveMind bus dependency or slave-protocol reinjection exists here. Python now requires fixed upstream 1.1.9a1 and removes its identity-based suppression; equal independent native frames remain distinct. Reply claim metadata follows the Python string-ID contract, with first-seen ordering, case-sensitive fallback stages and legacy unstamped success. Invalid non-string stamps are ignored. Embedded C exposes bounded extraction and claim classification while its caller retains ordered IDs. A skill may now positively assert a genuine claim from the fallback tier via a literal `true` under `THALOVANT_CLAIMED_META_KEY` (`thalovant_claimed`) in its own `speak` event's `meta` object; `ThalovantReply.claimed` checks it after the handled/ok/no-failure gate, so it can only ever turn a would-be false into true, and a reply that never sets it is judged exactly as before. The scan is restricted to that speak event alone (`ThalovantEvents.SPEAK`/`OVOS_UTTERANCE_SPEAK`), never any other correlated event the reply collected, so a correlated `ovos.utterance.handled` carrying the same meta shape cannot assert a claim (0.9.2).",
       "status": "required",
       "tests": {
         "src/test/kotlin/com/thalovant/sdk/ReplyClaimsTest.kt": "f295dda0e752a35d488fab519e13a6f1b9b05895e41ee68f0069b916caa2cc23",
         "src/test/kotlin/com/thalovant/sdk/RuntimeTest.kt": "9a4e74cb1ca2725fe819f52fca22cd383e0e7f905a3c27ef7bb396cfb59bdebe",
-        "src/test/kotlin/com/thalovant/sdk/TransportTest.kt": "4e2ca0b51a73bdf8ca0f979ef823aabb75a1d024fb7ab89050addc4e4c9be465",
+        "src/test/kotlin/com/thalovant/sdk/TransportTest.kt": "b672d54b82a2aeebfd9ad4f50361ca4109d766502f8c9594fcad05f14c8886ca",
         "src/test/resources/thalovant/reply-claim-vectors.json": "303bc10666baafbc85e67d7a9dcd6e0fbb16a99e539aed6d829fb0f4744c96b8"
       },
       "vectors": {
@@ -275,7 +275,8 @@
     "d33dc2be8b0074be4e16d89a4b615f0e6bc32d99fb513cb75e20c09cd0fab4b6",
     "3b0acf7c8b2f03bec95d9e9bba4f82e88c79ad3d98590988852e6c06deb48af0",
     "50d65c1596a99e5db78c38c0898ca01bfbb105da305e9804f394f08756af7f50",
-    "841f3bbeec23f04c5decae75c9cfd6ea6a397992c7e4d7cd4195dc9dd919cd1a"
+    "841f3bbeec23f04c5decae75c9cfd6ea6a397992c7e4d7cd4195dc9dd919cd1a",
+    "3f37b7453397f577a1db5cf2db7f709ffa4b09194869e07970d0881239b7a218"
   ],
   "schema_version": 1
 }
