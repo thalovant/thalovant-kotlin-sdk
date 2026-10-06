@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.8.4
+
+The Python reference's 0.9.5 round (reference digest `3f37b7453397…`).
+
+- `ThalovantIdentity.endpointFor(HubProtocol.WSS)` reads a `wss://` or `ws://` `default_master` in any case. It already fell back to the master when the identity named no WSS endpoint, but only for a lowercase scheme. The Python reference (thalovant-python-sdk#102), Node, .NET and Swift ignore the case, and Go and Rust now do too. An explicit WSS endpoint still wins, an `https://` master still gives none, and the master is never an MQTT endpoint.
+
 ## 0.8.3
 
 - Automated patch release of the unreleased changes on `main` since v0.8.2.

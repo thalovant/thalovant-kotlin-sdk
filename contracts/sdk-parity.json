@@ -144,14 +144,14 @@
     },
     "identity": {
       "implementation": {
-        "src/main/kotlin/com/thalovant/sdk/Identity.kt": "9746344453b826add1fe0233116f20774c590c96f791e1534ea8eaa73cd513a4",
+        "src/main/kotlin/com/thalovant/sdk/Identity.kt": "e7b6f77a5e495c7e2c5419118f6a119c03b603db5b0806b3e7408f4b97dd8d1d",
         "src/main/kotlin/com/thalovant/sdk/NoiseStore.kt": "814f53787047bcff17e20697b1a0ffe4816da4ba5f2d883293e580bb05a36025",
         "src/main/kotlin/com/thalovant/sdk/Protocols.kt": "24f103b3ca1897d5ee2661f9acfe73daaa18a6951fb0fb842291afade9c87bae"
       },
-      "reason": "Applicable public behavior is implemented and exercised by the named regression suites and shared fixtures. An identity read from a file (ThalovantIdentity.sourcePath) keeps its Noise key in HiveMindNoiseStore.forIdentity's folder beside that file, copying -- never moving -- the key and pins this SDK kept in the shared default when that key has met the hub (ReviewFindingsTest).",
+      "reason": "Applicable public behavior is implemented and exercised by the named regression suites and shared fixtures. An identity read from a file (ThalovantIdentity.sourcePath) keeps its Noise key in HiveMindNoiseStore.forIdentity's folder beside that file, copying -- never moving -- the key and pins this SDK kept in the shared default when that key has met the hub (ReviewFindingsTest). 0.9.5 reference: endpointFor(WSS) reads a wss:// or ws:// default_master in any case when no WSS endpoint is named (it was lowercase-only); an explicit endpoint wins, an http(s) master gives none, the master is never MQTT (IdentityTest).",
       "status": "required",
       "tests": {
-        "src/test/kotlin/com/thalovant/sdk/IdentityTest.kt": "b0175ee7cb24c2b82aaa8aaf8dfc5c02b745b2aa0abd50ee52d826b8c5f35b0b",
+        "src/test/kotlin/com/thalovant/sdk/IdentityTest.kt": "db11939c25071bd46383a44c0a2c0356765fd74081c48cc6c5c78cdfa9f10908",
         "src/test/kotlin/com/thalovant/sdk/ProtocolsTest.kt": "e38ed5cda9a2354ee016d0ab40293d6e6285c0f49336f4e047afbce38a8e698d",
         "src/test/kotlin/com/thalovant/sdk/ReviewFindingsTest.kt": "d29411cc0414b49dce0e675c7e80934f006f3fbeafa9084e3e2df55379997a1a"
       }
@@ -275,7 +275,8 @@
     "d33dc2be8b0074be4e16d89a4b615f0e6bc32d99fb513cb75e20c09cd0fab4b6",
     "3b0acf7c8b2f03bec95d9e9bba4f82e88c79ad3d98590988852e6c06deb48af0",
     "50d65c1596a99e5db78c38c0898ca01bfbb105da305e9804f394f08756af7f50",
-    "841f3bbeec23f04c5decae75c9cfd6ea6a397992c7e4d7cd4195dc9dd919cd1a"
+    "841f3bbeec23f04c5decae75c9cfd6ea6a397992c7e4d7cd4195dc9dd919cd1a",
+    "3f37b7453397f577a1db5cf2db7f709ffa4b09194869e07970d0881239b7a218"
   ],
   "schema_version": 1
 }
