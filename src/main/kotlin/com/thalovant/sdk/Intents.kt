@@ -90,7 +90,8 @@ public data class IntentInventoryOptions(
     /** Fall back to the engines' manifests when the hub refuses `ovos.intent.list`. */
     public val fallback: Boolean = true,
     /**
-     * Retry an empty listing once in the language's usual form.
+     * Retry once in the language's usual form when a listing has no
+     * sentences: empty, or keyword rows only (no enabled template row).
      *
      * On by default: a listing that returns nothing from a hub which
      * demonstrably answers in that language is a fault, not a preference.
@@ -272,8 +273,8 @@ public data class HubIntentInventory(
      * The tag the hub actually listed each requested language under, in the
      * same order as [languages].
      *
-     * Equal to [languages] unless a listing came back empty and the
-     * language's usual form answered instead, which is the only way the two
+     * Equal to [languages] unless a listing came back without sentences and
+     * the language's usual form answered instead, which is the only way the two
      * differ. Callers rendering sentences must read them from the tag that
      * answered.
      */
@@ -507,6 +508,10 @@ internal suspend fun ThalovantClient.intentNames(lang: String, timeoutMs: Long):
     return names
 }
 
+/** Whether a listing has an enabled template row: the only kind with sentences. */
+private fun canCarrySentences(rows: List<IntentRegistration>): Boolean =
+    rows.any { it.enabled && it.method == "template" }
+
 /**
  * Everything the hub can be asked, in each language, grouped by skill.
  *
@@ -536,7 +541,7 @@ internal suspend fun ThalovantClient.intentInventory(
                 ListIntentsOptions(timeoutMs = options.timeoutMs, includeDefinitions = options.describe)
             var rows = listIntentRegistrations(lang, listingOptions)
             var tag = lang
-            if (rows.isEmpty() && options.nearest) {
+            if (options.nearest && !canCarrySentences(rows)) {
                 // Listing and asking do not agree about languages. The hub
                 // matches an utterance to the closest language it knows, so
                 // a phone set to en-CA is understood by skills registered
@@ -544,13 +549,37 @@ internal suspend fun ThalovantClient.intentInventory(
                 // same hub lists nothing for en-CA -- and a person is shown
                 // an empty hub by the hub that is answering them.
                 //
-                // Once only, and only on an empty listing: a hub that
-                // answered is never asked twice, and a language whose usual
-                // form is itself has nothing to retry with.
+                // Not only on an empty listing: on a listing with no template
+                // row, which can never carry a sentence. The Pop Culture hub
+                // (2026-10-11) listed five keyword intents of one skill under
+                // en-CA -- that skill registers keyword vocabulary in 63
+                // regional tags -- and 141 intents with sentences under
+                // en-US; five names is not an answer a person can use.
+                //
+                // Once only: a listing with a template row is never asked
+                // twice, a language whose usual form is itself has nothing to
+                // retry with, and the usual form's listing is taken only when
+                // it can carry sentences (or the first was empty), so keyword
+                // names are never traded for other names.
                 val usual = usualForm(lang)
                 if (usual != null) {
-                    val retried = listIntentRegistrations(usual, listingOptions)
-                    if (retried.isNotEmpty()) {
+                    val retried = try {
+                        listIntentRegistrations(usual, listingOptions)
+                    } catch (silent: ThalovantTimeoutException) {
+                        // A retry never makes the answer worse than the first
+                        // listing. Names the hub already gave stand when the
+                        // usual form times out, is refused or answers
+                        // `ok: false`; only an empty first listing lets the
+                        // failure through, exactly as before, so it still
+                        // reaches the engines' manifests below.
+                        if (rows.isEmpty()) throw silent
+                        emptyList()
+                    } catch (refused: ThalovantRuntimeException) {
+                        // ThalovantPolicyDeniedException is one of these.
+                        if (rows.isEmpty()) throw refused
+                        emptyList()
+                    }
+                    if (canCarrySentences(retried) || (retried.isNotEmpty() && rows.isEmpty())) {
                         rows = retried
                         tag = usual
                     }

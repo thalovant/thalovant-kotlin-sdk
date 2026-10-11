@@ -46,6 +46,8 @@ private val REGISTRATIONS: Map<String, Map<Pair<String, String>, List<String>>> 
         ),
     ),
 )
+private const val SCOUT = "thalovant-skill-source-scout.thalovant"
+private val SCOUT_KEYWORDS = listOf(SCOUT to "SourceScoutTopicIntent", SCOUT to "SourceScoutRealPromptIntent")
 private val ALLOWED = listOf("recognizer_loop:utterance", "speak")
 
 private fun jsonOf(vararg values: String): JsonArray = JsonArray(values.map { JsonPrimitive(it) })
@@ -75,6 +77,15 @@ internal open class FakeHubTransport(
     private val fallbackDelayMs: Long = 0,
     private val connectDelayMs: Long = 0,
     private val fallbackPayload: JsonObject = buildJsonObject { put("fallbacks", JsonArray(emptyList())) },
+    /**
+     * Keyword (adapt) registrations per language: listed, never described
+     * with sentences, exactly as ovos-core lists an IntentBuilder intent.
+     */
+    private val keywords: Map<String, List<Pair<String, String>>> = emptyMap(),
+    /** Languages whose `ovos.intent.list` gets no answer. */
+    private val listSilentIn: Set<String> = emptySet(),
+    /** Languages whose `ovos.intent.list` is answered `ok: false`. */
+    private val listFailsIn: Set<String> = emptySet(),
 ) : HiveMindRuntimeTransport {
     @Volatile
     final override var connected: Boolean = false
@@ -139,6 +150,18 @@ internal open class FakeHubTransport(
         }
         if (eventType in silent) return
         val lang = data["lang"]?.jsonPrimitive?.content ?: ""
+        if (eventType == ThalovantEvents.INTENT_LIST && lang in listSilentIn) return
+        if (eventType == ThalovantEvents.INTENT_LIST && lang in listFailsIn) {
+            deliver(
+                ThalovantEvents.INTENT_LIST_RESPONSE,
+                buildJsonObject {
+                    put("ok", false)
+                    put("error", "listing failed")
+                },
+                context,
+            )
+            return
+        }
         when (eventType) {
             ThalovantEvents.FALLBACK_LIST -> deliver(ThalovantEvents.FALLBACK_LIST_RESPONSE, fallbackPayload, context)
             ThalovantEvents.INTENT_LIST -> {
@@ -154,6 +177,15 @@ internal open class FakeHubTransport(
                         if (definitionsInList && data["include_definitions"]?.jsonPrimitive?.content == "true") {
                             put("definition", definition(key, lang, samples))
                         }
+                    }
+                } + keywords[lang].orEmpty().map { (skillId, intentName) ->
+                    buildJsonObject {
+                        put("skill_id", skillId)
+                        put("intent_name", intentName)
+                        put("lang", lang)
+                        put("method", "keyword")
+                        put("enabled", true)
+                        put("session_id", "default")
                     }
                 }
                 deliver(
@@ -277,6 +309,96 @@ class IntentsTest {
         assertEquals(emptyList(), shadow.intents[0].phrasesFor("fr-fr"))
         assertTrue(inventory.hasPhrases)
         assertEquals(2, inventory.intents.size)
+    }
+
+    private fun listings(hub: FakeHubTransport): List<String> =
+        hub.emittedOf(ThalovantEvents.INTENT_LIST).map { it.data["lang"]!!.jsonPrimitive.content }
+
+    @Test
+    fun `a tag the hub does not register is listed under its usual form`() = runBlocking {
+        val hub = FakeHubTransport()
+        val inventory = client(hub).intents(listOf("en-CA"))
+
+        assertEquals(listOf("en-us"), inventory.listedIn)
+        assertTrue(inventory.hasPhrases)
+        assertEquals(listOf("en-CA", "en-us"), listings(hub))
+    }
+
+    @Test
+    fun `a tag with only keyword rows is listed under its usual form`() = runBlocking {
+        // Not empty is not the same as answered. The Pop Culture hub on
+        // 2026-10-11: one skill registers its keyword vocabulary in 63
+        // regional tags, every other skill only in en-US. Its en-CA listing
+        // was five keyword rows, which carry no sentences, so a phone in
+        // Toronto was shown five names and nothing it could say -- the retry
+        // in the usual form only ran on an empty listing.
+        val hub = FakeHubTransport(keywords = mapOf("en-CA" to SCOUT_KEYWORDS, "en-us" to SCOUT_KEYWORDS))
+        val inventory = client(hub).intents(listOf("en-CA"))
+
+        assertEquals(listOf("en-us"), inventory.listedIn, "the usual form has sentences, en-CA has none")
+        assertTrue(inventory.hasPhrases)
+        assertEquals(listOf(SHADOW, SCOUT, WEATHER), inventory.skills.map { it.skillId })
+        assertEquals(listOf("en-CA", "en-us"), listings(hub))
+    }
+
+    @Test
+    fun `keyword rows are kept when the usual form has no sentences either`() = runBlocking {
+        val hub = FakeHubTransport(
+            registrations = emptyMap(),
+            keywords = mapOf("en-CA" to SCOUT_KEYWORDS, "en-us" to SCOUT_KEYWORDS.take(1)),
+        )
+        val inventory = client(hub).intents(listOf("en-CA"))
+
+        assertEquals(listOf("en-CA"), inventory.listedIn, "nothing better to take")
+        assertEquals(
+            listOf("SourceScoutRealPromptIntent", "SourceScoutTopicIntent"),
+            inventory.intents.map { it.name }.sorted(),
+        )
+    }
+
+    @Test
+    fun `a failed retry keeps the names the first listing gave`() = runBlocking {
+        // A retry never makes the answer worse than the first listing.
+        for (failure in listOf("silent", "refused")) {
+            val hub = FakeHubTransport(
+                keywords = mapOf("en-CA" to SCOUT_KEYWORDS),
+                listSilentIn = if (failure == "silent") setOf("en-us") else emptySet(),
+                listFailsIn = if (failure == "refused") setOf("en-us") else emptySet(),
+            )
+            val inventory = client(hub).intents(listOf("en-CA"), IntentInventoryOptions(timeoutMs = 200))
+
+            assertEquals(HubIntentSource.INTENT_MANIFEST, inventory.source, failure)
+            assertEquals(listOf("en-CA"), inventory.listedIn, failure)
+            assertEquals(
+                listOf("SourceScoutRealPromptIntent", "SourceScoutTopicIntent"),
+                inventory.intents.map { it.name }.sorted(),
+                failure,
+            )
+        }
+    }
+
+    @Test
+    fun `a failed retry after an empty listing still fails as before`() = runBlocking {
+        val refused = FakeHubTransport(registrations = emptyMap(), listFailsIn = setOf("en-us"))
+        assertFailsWith<ThalovantRuntimeException> {
+            client(refused).intents(listOf("en-CA"), IntentInventoryOptions(timeoutMs = 200))
+        }
+        // A silent retry after an empty listing still reaches the engines' manifests.
+        val silent = FakeHubTransport(registrations = emptyMap(), listSilentIn = setOf("en-us"))
+        val inventory = client(silent).intents(listOf("en-CA"), IntentInventoryOptions(timeoutMs = 200))
+        assertEquals(HubIntentSource.ENGINE_MANIFESTS, inventory.source)
+    }
+
+    @Test
+    fun `a listing with sentences is not retried for its keyword rows`() = runBlocking {
+        val hub = FakeHubTransport(
+            registrations = mapOf("en-CA" to REGISTRATIONS.getValue("en-us"), "en-us" to REGISTRATIONS.getValue("en-us")),
+            keywords = mapOf("en-CA" to SCOUT_KEYWORDS),
+        )
+        val inventory = client(hub).intents(listOf("en-CA"))
+
+        assertEquals(listOf("en-CA"), listings(hub))
+        assertEquals(listOf("en-CA"), inventory.listedIn)
     }
 
     @Test
