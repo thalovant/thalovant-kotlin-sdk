@@ -6,6 +6,7 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
@@ -32,6 +33,20 @@ import kotlinx.serialization.json.put
  * - `ovos.intent.describe` `{"skill_id", "intent_name", "lang"}` ->
  *   `ovos.intent.describe.response` `{"ok", "definitions": [{method,
  *   definition}]}` or `{"ok": false, "error"}`.
+ *
+ * The listing without `lang` answers every language the hub loaded, which is
+ * how a client learns them: a hub speaks the languages in its `lang` and
+ * `secondary_langs` and lists nothing under any other tag, while it still
+ * answers a person asking in one (in its own language). The inventory then
+ * lists in the hub's language closest to the one asked and says so in
+ * [HubIntentInventory.listedIn].
+ *
+ * A third query names the skills nothing in the manifest can show:
+ *
+ * - `ovos.skills.list` `{}` -> `ovos.skills.list.response` `{"ok",
+ *   "skills": [{skill_id, session_id, capabilities, intents}]}` (section
+ *   10.3). A skill declaring the `fallback` capability is offered whatever
+ *   nothing else matched, and registers no sentence to show for it.
  *
  * A hub whose connection may not publish a type answers `hive.policy.denied`
  * naming it; that becomes [ThalovantPolicyDeniedException] at once rather than
@@ -91,7 +106,9 @@ public data class IntentInventoryOptions(
     public val fallback: Boolean = true,
     /**
      * Retry once in the language's usual form when a listing has no
-     * sentences: empty, or keyword rows only (no enabled template row).
+     * sentences: empty, or keyword rows only (no enabled template row). When
+     * that has none either, list in the closest language the hub loaded (see
+     * [nearestHubLanguage]) and say so in [HubIntentInventory.listedIn].
      *
      * On by default: a listing that returns nothing from a hub which
      * demonstrably answers in that language is a fault, not a preference.
@@ -245,8 +262,22 @@ public data class HubSkillIntents(
     }
 }
 
-/** A registered fallback handler, ordered by priority then skill id. */
-public data class HubFallback(public val skillId: String, public val priority: Long = 0) {
+/**
+ * A skill that answers whatever nothing else matched.
+ *
+ * It has no sentences to publish for that -- being offered everything is what
+ * a fallback is -- so a caller can learn that it exists and nothing more.
+ * That is still the difference between "no skill handles this" and "something
+ * will try".
+ *
+ * [priority] is null: no runtime serves it. The hub's own list of skills
+ * (`ovos.skills.list`) says which skills declared the fallback capability and
+ * not in what order they are tried, and the query that would have carried the
+ * order (`ovos.skills.fallback.list`, ovos-core #951) was reverted the same day
+ * it landed. A number here would be invented, so there is none; the list is in
+ * skill id order and says nothing about who goes first.
+ */
+public data class HubFallback(public val skillId: String, public val priority: Long? = null) {
     public fun asJson(): JsonObject = buildJsonObject {
         put("skill_id", skillId)
         put("priority", priority)
@@ -267,16 +298,27 @@ public data class HubIntentInventory(
     public val skills: List<HubSkillIntents>,
     public val source: HubIntentSource = HubIntentSource.INTENT_MANIFEST,
     public val denied: List<String> = emptyList(),
+    /** The hub's fallback skills, in skill id order (not the order they are tried in). */
     public val fallbacks: List<HubFallback> = emptyList(),
+    /**
+     * Whether the hub could say which skills are fallbacks. False means it
+     * could not (a runtime without `ovos.skills.list`, or a connection not
+     * allowed to ask), and an empty [fallbacks] then means unknown, not none.
+     */
     public val fallbacksKnown: Boolean = false,
     /**
      * The tag the hub actually listed each requested language under, in the
      * same order as [languages].
      *
-     * Equal to [languages] unless a listing came back without sentences and
-     * the language's usual form answered instead, which is the only way the two
-     * differ. Callers rendering sentences must read them from the tag that
-     * answered.
+     * Equal to [languages] unless the listing in that language had no
+     * sentences and another answered instead: the language's usual form
+     * (`en-CA` -> `en-us`), or else one of the languages the hub loaded --
+     * the same language in another region first, then the hub's own --
+     * because a hub lists nothing under a language it did not load and still
+     * answers a person speaking it. A caller showing these sentences should say
+     * which language they are in when this differs from what was asked in a
+     * way the person would notice. Callers rendering sentences must read them
+     * from the tag that answered.
      */
     public val listedIn: List<String> = emptyList(),
 ) {
@@ -297,6 +339,7 @@ public data class HubIntentInventory(
         put("skills", JsonArray(skills.map { it.asJson() }))
         put("fallbacks", JsonArray(fallbacks.map { it.asJson() }))
         put("fallbacks_known", fallbacksKnown)
+        put("listed_in", jsonStrings(listedIn))
     }
 }
 
@@ -512,6 +555,82 @@ internal suspend fun ThalovantClient.intentNames(lang: String, timeoutMs: Long):
 private fun canCarrySentences(rows: List<IntentRegistration>): Boolean =
     rows.any { it.enabled && it.method == "template" }
 
+private fun sentenceRows(rows: List<IntentRegistration>): Int =
+    rows.count { it.enabled && it.method == "template" }
+
+/**
+ * The hub's whole manifest, by the language each row was registered in.
+ *
+ * [byLang] keeps the hub's own spelling and the order it listed them in.
+ * [sessionLang] is the language the hub stamped on its reply's session: a
+ * request that names no language is answered in a session the hub opened in
+ * its default language, which is the nearest thing to "the hub's own
+ * language" the bus offers. It is a hint, not a promise -- a hub may keep a
+ * session's language from an earlier exchange -- so it only ever breaks a
+ * choice between languages the hub actually listed.
+ */
+private class HubLanguages(
+    val byLang: Map<String, List<IntentRegistration>>,
+    val sessionLang: String?,
+)
+
+/**
+ * `ovos.intent.list` with no `lang`: every language the hub loaded.
+ *
+ * Null when the hub refused, failed or did not answer: this is only ever
+ * asked to improve an answer, and an answer it cannot improve stands.
+ */
+private suspend fun ThalovantClient.listHubLanguages(timeoutMs: Long, includeDefinitions: Boolean): HubLanguages? {
+    val data = buildJsonObject { if (includeDefinitions) put("include_definitions", true) }
+    val event = try {
+        requestReply(ThalovantEvents.INTENT_LIST, ThalovantEvents.INTENT_LIST_RESPONSE, data, lang = null, timeoutMs = timeoutMs)
+    } catch (_: ThalovantTimeoutException) {
+        return null
+    } catch (_: ThalovantRuntimeException) {
+        // ThalovantPolicyDeniedException is one of these.
+        return null
+    }
+    if (!enabledValue(event.data["ok"], true)) return null
+    val byLang = LinkedHashMap<String, MutableList<IntentRegistration>>()
+    for (row in event.data["intents"] as? JsonArray ?: JsonArray(emptyList())) {
+        val entry = row.asObjectOrNull()?.let(IntentRegistration::from) ?: continue
+        if (entry.lang.isBlank()) continue
+        val key = byLang.keys.firstOrNull { sameLanguage(it, entry.lang) } ?: entry.lang
+        byLang.getOrPut(key) { mutableListOf() }.add(entry)
+    }
+    val sessionLang = event.context["session"].asObjectOrNull()?.optionalString("lang")?.takeIf { it.isNotBlank() }
+    return HubLanguages(byLang, sessionLang)
+}
+
+/**
+ * Which of the hub's languages to list in, for a person who asked in [asked].
+ *
+ * Only a language with a sentence to show (an enabled template row) is a
+ * candidate. The same language first, by the matcher the rest of OVOS uses
+ * (`de-AT` takes `de-DE`, see [closestLanguage]); then the hub's own language,
+ * [hubLang], when the hub listed it; then the language with the most
+ * sentences, the first listed on a tie. Null when no language the hub listed
+ * carries a sentence.
+ *
+ * The hub does not say which language is its own. A person asking in a
+ * language the hub never loaded is answered all the same -- in the hub's
+ * language, by its fallback or persona -- so the sentences worth showing them
+ * are the ones in that language, and the order above is the closest this can
+ * get to it without inventing a fact.
+ */
+public fun nearestHubLanguage(
+    asked: String,
+    listed: Map<String, List<IntentRegistration>>,
+    hubLang: String? = null,
+): String? {
+    val counts = listed.mapValues { (_, rows) -> sentenceRows(rows) }
+    val candidates = counts.filterValues { it > 0 }.keys.toList()
+    if (candidates.isEmpty()) return null
+    closestLanguage(asked, candidates)?.let { return it }
+    if (!hubLang.isNullOrBlank()) closestLanguage(hubLang, candidates)?.let { return it }
+    return candidates.maxByOrNull { counts.getValue(it) }
+}
+
 /**
  * Everything the hub can be asked, in each language, grouped by skill.
  *
@@ -535,6 +654,9 @@ internal suspend fun ThalovantClient.intentInventory(
 
     val listed = LinkedHashMap<String, List<IntentRegistration>>()
     val answered = LinkedHashMap<String, String>()
+    // Asked at most once per inventory, and only when needed.
+    var hubLanguagesAsked = false
+    var hubLanguages: HubLanguages? = null
     try {
         for (lang in asked) {
             val listingOptions =
@@ -585,6 +707,35 @@ internal suspend fun ThalovantClient.intentInventory(
                     }
                 }
             }
+            if (options.nearest && !canCarrySentences(rows)) {
+                // Still nothing a person can say: the hub did not load this
+                // language. A hub loads its `lang` and `secondary_langs`
+                // (en-US and fr-FR on most public hubs) and lists nothing
+                // under any other tag, so a phone set to Spanish, Japanese or
+                // German was shown an empty list -- by a hub that answered
+                // every one of those people, in its own language. Measured on
+                // all 13 public hubs on 2026-10-11.
+                //
+                // The listing without a language names every language the hub
+                // loaded; list in the closest of them and say so in
+                // `listedIn`. Asked once per inventory, only here, and taken
+                // only when it has sentences, so it never replaces names with
+                // fewer names. A hub that cannot answer it leaves the result
+                // exactly as it was.
+                if (!hubLanguagesAsked) {
+                    hubLanguagesAsked = true
+                    hubLanguages = listHubLanguages(options.timeoutMs, includeDefinitions = options.describe)
+                }
+                hubLanguages?.let { hub ->
+                    nearestHubLanguage(lang, hub.byLang, hub.sessionLang)?.let { chosen ->
+                        rows = hub.byLang.getValue(chosen)
+                        tag = chosen
+                    }
+                }
+            }
+            // One key per language: en-us asked and en-US chosen for another
+            // tag are the same listing, and two keys would split its phrases.
+            tag = listed.keys.firstOrNull { sameLanguage(it, tag) } ?: tag
             listed[tag] = rows
             answered[lang] = tag
         }
@@ -646,39 +797,76 @@ internal suspend fun ThalovantClient.intentInventory(
     ), options.timeoutMs)
 }
 
-/** Null means unknown; an empty list is an authoritative answer that no handlers were registered. */
+/** The capability a skill announces when it takes what nothing else matched. */
+public const val FALLBACK_CAPABILITY: String = "fallback"
+
+/**
+ * How long the inventory waits for `ovos.skills.list` before calling the
+ * answer unknowable. Bounded separately from the caller's timeout: see
+ * [withFallbacks].
+ */
+public const val FALLBACK_PROBE_TIMEOUT_MS: Long = 1500
+
+/**
+ * The fallback skills in an `ovos.skills.list` answer, in skill id order.
+ *
+ * Only the hub's own skills: a row in another session (`default` is where the
+ * runtime loads every installed skill) is somebody else's, and a row with no
+ * session is taken as the hub's, which is what the runtime means by leaving it
+ * out. A malformed row is skipped and the rest kept.
+ */
+internal fun fallbacksFromSkills(rows: JsonArray): List<HubFallback> {
+    val found = sortedSetOf<String>()
+    for (item in rows) {
+        val row = item as? JsonObject ?: continue
+        val skillId = (row["skill_id"] as? JsonPrimitive)?.takeIf { it.isString }?.content?.trim()
+            ?.takeIf { it.isNotEmpty() } ?: continue
+        val session = row["session_id"]
+        if (session != null && session !is JsonNull) {
+            val value = (session as? JsonPrimitive)?.takeIf { it.isString }?.content ?: continue
+            if (value != "" && value != "default") continue
+        }
+        val capabilities = row["capabilities"] as? JsonArray ?: continue
+        if (capabilities.any { (it as? JsonPrimitive)?.takeIf { p -> p.isString }?.content == FALLBACK_CAPABILITY }) {
+            found.add(skillId)
+        }
+    }
+    return found.map { HubFallback(it) }
+}
+
+/**
+ * Which skills answer whatever nothing else matched, read from
+ * `ovos.skills.list`: every skill the hub loaded, with the capabilities it
+ * declared; a fallback is one declaring `fallback`. It used to ask
+ * `ovos.skills.fallback.list`, which ovos-core added in #951 and removed in
+ * #988 the same day, so no hub ever answered it.
+ *
+ * Null means unknown (a runtime without `ovos.skills.list`, a connection not
+ * allowed to ask, `ok: false`, or a hub that did not reply); an empty list is
+ * an authoritative answer that the hub has none.
+ */
 internal suspend fun ThalovantClient.discoverFallbacks(timeoutMs: Long): List<HubFallback>? {
     require(timeoutMs > 0) { "timeoutMs must be positive." }
     val event = try {
         withTimeoutOrNull(timeoutMs) {
-            requestReply(ThalovantEvents.FALLBACK_LIST, ThalovantEvents.FALLBACK_LIST_RESPONSE,
+            requestReply(ThalovantEvents.SKILLS_LIST, ThalovantEvents.SKILLS_LIST_RESPONSE,
                 EMPTY_JSON_OBJECT, lang = null, timeoutMs = timeoutMs)
         } ?: return null
     } catch (_: ThalovantPolicyDeniedException) { return null }
       catch (_: ThalovantTimeoutException) { return null }
     if (!enabledValue(event.data["ok"], true)) return null
-    val rows = event.data["fallbacks"] as? JsonArray ?: return null
-    return rows.mapNotNull { item ->
-        val row = item as? JsonObject ?: return@mapNotNull null
-        val skill = (row["skill_id"] as? JsonPrimitive)?.takeIf { it.isString }?.content
-            ?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
-        val value = row["priority"] as? JsonPrimitive
-        val raw = value?.content?.trim()
-        val priority = when {
-            value?.isString == true -> 0L
-            raw == "true" -> 1L
-            raw == "false" -> 0L
-            else -> raw?.toLongOrNull() ?: raw?.toDoubleOrNull()?.let {
-                if (!it.isFinite() || it < Long.MIN_VALUE.toDouble() || it >= Long.MAX_VALUE.toDouble()) return@mapNotNull null
-                it.toLong()
-            } ?: 0L
-        }
-        HubFallback(skill, priority)
-    }.sortedWith(compareBy(HubFallback::priority, HubFallback::skillId))
+    val rows = event.data["skills"] as? JsonArray ?: return null
+    return fallbacksFromSkills(rows)
 }
 
 private suspend fun ThalovantClient.withFallbacks(found: HubIntentInventory, timeoutMs: Long): HubIntentInventory {
-    val handlers = discoverFallbacks(minOf(timeoutMs, 1500L))
+    // A runtime without `ovos.skills.list` never replies, and this runs on
+    // every inventory call. Waiting the caller's full timeout to learn
+    // "unknowable" would add that much to every listing against such a hub. A
+    // hub that has the handler answers from memory, and a connection not
+    // allowed to ask is refused at once, so a short window is enough for a
+    // real answer. It is never longer than the caller asked for.
+    val handlers = discoverFallbacks(minOf(timeoutMs, FALLBACK_PROBE_TIMEOUT_MS))
     return found.copy(fallbacks = handlers.orEmpty(), fallbacksKnown = handlers != null)
 }
 

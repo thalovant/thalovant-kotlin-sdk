@@ -18,8 +18,8 @@
     },
     "binary": {
       "implementation": {
-        "src/main/kotlin/com/thalovant/sdk/Client.kt": "60abc14bae55aeb0f0f2940b26f7228b147c95568d779e61fa954742149b97a2",
-        "src/main/kotlin/com/thalovant/sdk/Events.kt": "e2ebca1fe37c14d51a9e67f1115fcc5da2378a22cd8ca4d8b18446cd52cfe39f",
+        "src/main/kotlin/com/thalovant/sdk/Client.kt": "18bd1f7450a5d2d4587aec7ff1715fb5f42d4dfbaaf9dd901117eb1593819c79",
+        "src/main/kotlin/com/thalovant/sdk/Events.kt": "83efd1aab73ec51dad082bd260d99693dcf6471ef6c04f4060f45ac39e8d120a",
         "src/main/kotlin/com/thalovant/sdk/Transport.kt": "efd1b73bfd817e7671b7451c50e31ad2c5dcba89b2e87e110980820a00644b71",
         "src/main/kotlin/com/thalovant/sdk/Wire.kt": "3f7c99de6e13714a2a610f6a22f293d7e9141998b83b77d9ed93519be082941b"
       },
@@ -89,8 +89,8 @@
     },
     "conversation": {
       "implementation": {
-        "src/main/kotlin/com/thalovant/sdk/Client.kt": "60abc14bae55aeb0f0f2940b26f7228b147c95568d779e61fa954742149b97a2",
-        "src/main/kotlin/com/thalovant/sdk/Events.kt": "e2ebca1fe37c14d51a9e67f1115fcc5da2378a22cd8ca4d8b18446cd52cfe39f"
+        "src/main/kotlin/com/thalovant/sdk/Client.kt": "18bd1f7450a5d2d4587aec7ff1715fb5f42d4dfbaaf9dd901117eb1593819c79",
+        "src/main/kotlin/com/thalovant/sdk/Events.kt": "83efd1aab73ec51dad082bd260d99693dcf6471ef6c04f4060f45ac39e8d120a"
       },
       "reason": "carryConversation() and the client's per-session memory, run against the shared conversation vectors.",
       "status": "required",
@@ -121,8 +121,8 @@
     },
     "home-link": {
       "implementation": {
-        "src/main/kotlin/com/thalovant/sdk/Client.kt": "60abc14bae55aeb0f0f2940b26f7228b147c95568d779e61fa954742149b97a2",
-        "src/main/kotlin/com/thalovant/sdk/Events.kt": "e2ebca1fe37c14d51a9e67f1115fcc5da2378a22cd8ca4d8b18446cd52cfe39f",
+        "src/main/kotlin/com/thalovant/sdk/Client.kt": "18bd1f7450a5d2d4587aec7ff1715fb5f42d4dfbaaf9dd901117eb1593819c79",
+        "src/main/kotlin/com/thalovant/sdk/Events.kt": "83efd1aab73ec51dad082bd260d99693dcf6471ef6c04f4060f45ac39e8d120a",
         "src/main/kotlin/com/thalovant/sdk/Home.kt": "18edf6ae26aefa0cbf9c3b2f795c9b4334107c8c8c401c1a3146873626772e61",
         "src/main/kotlin/com/thalovant/sdk/Session.kt": "759f3b2d1a1ec6d5f6b01933643b1c034762df4f5c3feee949d537419a9f32e6",
         "src/main/kotlin/com/thalovant/sdk/Transport.kt": "efd1b73bfd817e7671b7451c50e31ad2c5dcba89b2e87e110980820a00644b71"
@@ -176,7 +176,7 @@
     },
     "listing": {
       "implementation": {
-        "src/main/kotlin/com/thalovant/sdk/Intents.kt": "3437e7a668697af9a8d81813c91bd838d71ca2191fdefdccd8985cfd9cbd4356",
+        "src/main/kotlin/com/thalovant/sdk/Intents.kt": "7e25ef4b2a1532decc726952d87ee4278d16ef021ef4fd12abdd3a06f19197e1",
         "src/main/kotlin/com/thalovant/sdk/Listing.kt": "3a8c71c5d0e51102d73038ca4fc949bc172ca80c9e8472ec21c8f94ca5f24c5b",
         "src/main/kotlin/com/thalovant/sdk/RequestHelpers.kt": "88e3a683252666388d1218e778612cfec12c68557e60e4dd63cac03192d31605"
       },
@@ -193,8 +193,8 @@
     },
     "mesh": {
       "implementation": {
-        "src/main/kotlin/com/thalovant/sdk/Client.kt": "60abc14bae55aeb0f0f2940b26f7228b147c95568d779e61fa954742149b97a2",
-        "src/main/kotlin/com/thalovant/sdk/Events.kt": "e2ebca1fe37c14d51a9e67f1115fcc5da2378a22cd8ca4d8b18446cd52cfe39f",
+        "src/main/kotlin/com/thalovant/sdk/Client.kt": "18bd1f7450a5d2d4587aec7ff1715fb5f42d4dfbaaf9dd901117eb1593819c79",
+        "src/main/kotlin/com/thalovant/sdk/Events.kt": "83efd1aab73ec51dad082bd260d99693dcf6471ef6c04f4060f45ac39e8d120a",
         "src/main/kotlin/com/thalovant/sdk/Transport.kt": "efd1b73bfd817e7671b7451c50e31ad2c5dcba89b2e87e110980820a00644b71"
       },
       "reason": "onHive() over the five hive kinds and propagate/escalate/broadcast, run against the shared mesh vectors.",
@@ -209,7 +209,7 @@
     },
     "refusal": {
       "implementation": {
-        "src/main/kotlin/com/thalovant/sdk/Client.kt": "60abc14bae55aeb0f0f2940b26f7228b147c95568d779e61fa954742149b97a2",
+        "src/main/kotlin/com/thalovant/sdk/Client.kt": "18bd1f7450a5d2d4587aec7ff1715fb5f42d4dfbaaf9dd901117eb1593819c79",
         "src/main/kotlin/com/thalovant/sdk/Errors.kt": "71d99f07c92332ef0f85c3c182e826f4487fc95031171ec5f8e47c76dd5a97b6"
       },
       "reason": "failureError() and refusalBelongsToAsk() in Errors.kt, used by ask() in Client.kt, which counts asks, queries and fire-and-forget utterances inside the shared grace window -- recorded once connected and immediately before the publish, and kept when the publish throws. Run against the shared refusal vectors; TransportTest drives denials over the real transport and RuntimeTest covers an ask beside a query and beside a fire-and-forget send.",
@@ -226,7 +226,7 @@
     },
     "runtime": {
       "implementation": {
-        "src/main/kotlin/com/thalovant/sdk/Events.kt": "e2ebca1fe37c14d51a9e67f1115fcc5da2378a22cd8ca4d8b18446cd52cfe39f",
+        "src/main/kotlin/com/thalovant/sdk/Events.kt": "83efd1aab73ec51dad082bd260d99693dcf6471ef6c04f4060f45ac39e8d120a",
         "src/main/kotlin/com/thalovant/sdk/Runtime.kt": "4d366a4d8338c8e3d114d9b0e55f749c7c22dee51c1e571d50eff373b53516aa",
         "src/main/kotlin/com/thalovant/sdk/Transport.kt": "efd1b73bfd817e7671b7451c50e31ad2c5dcba89b2e87e110980820a00644b71"
       },
@@ -277,7 +277,8 @@
     "50d65c1596a99e5db78c38c0898ca01bfbb105da305e9804f394f08756af7f50",
     "841f3bbeec23f04c5decae75c9cfd6ea6a397992c7e4d7cd4195dc9dd919cd1a",
     "3f37b7453397f577a1db5cf2db7f709ffa4b09194869e07970d0881239b7a218",
-    "600b10e7e159f6ca9c1d59d7f2a4103c2e1c66a0894b587e0224e4d9c0e66bd1"
+    "600b10e7e159f6ca9c1d59d7f2a4103c2e1c66a0894b587e0224e4d9c0e66bd1",
+    "5b973a65ab583082069afaa67e2baf7257cbc4950a89460c9912851821258d16"
   ],
   "schema_version": 1
 }

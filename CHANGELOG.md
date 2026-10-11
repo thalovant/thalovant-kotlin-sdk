@@ -1,10 +1,15 @@
 # Changelog
 
+## 0.9.0
+
+The Python reference's 0.9.7 round (reference digest `5b973a65ab58…`, see thalovant/thalovant-python-sdk#105).
+
+- `intents()` lists in a language the hub loaded when the asked one has nothing. A hub loads its `lang` and `secondary_langs` (en-US and fr-FR on most public hubs) and lists nothing under any other tag, so a phone set to es-ES, ja-JP or de-DE got zero rows twice, for the language and its usual form, and showed nothing, while the hub still answered that person in its own language. When both leave a language without an enabled template row and `nearest` is on, the inventory now asks `ovos.intent.list` once with no `lang` (with `include_definitions` when describing), groups the rows by language and picks one with the new public `nearestHubLanguage(asked, listed, hubLang)`: the same language in another region first (`en-CA` takes `en-GB`), then the hub's own language from the reply's `context.session.lang`, then the language with the most sentences, the first listed on a tie. The chosen tag goes in `HubIntentInventory.listedIn`, which `asJson()` now carries as `listed_in`. A timeout, a refusal or `ok: false` on that query leaves the result as it was, and two asked languages that land on the same hub language share one key.
+- Fallback skills come from `ovos.skills.list`: a skill whose `capabilities` include `fallback`, loaded in the `default` session (or with no session), sorted by skill id and de-duplicated. `ovos.skills.fallback.list` is no longer sent. ovos-core added it in #951 and took it out the same day in #988, so no hub ever answered it, every inventory spent its full 1.5 s cap on it and `fallbacksKnown` was always false. The 1.5 s cap and the unknown versus known-empty distinction stay. `ThalovantEvents.FALLBACK_LIST` and `FALLBACK_LIST_RESPONSE` stay exported; `SKILLS_LIST`, `SKILLS_LIST_RESPONSE`, `FALLBACK_CAPABILITY` and `FALLBACK_PROBE_TIMEOUT_MS` are new.
+- `HubFallback.priority` is now `Long?` and always null. No runtime serves an order, and the list says nothing about which fallback is tried first. `HubFallback("id", 5)` still compiles; code that reads `priority` as a `Long` needs a null check, hence the minor version.
+- Connections need `ovos.skills.list` on their allow-list; until then the hub answers `hive.policy.denied` and fallbacks stay unknown, as before.
+
 ## 0.8.5
-
-- Automated patch release of the unreleased changes on `main` since v0.8.4.
-
-## Unreleased
 
 - `intents()` asks the language's usual form when the first listing has no sentences, not only when it is empty, as the Python reference now does (thalovant-python-sdk#103). `nearest` retried `en-CA` as `en-us` only on an empty listing, and a listing of keyword intents alone is not empty but has nothing a person can say: the Pop Culture hub lists five Source Scout keyword intents under `en-CA` (that skill registers keyword vocabulary in 63 regional tags) and 141 intents with sentences under `en-US`, so a phone in Canada was shown five names. Now the usual form is asked whenever the first listing has no enabled template row, and its listing is taken when it has one, or when the first was empty. A listing with a template row is still asked once, keyword names are never traded for other names, and a retry that times out or is refused (`ok: false` or `hive.policy.denied`) keeps the names the first listing gave; it fails as before only after an empty first listing, so a silent hub still reaches the engines' manifests.
 
