@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.5
+
+- Automated patch release of the unreleased changes on `main` since v0.8.4.
+
 ## Unreleased
 
 - `intents()` asks the language's usual form when the first listing has no sentences, not only when it is empty, as the Python reference now does (thalovant-python-sdk#103). `nearest` retried `en-CA` as `en-us` only on an empty listing, and a listing of keyword intents alone is not empty but has nothing a person can say: the Pop Culture hub lists five Source Scout keyword intents under `en-CA` (that skill registers keyword vocabulary in 63 regional tags) and 141 intents with sentences under `en-US`, so a phone in Canada was shown five names. Now the usual form is asked whenever the first listing has no enabled template row, and its listing is taken when it has one, or when the first was empty. A listing with a template row is still asked once, keyword names are never traded for other names, and a retry that times out or is refused (`ok: false` or `hive.policy.denied`) keeps the names the first listing gave; it fails as before only after an empty first listing, so a silent hub still reaches the engines' manifests.
