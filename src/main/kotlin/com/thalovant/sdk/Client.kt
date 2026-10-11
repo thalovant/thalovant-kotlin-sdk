@@ -568,7 +568,13 @@ public class ThalovantClient(
         options: IntentInventoryOptions = IntentInventoryOptions(),
     ): HubIntentInventory = intentInventory(languages.ifEmpty { listOf(DEFAULT_INTENT_LANG) }, options)
 
-    /** Registered fallback handlers; null means discovery was unavailable, empty means none registered. */
+    /**
+     * The hub's fallback skills, in skill id order, read from `ovos.skills.list`.
+     *
+     * Null means the hub could not say (no answer, refused, or `ok: false`);
+     * empty means it has none. [HubFallback.priority] is always null: no
+     * runtime says in what order fallbacks are tried.
+     */
     public suspend fun listFallbacks(timeoutMs: Long = 5000): List<HubFallback>? = discoverFallbacks(timeoutMs)
 
     /** The hub's intent manifest for one language, one row per registration (`ovos.intent.list`). */

@@ -76,7 +76,17 @@ internal open class FakeHubTransport(
     private val foreignFirst: Boolean = false,
     private val fallbackDelayMs: Long = 0,
     private val connectDelayMs: Long = 0,
-    private val fallbackPayload: JsonObject = buildJsonObject { put("fallbacks", JsonArray(emptyList())) },
+    /**
+     * What `ovos.skills.list` answers; null means the hub never answers it.
+     * `ovos.skills.fallback.list` is never answered: ovos-core added it in
+     * #951 and took it out again in #988.
+     */
+    private val skillsPayload: JsonObject? = buildJsonObject { put("ok", true); put("skills", JsonArray(emptyList())) },
+    /**
+     * The hub's default language, stamped on the session of a reply to a
+     * request that named none -- what a live hub does.
+     */
+    private val hubLang: String? = null,
     /**
      * Keyword (adapt) registrations per language: listed, never described
      * with sentences, exactly as ovos-core lists an IntentBuilder intent.
@@ -132,7 +142,7 @@ internal open class FakeHubTransport(
 
     override suspend fun emitBus(eventType: String, data: JsonObject, context: JsonObject) {
         emitted.add(Emitted(eventType, data, context))
-        if (eventType == ThalovantEvents.FALLBACK_LIST && fallbackDelayMs > 0) kotlinx.coroutines.delay(fallbackDelayMs)
+        if (eventType == ThalovantEvents.SKILLS_LIST && fallbackDelayMs > 0) kotlinx.coroutines.delay(fallbackDelayMs)
         if (foreignFirst) {
             val foreign = buildJsonObject { put("request_id", "foreign-request") }
             denyOf(eventType, foreign)
@@ -162,8 +172,38 @@ internal open class FakeHubTransport(
             )
             return
         }
+        if (eventType == ThalovantEvents.INTENT_LIST && "lang" !in data) {
+            // Every language the hub loaded, in the hub's spelling. "" in
+            // listSilentIn / listFailsIn is this listing (handled above).
+            val rows = registrations.flatMap { (tag, perLanguage) ->
+                val spelled = tag.substringBefore('-') +
+                    (if ('-' in tag) "-" + tag.substringAfter('-').uppercase() else "")
+                perLanguage.map { (key, samples) ->
+                    buildJsonObject {
+                        put("skill_id", key.first)
+                        put("intent_name", key.second)
+                        put("lang", spelled)
+                        put("method", "template")
+                        put("enabled", true)
+                        put("session_id", "default")
+                        if (definitionsInList && data["include_definitions"]?.jsonPrimitive?.content == "true") {
+                            put("definition", definition(key, spelled, samples))
+                        }
+                    }
+                }
+            }
+            val replyContext = if (hubLang == null) context else JsonObject(context + mapOf(
+                "session" to buildJsonObject { put("session_id", "s"); put("lang", hubLang) },
+            ))
+            deliver(
+                ThalovantEvents.INTENT_LIST_RESPONSE,
+                buildJsonObject { put("ok", true); put("intents", JsonArray(rows)) },
+                replyContext,
+            )
+            return
+        }
         when (eventType) {
-            ThalovantEvents.FALLBACK_LIST -> deliver(ThalovantEvents.FALLBACK_LIST_RESPONSE, fallbackPayload, context)
+            ThalovantEvents.SKILLS_LIST -> skillsPayload?.let { deliver(ThalovantEvents.SKILLS_LIST_RESPONSE, it, context) }
             ThalovantEvents.INTENT_LIST -> {
                 val rows = registrations[lang].orEmpty().map { (key, samples) ->
                     buildJsonObject {
@@ -199,7 +239,7 @@ internal open class FakeHubTransport(
             }
             ThalovantEvents.INTENT_DESCRIBE -> {
                 val key = data["skill_id"]!!.jsonPrimitive.content to data["intent_name"]!!.jsonPrimitive.content
-                val samples = registrations[lang]?.get(key)
+                val samples = registrations.entries.firstOrNull { sameLanguage(it.key, lang) }?.value?.get(key)
                 val payload = if (samples == null) {
                     buildJsonObject {
                         put("ok", false)
@@ -312,7 +352,11 @@ class IntentsTest {
     }
 
     private fun listings(hub: FakeHubTransport): List<String> =
-        hub.emittedOf(ThalovantEvents.INTENT_LIST).map { it.data["lang"]!!.jsonPrimitive.content }
+        hub.emittedOf(ThalovantEvents.INTENT_LIST).mapNotNull { it.data["lang"]?.jsonPrimitive?.content }
+
+    /** How many times the hub's whole manifest (the listing with no `lang`) was asked. */
+    private fun wholeListings(hub: FakeHubTransport): Int =
+        hub.emittedOf(ThalovantEvents.INTENT_LIST).count { "lang" !in it.data }
 
     @Test
     fun `a tag the hub does not register is listed under its usual form`() = runBlocking {
@@ -362,8 +406,8 @@ class IntentsTest {
         for (failure in listOf("silent", "refused")) {
             val hub = FakeHubTransport(
                 keywords = mapOf("en-CA" to SCOUT_KEYWORDS),
-                listSilentIn = if (failure == "silent") setOf("en-us") else emptySet(),
-                listFailsIn = if (failure == "refused") setOf("en-us") else emptySet(),
+                listSilentIn = if (failure == "silent") setOf("en-us", "") else emptySet(),
+                listFailsIn = if (failure == "refused") setOf("en-us", "") else emptySet(),
             )
             val inventory = client(hub).intents(listOf("en-CA"), IntentInventoryOptions(timeoutMs = 200))
 
@@ -546,10 +590,11 @@ class IntentsTest {
     @Test
     fun `fallback discovery distinguishes unknown from known empty`() = runBlocking {
         for (hub in listOf(
-            FakeHubTransport(refuse = setOf(ThalovantEvents.FALLBACK_LIST)),
-            FakeHubTransport(silent = setOf(ThalovantEvents.FALLBACK_LIST)),
-            FakeHubTransport(fallbackPayload = buildJsonObject { put("fallbacks", "invalid") }),
-            FakeHubTransport(fallbackPayload = buildJsonObject { put("ok", false); put("fallbacks", JsonArray(emptyList())) }),
+            FakeHubTransport(refuse = setOf(ThalovantEvents.SKILLS_LIST)),
+            FakeHubTransport(silent = setOf(ThalovantEvents.SKILLS_LIST)),
+            FakeHubTransport(skillsPayload = null),
+            FakeHubTransport(skillsPayload = buildJsonObject { put("ok", true); put("skills", "invalid") }),
+            FakeHubTransport(skillsPayload = buildJsonObject { put("ok", false); put("skills", JsonArray(emptyList())) }),
         )) {
             val inventory = client(hub).intents(listOf("fr-fr"), IntentInventoryOptions(timeoutMs = 30))
             assertFalse(inventory.fallbacksKnown)
@@ -586,19 +631,54 @@ class IntentsTest {
     }
 
     @Test
-    fun `fallback discovery parses and sorts handlers and ignores invalid rows`() = runBlocking {
-        val payload = ThalovantJson.parseToJsonElement("""{"fallbacks":[
-            {"skill_id":"b","priority":20}, {"skill_id":"a","priority":20.5},
-            {"skill_id":"true","priority":true}, {"skill_id":"default","priority":"42"},
-            {"skill_id":"huge","priority":1e100},
-            {"skill_id":""}, {"skill_id":123}, false
+    fun `only the hub's own fallback skills are listed`() = runBlocking {
+        // `ovos.skills.list` names every skill the runtime loaded. A skill
+        // without the fallback capability answers through its intents and is
+        // in the manifest already; one loaded in somebody else's session is
+        // not this hub's; a malformed row is skipped rather than taking the
+        // rest down.
+        val payload = ThalovantJson.parseToJsonElement("""{"ok":true,"skills":[
+            {"skill_id":"thalovant-skill-memory.thalovant","session_id":"default","capabilities":["fallback","converse"],"intents":0},
+            {"skill_id":"thalovant-skill-weather.thalovant","session_id":"default","capabilities":[],"intents":16},
+            {"skill_id":"someone-elses.fallback","session_id":"another-session","capabilities":["fallback"],"intents":0},
+            {"skill_id":"custos-fallback.thalovant","capabilities":["fallback"]},
+            {"skill_id":"empty-session.thalovant","session_id":"","capabilities":["fallback"]},
+            {"skill_id":"custos-fallback.thalovant","session_id":"default","capabilities":["fallback"]},
+            {"skill_id":"","session_id":"default","capabilities":["fallback"]},
+            {"skill_id":123,"capabilities":["fallback"]},
+            {"skill_id":"no-capabilities.thalovant","session_id":"default","capabilities":null},
+            "not a row", false
         ]}""").jsonObject
-        val sdk = client(FakeHubTransport(fallbackPayload = payload))
-        assertEquals(listOf(HubFallback("default", 0), HubFallback("true", 1), HubFallback("a", 20), HubFallback("b", 20)), sdk.listFallbacks())
+        val hub = FakeHubTransport(skillsPayload = payload)
+        val sdk = client(hub)
+        val expected = listOf("custos-fallback.thalovant", "empty-session.thalovant", "thalovant-skill-memory.thalovant")
+        assertEquals(expected.map { HubFallback(it) }, sdk.listFallbacks())
         val inventory = sdk.intents(listOf("fr-fr"))
         assertTrue(inventory.fallbacksKnown)
+        assertEquals(expected, inventory.fallbacks.map { it.skillId })
+        assertTrue(inventory.fallbacks.all { it.priority == null }, "no runtime serves a priority")
         assertTrue(inventory.mayAnswer("de-de"))
-        assertEquals(4, inventory.asJson()["fallbacks"]!!.jsonArray.size)
+        val serialised = inventory.asJson()["fallbacks"]!!.jsonArray.map { it.jsonObject }
+        assertEquals(3, serialised.size)
+        assertEquals(JsonNull, serialised[0]["priority"])
+        assertTrue(
+            hub.emittedOf(ThalovantEvents.FALLBACK_LIST).isEmpty(),
+            "no runtime answers it, and asking cost every listing a second and a half",
+        )
+    }
+
+    @Test
+    fun `a hub with no fallbacks says so`() = runBlocking {
+        val payload = buildJsonObject { put("ok", true); put("skills", JsonArray(emptyList())) }
+        val inventory = client(FakeHubTransport(skillsPayload = payload)).intents(listOf("en-us"))
+        assertTrue(inventory.fallbacksKnown)
+        assertTrue(inventory.fallbacks.isEmpty())
+    }
+
+    @Test
+    fun `a fallback priority stays optional for source compatibility`() {
+        assertEquals(5L, HubFallback("x", 5).priority)
+        assertNull(HubFallback("x").priority)
     }
 
     @Test
@@ -1098,5 +1178,171 @@ class IntentsTest {
             ),
         )
         assertEquals(listOf("speak", "recognizer_loop:utterance"), error.allowed)
+    }
+
+    // A language the hub never loaded --------------------------------------
+    //
+    // Measured on all 13 public hubs on 2026-10-11: a hub loads its `lang`
+    // and `secondary_langs` (en-US and fr-FR on most) and lists nothing under
+    // any other tag. A phone set to Spanish, Japanese or German asked in its
+    // own language, then its usual form, got nothing twice and showed an
+    // empty list -- while the hub answered those people in its own language.
+
+    private val both = linkedMapOf("en-us" to REGISTRATIONS.getValue("en-us"), "fr-fr" to REGISTRATIONS.getValue("fr-fr"))
+
+    /** The hub's own listing order on Daily Desk and Rewrite Forge: French first. */
+    private val frenchFirst = linkedMapOf("fr-fr" to REGISTRATIONS.getValue("fr-fr"), "en-us" to REGISTRATIONS.getValue("en-us"))
+
+    @Test
+    fun `a language the hub never loaded is listed in the hub's own`() = runBlocking {
+        for (phone in listOf("es-ES", "ja-JP", "de-DE")) {
+            val hub = FakeHubTransport(registrations = frenchFirst, hubLang = "en-US")
+            val inventory = client(hub).intents(listOf(phone))
+
+            assertEquals(listOf(phone), inventory.languages, phone)
+            assertEquals(listOf("en-US"), inventory.listedIn, "the language the hub answers $phone in")
+            assertTrue(inventory.hasPhrases, phone)
+            assertEquals(listOf(SHADOW, WEATHER), inventory.skills.map { it.skillId }, phone)
+            val weather = inventory.skills[1].intents[0]
+            assertEquals("what is the weather", weather.phrasesFor(inventory.listedIn[0])[0], phone)
+            assertEquals(1, wholeListings(hub), "the hub's own listing is asked once")
+            val whole = hub.emittedOf(ThalovantEvents.INTENT_LIST).first { "lang" !in it.data }
+            assertEquals(JsonPrimitive(true), whole.data["include_definitions"], "asked like the per-language listing")
+            assertNull(whole.context["lang"], "no language in the request context either")
+        }
+    }
+
+    @Test
+    fun `the same language in another region comes first`() = runBlocking {
+        // en-CA's usual form is en-us; a hub that loaded en-GB has neither.
+        val hub = FakeHubTransport(
+            registrations = linkedMapOf("fr-fr" to REGISTRATIONS.getValue("fr-fr"), "en-gb" to REGISTRATIONS.getValue("en-us")),
+            hubLang = "fr-FR",
+        )
+        assertEquals(listOf("en-GB"), client(hub).intents(listOf("en-CA")).listedIn, "English before the hub's own French")
+    }
+
+    @Test
+    fun `without a session hint the language with most sentences wins`() = runBlocking {
+        val hub = FakeHubTransport(registrations = frenchFirst)
+        assertEquals(listOf("en-US"), client(hub).intents(listOf("ja-JP")).listedIn, "two intents in English, one in French")
+    }
+
+    @Test
+    fun `nearestHubLanguage breaks ties by the order listed and ignores a hint the hub never listed`() {
+        fun rows(lang: String, method: String = "template") =
+            listOf(IntentRegistration(skillId = "s", intentName = "i", lang = lang, method = method))
+        val listed = linkedMapOf("fr-FR" to rows("fr-FR"), "en-US" to rows("en-US"))
+        assertEquals("fr-FR", nearestHubLanguage("ja-JP", listed))
+        assertEquals("en-US", nearestHubLanguage("ja-JP", listed, "en-US"))
+        assertEquals("fr-FR", nearestHubLanguage("ja-JP", listed, "ko-KR"), "a hint the hub never listed is no hint")
+        assertEquals("fr-FR", nearestHubLanguage("fr-CA", listed, "en-US"))
+        assertNull(nearestHubLanguage("ja-JP", mapOf("en-US" to rows("en-US", "keyword"))))
+        assertNull(nearestHubLanguage("ja-JP", emptyMap()))
+    }
+
+    @Test
+    fun `a language the hub loaded never asks the whole manifest`() = runBlocking {
+        val hub = FakeHubTransport(registrations = both, hubLang = "en-US")
+        val inventory = client(hub).intents(listOf("fr-fr", "en-us"))
+        assertEquals(listOf("fr-fr", "en-us"), inventory.listedIn)
+        assertEquals(0, wholeListings(hub))
+    }
+
+    @Test
+    fun `two languages that land on the same hub language share one listing`() = runBlocking {
+        val hub = FakeHubTransport(registrations = both, hubLang = "en-US")
+        val inventory = client(hub).intents(listOf("en-us", "ja-JP"))
+        assertEquals(listOf("en-us", "en-us"), inventory.listedIn, "one key per language, not en-us and en-US")
+        val weather = inventory.intents.first { it.skillId == WEATHER }
+        assertEquals(listOf("en-us"), weather.phrases.keys.toList())
+    }
+
+    @Test
+    fun `a hub that cannot list its languages leaves the answer as it was`() = runBlocking {
+        for (failure in listOf("silent", "refused", "denied")) {
+            class Hub : FakeHubTransport(
+                registrations = both,
+                keywords = mapOf("ja-JP" to SCOUT_KEYWORDS),
+                listSilentIn = if (failure == "silent") setOf("") else emptySet(),
+                listFailsIn = if (failure == "refused") setOf("") else emptySet(),
+            ) {
+                override suspend fun emitBus(eventType: String, data: JsonObject, context: JsonObject) {
+                    if (failure == "denied" && eventType == ThalovantEvents.INTENT_LIST && "lang" !in data) {
+                        emitted.add(Emitted(eventType, data, context))
+                        denyOf(eventType, context)
+                        return
+                    }
+                    super.emitBus(eventType, data, context)
+                }
+            }
+            val hub = Hub()
+            val inventory = client(hub).intents(listOf("ja-JP"), IntentInventoryOptions(timeoutMs = 200))
+
+            assertEquals(HubIntentSource.INTENT_MANIFEST, inventory.source, failure)
+            assertEquals(listOf("ja-JP"), inventory.listedIn, failure)
+            assertEquals(
+                listOf("SourceScoutRealPromptIntent", "SourceScoutTopicIntent"),
+                inventory.intents.map { it.name }.sorted(),
+                failure,
+            )
+            assertEquals(1, wholeListings(hub), failure)
+        }
+    }
+
+    @Test
+    fun `the hub's own listing answers when the usual form fails`() = runBlocking {
+        for (failure in listOf("silent", "refused")) {
+            val hub = FakeHubTransport(
+                keywords = mapOf("en-CA" to SCOUT_KEYWORDS),
+                listSilentIn = if (failure == "silent") setOf("en-us") else emptySet(),
+                listFailsIn = if (failure == "refused") setOf("en-us") else emptySet(),
+            )
+            val inventory = client(hub).intents(listOf("en-CA"), IntentInventoryOptions(timeoutMs = 200))
+            assertEquals(listOf("en-US"), inventory.listedIn, failure)
+            assertTrue(inventory.hasPhrases, failure)
+        }
+    }
+
+    @Test
+    fun `an empty hub stays empty rather than failing`() = runBlocking {
+        val inventory = client(FakeHubTransport(registrations = emptyMap())).intents(listOf("ja-JP"))
+        assertTrue(inventory.skills.isEmpty())
+        assertEquals(listOf("ja-JP"), inventory.listedIn)
+    }
+
+    @Test
+    fun `the hub's own listing is not asked when nearest is off`() = runBlocking {
+        val hub = FakeHubTransport(registrations = both)
+        val inventory = client(hub).intents(listOf("ja-JP"), IntentInventoryOptions(nearest = false))
+        assertTrue(inventory.skills.isEmpty())
+        assertEquals(
+            listOf(buildJsonObject { put("lang", "ja-JP"); put("include_definitions", true) }),
+            hub.emittedOf(ThalovantEvents.INTENT_LIST).map { it.data },
+        )
+    }
+
+    @Test
+    fun `definitions from the hub's own listing need no describe`() = runBlocking {
+        val hub = FakeHubTransport(registrations = both, definitionsInList = true, hubLang = "en-US")
+        val inventory = client(hub).intents(listOf("es-ES"))
+        assertTrue(inventory.hasPhrases)
+        assertTrue(hub.emittedOf(ThalovantEvents.INTENT_DESCRIBE).isEmpty())
+    }
+
+    @Test
+    fun `describe off asks the hub's own listing without definitions`() = runBlocking {
+        val hub = FakeHubTransport(registrations = both, hubLang = "en-US")
+        val inventory = client(hub).intents(listOf("es-ES"), IntentInventoryOptions(describe = false))
+        assertEquals(listOf("en-US"), inventory.listedIn)
+        val whole = hub.emittedOf(ThalovantEvents.INTENT_LIST).single { "lang" !in it.data }
+        assertEquals(JsonObject(emptyMap()), whole.data)
+    }
+
+    @Test
+    fun `the serialised inventory says which language it listed in`() = runBlocking {
+        val payload = client(FakeHubTransport(registrations = both, hubLang = "en-US")).intents(listOf("es-ES")).asJson()
+        assertEquals(listOf("es-ES"), payload["languages"]!!.jsonArray.map { it.jsonPrimitive.content })
+        assertEquals(listOf("en-US"), payload["listed_in"]!!.jsonArray.map { it.jsonPrimitive.content })
     }
 }

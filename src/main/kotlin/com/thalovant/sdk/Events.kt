@@ -52,9 +52,28 @@ public object ThalovantEvents {
     /** Reply to [PADATIOUS_MANIFEST_GET]: `{intents: ["<skill_id>:<intent_name>"]}`. */
     public const val PADATIOUS_MANIFEST: String = "intent.service.padatious.manifest"
 
-    /** Query and reply for skills that handle utterances outside the intent manifest. */
+    /**
+     * Query and reply for skills that handle utterances outside the intent manifest.
+     *
+     * ovos-core #951 added this query and #988 took it out again the same day,
+     * so no runtime answers it. Kept so code that refers to the names still
+     * compiles; the inventory asks [SKILLS_LIST] instead.
+     */
     public const val FALLBACK_LIST: String = "ovos.skills.fallback.list"
     public const val FALLBACK_LIST_RESPONSE: String = "ovos.skills.fallback.list.response"
+
+    /**
+     * Query: every skill the runtime loaded and what it declared it can do
+     * (OVOS-INTENT-4 section 10.3).
+     */
+    public const val SKILLS_LIST: String = "ovos.skills.list"
+
+    /**
+     * Reply to [SKILLS_LIST]: `{ok, skills: [{skill_id, session_id,
+     * capabilities, intents}]}`. A skill whose capabilities include
+     * `fallback` is offered whatever nothing else matched.
+     */
+    public const val SKILLS_LIST_RESPONSE: String = "ovos.skills.list.response"
 
     public val FAILURE_EVENTS: Set<String> =
         setOf(INTENT_UNMATCHED, INTENT_FAILURE, POLICY_DENIED, QUERY_TIMEOUT)
