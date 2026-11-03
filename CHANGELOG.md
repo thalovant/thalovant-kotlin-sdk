@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.9.1
+
+- Automated patch release of the unreleased changes on `main` since v0.9.0.
+
 ## 0.9.0
 
 The Python reference's 0.9.7 round (reference digest `5b973a65ab58…`, see thalovant/thalovant-python-sdk#105).
