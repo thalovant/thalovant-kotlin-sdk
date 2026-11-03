@@ -57,6 +57,7 @@ CodeRabbit also left six review-body items (nitpicks, not threads) on merged PRs
 | #34 | `contracts/sdk-parity.json`: run the parity check | **Not applicable.** `sdk-parity.yml` runs `check-sdk-parity.py --consumer` on every pull request. |
 | #35 | `NoiseStoreAndroidTest`: force the hard-link failure | **Already fixed** in #53 (`b600b5de`). The `hardLinks` switch makes `CodeRabbitFollowupsTest` publish without `link(2)`. |
 | #46 | `HomeLinkControlPlaneTest`: order the late DELETE after `login()` by a gate, not a delay | **Fixed in this change.** The DELETE is held on a latch until `login()` returns, and the test asserts that the revoke is still waiting. |
+| #55 (this change's own review) | A gate that times out still answered 204 | **Fixed.** A timed-out gate answers 500, so the revoke throws and the test fails. A gate that never opens fails the test. |
 
 ### Verification
 

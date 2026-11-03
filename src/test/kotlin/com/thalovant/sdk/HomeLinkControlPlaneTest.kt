@@ -109,8 +109,10 @@ class HomeLinkControlPlaneTest {
         server.dispatcher = object : okhttp3.mockwebserver.Dispatcher() {
             override fun dispatch(request: okhttp3.mockwebserver.RecordedRequest): MockResponse =
                 if (request.method == "DELETE") {
-                    signedIn.await(10, java.util.concurrent.TimeUnit.SECONDS)
-                    MockResponse().setResponseCode(204)
+                    // A gate that times out proves nothing about the order, so
+                    // it fails the revoke (and the test) instead of answering.
+                    if (signedIn.await(10, java.util.concurrent.TimeUnit.SECONDS)) MockResponse().setResponseCode(204)
+                    else MockResponse().setResponseCode(500).setBody("the sign-in never returned")
                 } else MockResponse().setResponseCode(200).setHeader("Content-Type", "application/json")
                     .setBody("""{"access_token":"session-token","token_type":"bearer"}""")
         }
