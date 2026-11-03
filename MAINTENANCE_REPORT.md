@@ -1,4 +1,4 @@
-Last Edit: Claude Opus 5.5 - 2026-11-03 - Motive: Record the chat-apps parity acknowledgment (not applicable).
+Last Edit: Claude Opus 5.5 - 2026-11-03 - Motive: Record the chat-apps parity acknowledgment (not applicable) and the CodeRabbit review-body items (nitpicks) on merged PRs #10, #11, #34, #35 and #46.
 
 # Maintenance Report
 
@@ -45,7 +45,33 @@ Six CodeRabbit review threads were still open on merged pull requests. Each one 
 - Conformance was re-recorded with `THALOVANT_CONFORMANCE_OUT`, and the results are identical to `contracts/conformance-results.json`.
 - The evidence hashes for `Transport.kt`, `Session.kt` and `NoiseStore.kt` were refreshed. After that, `check-sdk-parity.py --consumer thalovant-kotlin-sdk` passes against thalovant-python-sdk `main` (`5106933`).
 
-## Transparency Report
+## 2026-11-03: CodeRabbit review-body items
+
+CodeRabbit also left six review-body items (nitpicks, not threads) on merged PRs. Each was checked against `main` at `c232edd`.
+
+| Old PR | Item | Outcome |
+| :--- | :--- | :--- |
+| #10 | `Runtime.kt` `launchRuntimeIo`: rethrow `CancellationException` | **Already fixed** in #10's own merge (`09e1a0c`). |
+| #11 | `tools/maven-publication-status.py`: tell "no deployment" from a failed lookup | **Already fixed** in #11's merge (`5e44591`). It exits 0 with `lookup_result: "no-match"`, and 1 only on failure. |
+| #11 | `tools/test_maven_publication_status.py`: import `urllib.request` | **Already fixed** in `5e44591`. |
+| #34 | `contracts/sdk-parity.json`: run the parity check | **Not applicable.** `sdk-parity.yml` runs `check-sdk-parity.py --consumer` on every pull request. |
+| #35 | `NoiseStoreAndroidTest`: force the hard-link failure | **Already fixed** in #53 (`b600b5de`). The `hardLinks` switch makes `CodeRabbitFollowupsTest` publish without `link(2)`. |
+| #46 | `HomeLinkControlPlaneTest`: order the late DELETE after `login()` by a gate, not a delay | **Fixed in this change.** The DELETE is held on a latch until `login()` returns, and the test asserts that the revoke is still waiting. |
+
+### Verification
+
+- `./gradlew test` passes 376 tests.
+- Injected bug: `revokeApiToken()` forgets the token whatever it is. The gated test fails (`expected session-token, was null`). The old delay-based test, with the test thread paused for 500 ms after the DELETE arrived, passed with the same bug. That gap is what the gate closes.
+- The evidence hash for `HomeLinkControlPlaneTest.kt` is refreshed. `check-sdk-parity.py --consumer thalovant-kotlin-sdk` passes against thalovant-python-sdk `main` (`ced77a4`).
+- The change is test-only. `src/` is a release path, so merging it cuts a patch release with no library change. It is held until the release window allows that.
+
+## Transparency Report (review-body items)
+
+- **AI Model:** Claude Opus 5.5.
+- **Actions Taken:** Checked six CodeRabbit review-body items against current code. Rewrote one test to use a response gate and showed that it fails with the bug injected. Refreshed one parity evidence hash. Posted one comment per old PR saying how each item was handled.
+- **Oversight:** Part of an agent-run CodeRabbit audit the repository owner asked for. CI and this pull request's review gate the merge, and the lead agent decides when it merges.
+
+## Transparency Report (review threads)
 
 - **AI Model:** Claude Opus 5.5.
 - **Actions Taken:**
