@@ -24,7 +24,7 @@ Full documentation: <https://docs.thalovant.com/developers/sdks/kotlin/>
 
 ```kotlin
 dependencies {
-    implementation("com.thalovant:thalovant-sdk:0.9.1")
+    implementation("com.thalovant:thalovant-sdk:0.9.2")
 }
 ```
 

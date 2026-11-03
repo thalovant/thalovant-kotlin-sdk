@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.9.2
+
+- Automated patch release of the unreleased changes on `main` since v0.9.1.
+
 ## 0.9.1
 
 - Automated patch release of the unreleased changes on `main` since v0.9.0.
