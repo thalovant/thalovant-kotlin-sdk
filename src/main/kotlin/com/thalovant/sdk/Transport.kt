@@ -77,6 +77,23 @@ public class HiveMindWssTransport(
      */
     private val acceptanceWindowMs: Long = DEFAULT_ACCEPTANCE_WINDOW_MS,
 ) : HiveMindRuntimeTransport {
+    /**
+     * The constructor as it was before [acceptanceWindowMs] existed (0.7.12
+     * and earlier), with the default window.
+     *
+     * Adding a parameter to a Kotlin constructor removes its old JVM
+     * signatures: the four-argument one Java calls, and the defaults bridge a
+     * Kotlin caller compiled against it calls. Both stopped linking in 0.7.13.
+     * This brings them back. Kotlin source is unaffected: a call that leaves
+     * the window out resolves here, which passes the same default.
+     */
+    public constructor(
+        identity: ThalovantIdentity,
+        userAgent: String = DEFAULT_USER_AGENT,
+        httpClient: OkHttpClient? = null,
+        noiseStore: HiveMindNoiseStore = HiveMindNoiseStore.forIdentity(identity),
+    ) : this(identity, userAgent, httpClient, noiseStore, DEFAULT_ACCEPTANCE_WINDOW_MS)
+
     private val client: OkHttpClient = httpClient ?: defaultClient
     private val listeners = CopyOnWriteArrayList<(ThalovantEvent) -> Unit>()
     private val hiveListeners = CopyOnWriteArrayList<(JsonObject) -> Unit>()
