@@ -100,14 +100,34 @@ class HomeLinkControlPlaneTest {
 
     @Test
     fun `a revoke that finishes after a new sign-in forgets only the token it revoked`(): Unit = runBlocking {
-        // The DELETE is answered late; a password sign-in lands in between.
-        server.enqueue(MockResponse().setResponseCode(204).setHeadersDelay(400, java.util.concurrent.TimeUnit.MILLISECONDS))
-        answer(200, """{"access_token":"session-token","token_type":"bearer"}""")
+        // The DELETE is held until a password sign-in has returned, so the
+        // revoke always finishes second. A header delay only ordered the two
+        // when the sign-in took less than the delay: a test thread paused for
+        // longer let the revoke finish first, and a revoke that forgets
+        // unconditionally passed.
+        val signedIn = java.util.concurrent.CountDownLatch(1)
+        server.dispatcher = object : okhttp3.mockwebserver.Dispatcher() {
+            override fun dispatch(request: okhttp3.mockwebserver.RecordedRequest): MockResponse =
+                if (request.method == "DELETE") {
+                    // A gate that times out proves nothing about the order, so
+                    // it fails the revoke (and the test) instead of answering.
+                    if (signedIn.await(10, java.util.concurrent.TimeUnit.SECONDS)) MockResponse().setResponseCode(204)
+                    else MockResponse().setResponseCode(500).setBody("the sign-in never returned")
+                } else MockResponse().setResponseCode(200).setHeader("Content-Type", "application/json")
+                    .setBody("""{"access_token":"session-token","token_type":"bearer"}""")
+        }
         val plane = api()
         plane.tokenId = "old-token"
         val revoking = launch(kotlinx.coroutines.Dispatchers.IO) { plane.revokeApiToken() }
-        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { server.takeRequest() }
-        plane.login("me@example.com", "correct horse battery")
+        try {
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                assertEquals("DELETE", server.takeRequest().method)
+            }
+            plane.login("me@example.com", "correct horse battery")
+            assertTrue(revoking.isActive, "the revoke must still be waiting on its DELETE")
+        } finally {
+            signedIn.countDown()
+        }
         revoking.join()
         assertEquals("session-token", plane.accessToken)
     }

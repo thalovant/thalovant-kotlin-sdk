@@ -1,4 +1,4 @@
-Last Edit: Claude Opus 5.5 - 2026-11-03 - Motive: Note the chat-apps capability this SDK does not implement.
+Last Edit: Claude Opus 5.5 - 2026-11-03 - Motive: Note the chat-apps capability this SDK does not implement, and add the review-body item fixed in HomeLinkControlPlaneTest.
 
 # Audit
 
@@ -25,6 +25,10 @@ These findings come from the CodeRabbit threads on merged PRs #35, #37, #41 and 
   - Cause: the failed attempt released `busy` before its decision was made, so an ask or emit could install a client and record `UP` first.
   - Fix: `decideFailed()` makes the decision under `busy`, and records nothing when a live link is already held.
   - Test: `a refusal run() saw is not recorded over a link another call brought up meanwhile`.
+- **A revoke-versus-sign-in test was ordered by a 400 ms delay, not a gate.**
+  - Where: `HomeLinkControlPlaneTest`, `a revoke that finishes after a new sign-in forgets only the token it revoked`. CodeRabbit raised it on #46, in the review body.
+  - Cause: if the test thread paused past the delay, the DELETE finished before `login()`. A revoke that forgets the token unconditionally then passed this test, as shown with a 500 ms pause.
+  - Fix: the DELETE response is held until `login()` returns, and the test asserts the revoke is still waiting.
 
 ## Known limits
 
