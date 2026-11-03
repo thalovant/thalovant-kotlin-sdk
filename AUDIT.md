@@ -1,4 +1,4 @@
-Last Edit: Claude Opus 5.5 - 2026-11-03 - Motive: Record the CodeRabbit follow-up findings and the limits that remain.
+Last Edit: Claude Opus 5.5 - 2026-11-03 - Motive: Note the chat-apps capability this SDK does not implement.
 
 # Audit
 
@@ -30,3 +30,8 @@ These findings come from the CodeRabbit threads on merged PRs #35, #37, #41 and 
 
 - The publish lock is advisory. It protects stores that publish without links, which is every store on a filesystem that refuses `link(2)`, such as Android app storage. A process that skips this SDK and writes the key file directly is not covered.
 - The lock covers only the no-link path. The `link(2)` path needs no lock, because a link never replaces an existing file. Both paths would race only if one directory accepted links from one process and refused them from another. No platform this SDK supports is known to do that.
+
+## Chat apps not covered (2026-11-03)
+
+- **What:** this SDK has no methods for the chat apps routes (`/v1/bridges`), which the Python, Node, Go and Rust SDKs and the MCP server cover. `contracts/sdk-parity.json` records `chat-apps` as not applicable.
+- **Status:** a scope decision, not a defect: the API's impact records for chat apps list no obligation here. Revisit if an app built on this SDK needs to manage chat apps.
