@@ -8,7 +8,10 @@ import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonObject
@@ -79,6 +82,41 @@ class CodeRabbitFollowupsTest {
             assertEquals(LinkAction.RETRY, decision.action, "a refusal after a link that came up was judged on the old grace")
         } finally {
             session.close()
+        }
+    }
+
+    @Test
+    fun `a refusal run() saw is not recorded over a link another call brought up meanwhile`(): Unit = runBlocking {
+        var now = 0.0
+        var attempts = 0
+        val session = HubSession(
+            connect = {
+                attempts++
+                if (attempts == 1) throw ThalovantIdentityException("not admitted yet")
+                ThalovantClient(identity, transport = UpTransport(), replySettleMs = 0, emptyReplyWaitMs = 0).also { it.connect() }
+            },
+            policy = HubSessionPolicy(retrySeconds = 0.01, retryCeilingSeconds = 0.02, refusalGraceSeconds = 10.0),
+            clock = { now },
+            warm = false,
+        )
+        // run()'s first attempt is refused. Before it records that, an emit
+        // takes the session it just let go of and brings the link up.
+        session.beforeFailedAttemptDecision = {
+            session.beforeFailedAttemptDecision = null
+            session.emit("hello")
+        }
+        val running = launch { session.run() }
+        try {
+            withTimeout(5_000) { while (!session.held) delay(5) }
+            assertEquals(2, attempts)
+            // Much later the link drops and the next dial is refused: a new
+            // refusal, with a grace of its own, not the one from before the link.
+            now = 1_000.0
+            val decision = synchronized(session.supervisor) { session.supervisor.after(LinkOutcome.REFUSED, now) }
+            assertEquals(LinkAction.RETRY, decision.action, "a stale refusal was recorded after the link came up")
+        } finally {
+            session.close()
+            running.join()
         }
     }
 

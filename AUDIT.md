@@ -2,7 +2,7 @@ Last Edit: Claude Opus 5.5 - 2026-11-03 - Motive: Record the CodeRabbit follow-u
 
 # Audit
 
-These findings come from the CodeRabbit threads on merged PRs #35, #37, #41 and #46. They were checked against the code and against `./gradlew build`, which passes 375 tests at the time of writing.
+These findings come from the CodeRabbit threads on merged PRs #35, #37, #41 and #46. They were checked against the code and against `./gradlew build`, which passes 376 tests at the time of writing.
 
 ## Fixed on 2026-11-03
 
@@ -20,6 +20,11 @@ These findings come from the CodeRabbit threads on merged PRs #35, #37, #41 and 
   - Cause: only `connect()` recorded `LinkOutcome.UP`. If an ask brought the link up while `run()` was waiting out a refusal, the first refusal after a later drop was judged against the old grace, and `run()` gave up at once.
   - Fix: `ensure()` now records `LinkOutcome.UP`.
   - Test: `a link an emit brings up gives a later refusal a fresh grace`.
+- **`run()` could record a refusal after a concurrent call had already brought the link up.**
+  - Where: `HubSession.run()` in `Session.kt`. CodeRabbit raised this on #53.
+  - Cause: the failed attempt released `busy` before its decision was made, so an ask or emit could install a client and record `UP` first.
+  - Fix: `decideFailed()` makes the decision under `busy`, and records nothing when a live link is already held.
+  - Test: `a refusal run() saw is not recorded over a link another call brought up meanwhile`.
 
 ## Known limits
 

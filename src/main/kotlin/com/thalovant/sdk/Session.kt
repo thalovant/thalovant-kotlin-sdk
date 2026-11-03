@@ -366,13 +366,15 @@ public class HubSession(connect: suspend () -> ThalovantClient,
             } catch (refusal: ThalovantIdentityException) {
                 if (isClosed()) return
                 log.fine { "hub link: refused (${refusal.message})" }
-                decide(LinkOutcome.REFUSED).also { if (it.action == LinkAction.GIVE_UP) throw refusal }
+                beforeFailedAttemptDecision?.invoke()
+                (decideFailed(LinkOutcome.REFUSED) ?: continue).also { if (it.action == LinkAction.GIVE_UP) throw refusal }
             } catch (failure: Exception) {
                 if (isClosed()) return
                 if (failure !is ThalovantConnectionException && failure !is ThalovantTimeoutException &&
                     failure !is java.io.IOException) throw failure
                 log.fine { "hub link: attempt failed (${failure.message})" }
-                decide(LinkOutcome.FAILED)
+                beforeFailedAttemptDecision?.invoke()
+                decideFailed(LinkOutcome.FAILED) ?: continue
             }
             log.fine { "hub link: next attempt in ${decision.waitSeconds}s" }
             if (decision.waitSeconds > 0) withTimeoutOrNull(millis(decision.waitSeconds)) { closing.await() }
@@ -380,6 +382,22 @@ public class HubSession(connect: suspend () -> ThalovantClient,
     }
 
     private fun decide(outcome: LinkOutcome): LinkDecision = synchronized(supervisor) { supervisor.after(outcome, clock()) }
+
+    /**
+     * The decision after an attempt of [run]'s failed, made under [busy] like
+     * the installation of a client, so it is judged against the link as it is
+     * now: null when another call -- an ask, an emit, a reply -- brought a link
+     * up after this attempt let go of the session. Recording the refusal then
+     * would put it after that call's [LinkOutcome.UP], and a drop does not
+     * clear it, so a refusal much later would give up on this one's grace.
+     */
+    private suspend fun decideFailed(outcome: LinkOutcome): LinkDecision? = busy.withLock {
+        val current = synchronized(lock) { client }
+        if (current != null && alive(current)) null else decide(outcome)
+    }
+
+    /** Runs between a failed attempt of [run]'s and its decision; a test brings a link up there. */
+    internal var beforeFailedAttemptDecision: (suspend () -> Unit)? = null
 
     private fun isClosed(): Boolean = synchronized(lock) { closed }
 
