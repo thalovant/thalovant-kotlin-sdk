@@ -214,6 +214,12 @@ public class HubSession(connect: suspend () -> ThalovantClient,
                 client=fresh;retryAt=0.0;retryWait=policy.retrySeconds
             }
             linkUp.value = true
+            // A link made here is up, whichever call made it: connect(),
+            // reply(), an ask or an emit, or warm(). Recording it only in
+            // connect() left a refusal run() had seen still counting after an
+            // ask had brought the link up, so a refusal after a later drop was
+            // judged against the old one's grace and gave up at once.
+            synchronized(supervisor) { supervisor.after(LinkOutcome.UP, clock()) }
             return fresh
         } catch (error: Exception) {
             synchronized(lock) { retryAt=clock()+retryWait;retryWait=policy.nextWait(retryWait);retired=fresh }
@@ -300,8 +306,7 @@ public class HubSession(connect: suspend () -> ThalovantClient,
                 drop()
             }
             log.fine { "hub link: connecting" }
-            ensure()
-            synchronized(supervisor) { supervisor.after(LinkOutcome.UP, clock()) }
+            ensure() // records the link as up with the supervisor
             log.fine { "hub link: up" }
         }
     }

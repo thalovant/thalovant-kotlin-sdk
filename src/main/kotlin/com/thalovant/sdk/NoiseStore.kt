@@ -170,43 +170,64 @@ public class HiveMindNoiseStore(public val directory: Path = defaultDirectory())
      * app-private directory on Android; that is necessary and was not
      * sufficient.
      *
-     * So where linking is refused, fall back to a plain move, which is
-     * specified to fail when the target already exists -- the same answer
-     * createLink gives, and the same `FileAlreadyExistsException` both
-     * callers already read as "somebody got there first" before re-reading
-     * the winner.
+     * So where linking is refused, fall back to a move that fails when the
+     * target already exists -- the same answer createLink gives, and the same
+     * `FileAlreadyExistsException` both callers already read as "somebody got
+     * there first" before re-reading the winner.
      *
-     * Deliberately *not* `ATOMIC_MOVE`: that is a rename, and a rename
-     * replaces, which is the one property the link was chosen for. Holding
-     * it off with an `exists()` check first only narrows the window and
-     * still lets a racing writer clobber a key somebody else published. The
-     * check belongs to the platform, which can make it against the real
-     * directory; this cannot.
+     * **A move alone does not make that promise across processes.** Without
+     * `REPLACE_EXISTING`, `Files.move` looks for the target and then calls
+     * `rename(2)`, and a rename replaces: two processes can both find the
+     * name free, and the second rename overwrites the key the first one
+     * already handed to its hub. The JDK's Unix provider and Android's (the
+     * same code) both work this way. So the look and the move happen under an
+     * exclusive lock on [PUBLISH_LOCK] in this directory, which every store
+     * publishing here without a link takes first. Inside one process the
+     * companion `lock` already serializes publication; the file lock is for
+     * the other processes, such as a second process of the same Android app.
      */
     private fun publish(temporary: Path, file: Path) {
-        try {
-            Files.createLink(file, temporary)
-            return
-        } catch (refused: Exception) {
-            if (refused !is UnsupportedOperationException && refused !is java.nio.file.AccessDeniedException) {
-                throw refused
+        if (hardLinks) {
+            try {
+                Files.createLink(file, temporary)
+                return
+            } catch (refused: Exception) {
+                if (refused !is UnsupportedOperationException && refused !is java.nio.file.AccessDeniedException) {
+                    throw refused
+                }
             }
         }
-        // No ATOMIC_MOVE, and no existence check of our own.
-        //
-        // ATOMIC_MOVE is a rename, and a rename replaces -- which is the one
-        // property createLink was chosen for. Guarding it with an exists()
-        // first only narrows that window, and leaves the racing writer to
-        // clobber a key somebody else had already published.
-        //
-        // A plain move is specified to fail when the target exists, which is
-        // exactly what createLink does, raising the same
-        // FileAlreadyExistsException that both callers already read as
-        // "somebody got there first" before re-reading the winner. The check
-        // belongs to the platform, which can make it against the real
-        // directory, rather than to this, which cannot.
-        Files.move(temporary, file)
+        // Not ATOMIC_MOVE either: that is a rename that replaces by
+        // definition. The lock is what keeps a racing writer from clobbering
+        // a key somebody else published, and only a writer that holds it may
+        // look and then move.
+        openPublishLock().use { channel ->
+            val held = channel.lock()
+            try {
+                if (Files.exists(file, NOFOLLOW_LINKS)) throw java.nio.file.FileAlreadyExistsException(file.toString())
+                Files.move(temporary, file)
+            } finally {
+                held.release()
+            }
+        }
     }
+
+    /** The lock file the no-link publication path takes, private like the keys beside it. */
+    private fun openPublishLock(): java.nio.channels.FileChannel {
+        val path = directory.resolve(PUBLISH_LOCK)
+        val options = setOf(StandardOpenOption.CREATE, StandardOpenOption.WRITE, NOFOLLOW_LINKS)
+        return try {
+            java.nio.channels.FileChannel.open(path, options, PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rw-------")))
+        } catch (_: UnsupportedOperationException) {
+            java.nio.channels.FileChannel.open(path, options)
+        }
+    }
+
+    /**
+     * Whether to try `link(2)` first. A test turns it off to take the path a
+     * filesystem that refuses links takes, which a Linux JVM never does.
+     */
+    internal var hardLinks: Boolean = true
 
     private fun readKey(file: Path): ByteArray {
         require(Files.isRegularFile(file, NOFOLLOW_LINKS)) { "Noise state must be a regular file, not a symbolic link." }
@@ -226,6 +247,9 @@ public class HiveMindNoiseStore(public val directory: Path = defaultDirectory())
     public companion object {
         private val lock = Any()
         private const val STATIC_KEY = "noise-static.key"
+
+        /** Taken around the look-then-move of publication where links are refused. */
+        internal const val PUBLISH_LOCK: String = ".noise-publish.lock"
 
         /** The folder beside an identity file its key is kept in. */
         public const val IDENTITY_KEY_FOLDER: String = "thalovant-kotlin-noise"
