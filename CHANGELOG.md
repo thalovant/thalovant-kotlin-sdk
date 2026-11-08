@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- The `HubIntentInventory.listedIn` KDoc now says the list is empty on an `HubIntentSource.ENGINE_MANIFESTS` inventory. A names-only fallback has no sentences, so no tag answered for any language. The SDK has always returned an empty list there, as the Python reference does (`listed_in == ()`). The KDoc said it always matched `languages` in order, so code reading it by a language's index would fail on a fallback inventory. Behaviour is unchanged.
+- The `HubIntentInventory.listedIn` KDoc now says the list is empty on an `HubIntentSource.ENGINE_MANIFESTS` inventory. A names-only fallback has no sentences, so no tag answered for any language. The SDK has always returned an empty list there, as the Python reference does (`listed_in == ()`). The KDoc said it always matched `languages` in order, so code reading it by a language's index would fail on a fallback inventory. It now says to read the list with `listedIn.getOrNull(index)`. Behaviour is unchanged.
 - Tests only: `TransportTest` covers a `disconnect()` during the acceptance window. The `connect()` it interrupts must fail at once with `ThalovantConnectionException` and must not wait out the window. The engine-manifest fallback test now checks that `listedIn` and the serialised `listed_in` are empty.
 
 ## 0.9.2
