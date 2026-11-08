@@ -319,6 +319,15 @@ public data class HubIntentInventory(
      * which language they are in when this differs from what was asked in a
      * way the person would notice. Callers rendering sentences must read them
      * from the tag that answered.
+     *
+     * Empty on an [HubIntentSource.ENGINE_MANIFESTS] inventory, the
+     * names-only fallback taken when the hub refuses or ignores
+     * `ovos.intent.list`. That inventory carries intent names and no
+     * sentences, so no tag answered for any language. The Python reference
+     * does the same (`listed_in` is `()` there). A listing that came back
+     * empty is not that fallback: it still names the tag asked. An inventory
+     * built with this constructor is empty here unless a list is passed. So
+     * read it with `listedIn.getOrNull(index)`, never by index alone.
      */
     public val listedIn: List<String> = emptyList(),
 ) {

@@ -377,6 +377,30 @@ class TransportTest {
     }
 
     @Test
+    fun `a disconnect inside the acceptance window fails the connect it interrupts`(): Unit = runBlocking {
+        // disconnect() moves the generation on before it closes the socket, so
+        // the close that follows is ignored and only disconnect() itself can
+        // end the window. When it did not, connect() sat out the window and
+        // returned as if connected, on a transport that had been disconnected,
+        // and ThalovantClient.connect() then reported a client it had just
+        // been told to drop as connected (CodeRabbit on #41).
+        startHub()
+        val window = 20_000L
+        val transport = HiveMindWssTransport(identity(), DEFAULT_USER_AGENT, null, HiveMindNoiseStore(stateDir), window)
+        val connecting = async(Dispatchers.Default) { runCatching { transport.connect(60_000) } }
+        // The client's encrypted HELLO: the handshake is done and the window has begun.
+        awaitMessage()
+        val elapsed = measureTimeMillis {
+            transport.disconnect()
+            val outcome = kotlinx.coroutines.withTimeout(10_000) { connecting.await() }
+            // A drop, not a refusal: nobody refused this client.
+            assertIs<ThalovantConnectionException>(outcome.exceptionOrNull(), "a disconnected transport must not connect: $outcome")
+        }
+        assertTrue(elapsed < window / 2, "connect() waited out the window after disconnect(): $elapsed ms")
+        assertFalse(transport.connected && transport.handshakeComplete, "the transport still says it is connected")
+    }
+
+    @Test
     fun `ask sends an encrypted recognizer utterance and aggregates speak replies`(): Unit = runBlocking {
         startHub()
         val client = ThalovantClient(identity(), noiseStore = HiveMindNoiseStore(stateDir), protocol = HubProtocol.WSS, replySettleMs = 250)

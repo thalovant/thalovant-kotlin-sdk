@@ -536,6 +536,10 @@ class IntentsTest {
         assertEquals(listOf("ovos.intent.list"), inventory.denied)
         assertEquals(listOf("en-us", "fr-fr"), inventory.languages)
         assertFalse(inventory.hasPhrases)
+        // Names only, so no tag answered for any language: empty, as in the
+        // Python reference, and serialised the same way.
+        assertEquals(emptyList(), inventory.listedIn)
+        assertEquals(JsonArray(emptyList()), inventory.asJson()["listed_in"])
         assertEquals(
             listOf("$SHADOW:custos.incidents", "$WEATHER:current.weather"),
             inventory.intents.map { it.id },

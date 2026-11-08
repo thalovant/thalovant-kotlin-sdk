@@ -1,8 +1,19 @@
-Last Edit: Claude Opus 5.5 - 2026-11-03 - Motive: Note the chat-apps capability this SDK does not implement, and add the review-body item fixed in HomeLinkControlPlaneTest.
+Last Edit: Claude Opus 5.5 - 2026-11-07 - Motive: Record the HubIntentInventory.listedIn doc correction and the acceptance-window disconnect regression test from the CodeRabbit review-body follow-up on #41, #42, #46 and #47.
 
 # Audit
 
 These findings come from the CodeRabbit threads on merged PRs #35, #37, #41 and #46. They were checked against the code and against `./gradlew build`, which passes 376 tests at the time of writing.
+
+## Fixed on 2026-11-07
+
+- **The `HubIntentInventory.listedIn` KDoc overstated its contract.**
+  - Where: `HubIntentInventory.listedIn` in `src/main/kotlin/com/thalovant/sdk/Intents.kt`. CodeRabbit raised it on #42, in the review body.
+  - Cause: the KDoc said the list always matched `languages`, in the same order. `inventoryFromNames()` builds the `ENGINE_MANIFESTS` fallback with an empty list, as the Python reference's `_inventory_from_names` does. Code that read the list by a language's index would fail on a fallback inventory.
+  - Fix: documentation only. The KDoc now says the list is empty on the names-only fallback, and on a hand-built inventory unless one is passed, but not on a listing that came back empty. It tells callers to read the list with `getOrNull(index)`. The behaviour stays the same as the reference's.
+  - Test: `IntentsTest`, `the fallback lists names and says what was refused`, now checks that `listedIn` and `asJson()["listed_in"]` are empty.
+- **No regression test covered `disconnect()` during the acceptance window.**
+  - Where: `HiveMindWssTransport.disconnect()` in `Transport.kt`. CodeRabbit raised it on #41, outside the diff. The code fix landed in #46 (`c9a5351`), which completes `ended`.
+  - Test: `TransportTest`, `a disconnect inside the acceptance window fails the connect it interrupts`. With `ended.complete(error)` removed from `disconnect()`, the test fails: `connect()` keeps waiting out the 20 s window.
 
 ## Fixed on 2026-11-03
 
