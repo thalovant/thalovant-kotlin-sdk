@@ -1,12 +1,12 @@
-Last Edit: Claude Opus 5.5 - 2026-11-08 - Motive: Browser sign-in (0.10.0): known limits of the loopback flow, from the test run and a reading of the new code; the flaky revoke-race test fixed.
+Last Edit: Claude Opus 5.5 - 2026-11-08 - Motive: Browser sign-in (0.10.0): known limits of the loopback flow, the flaky revoke-race test, and the two chooser findings from CodeRabbit on #59.
 
 # Audit
 
-These findings come from the CodeRabbit threads on merged PRs #35, #37, #41 and #46, and from the browser sign-in round (0.10.0). They were checked against the code and against `./gradlew build`, which passes 419 tests at the time of writing (branch `feat/browser-sign-in`, 2026-11-08, JVM 17 and 21).
+These findings come from the CodeRabbit threads on merged PRs #35, #37, #41 and #46, and from the browser sign-in round (0.10.0). They were checked against the code and against `./gradlew build`, which passes 421 tests at the time of writing (branch `feat/browser-sign-in`, 2026-11-08, JVM 17 and 21).
 
 ## Browser sign-in (0.10.0)
 
-Read at branch `feat/browser-sign-in` (from `main` 090dbd4). Behind it: the full suite, `BrowserLoginVectorsTest` (all 98 shared vectors, with results identical to the Python reference's case for case) and `BrowserLoginTest` (29 edge tests). Four hand mutations of the new code were run against the vectors, and the section each one targets caught it: `URLEncoder` in the URL builder, a missing state accepted, a fifth exchange field, and `CI` ignored.
+Read at branch `feat/browser-sign-in` (from `main` 090dbd4). Behind it: the full suite, `BrowserLoginVectorsTest` (all 98 shared vectors, with results identical to the Python reference's case for case) and `BrowserLoginTest` (31 edge tests). Four hand mutations of the new code were run against the vectors, and the section each one targets caught it: `URLEncoder` in the URL builder, a missing state accepted, a fifth exchange field, and `CI` ignored.
 
 - **Another user on the same computer can sign the program in as themselves.** The authorization URL reaches the browser through `java.awt.Desktop.browse`, or as a process argument to `open`, `xdg-open` or `rundll32` (`openInPlatformBrowser` and `browserCommand`, `src/main/kotlin/com/thalovant/sdk/BrowserLogin.kt`). On a shared machine, another local user can read that argument from the process table. They can open it in their own browser and approve it with their own account, and the redirect lands on the same `127.0.0.1` port with the right `state`. The program is then signed in to *their* account. This is RFC 8252's loopback flow as `gh auth login` and `aws sso login` run it, and the reference records the same limit. No mitigation in the SDK. A single-user desktop is unaffected.
 - **A `HEAD` request gets a body.** Anything but `GET /callback` is answered with a 404 page, a `HEAD` included (`classifyLoopbackRequest` and `LoopbackListener.serve`, `src/main/kotlin/com/thalovant/sdk/Loopback.kt`; case `only GET is served: HEAD is 404`). Browsers do not send `HEAD` to a redirect target, and every connection closes after its answer.
@@ -20,6 +20,16 @@ Read at branch `feat/browser-sign-in` (from `main` 090dbd4). Behind it: the full
 
 ## Fixed on 2026-11-08
 
+- **The chooser did not fall back when the API could not be reached.** CodeRabbit raised it on #59, about the FAQ.
+  - Where: the `LoginMethod.AUTO` branch of `interactiveLogin` in `src/main/kotlin/com/thalovant/sdk/ControlPlane.kt`.
+  - Cause: the branch caught only `ThalovantApiException`. A configuration request that could not reach the API threw the `IOException` out of `interactiveLogin()`. The Python reference reads that failure as `ThalovantAPIUnreachableError`, which is a `ThalovantAPIError`, and falls back to a device login. The porting brief counts "another failure" as not usable. So the FAQ described the reference and the code did not.
+  - Fix: the branch also catches `IOException`. `LoginMethod.BROWSER` still throws it.
+  - Test: `BrowserLoginTest`, `an API out of reach for the configuration means a device login, unless the browser is forced`, uses a connection dropped after the request. Without the catch, the test fails.
+- **The chooser's opener ran on the calling coroutine for a device login.** CodeRabbit raised it on #59.
+  - Where: the `launch` that `interactiveLogin` passes to `deviceLogin`, in `ControlPlane.kt`.
+  - Cause: `openBrowserBestEffort` calls `launch` inline. An opener that blocks, such as a console browser, held up polling and the device login's deadline. `BrowserLoginOptions.opener` promises a daemon thread of its own, and the browser path kept that promise.
+  - Fix: both paths go through `openOnBrowserThread` in `BrowserLogin.kt`. `loginWithBrowser`, which takes no opener, is unchanged.
+  - Tests: `an opener that blocks does not hold up a device login`, which is bounded, so a regression fails rather than hangs. Also `the opener the chooser was given opens a device login's page too, on a thread of its own`. Both fail with the opener inline.
 - **A revoke-versus-sign-in test was flaky.**
   - Where: `HomeLinkControlPlaneTest`, `a revoke racing a sign-in on other threads never splits a token from its id`.
   - Cause: it failed on unmodified `main` (`090dbd4`) in 3 of 4 runs on a loaded machine. When `pollDeviceLogin` finished before `revokeApiToken` read `tokenId`, the revoke targeted the *new* token and correctly forgot it. The test asserted the new token survived either way.

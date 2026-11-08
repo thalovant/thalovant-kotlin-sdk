@@ -327,23 +327,97 @@ class BrowserLoginTest {
     }
 
     @Test
-    fun `the opener the chooser was given opens a device login's page too`(): Unit = runBlocking {
+    fun `the opener the chooser was given opens a device login's page too, on a thread of its own`(): Unit = runBlocking {
         Api().use { api ->
-            val opened = CopyOnWriteArrayList<String>()
+            val opened = CompletableDeferred<Pair<String, String>>()
             val plane = ThalovantControlPlane(api.url)
             val (token, _) = printed {
                 runBlocking {
                     plane.interactiveLogin(
-                        InteractiveLoginOptions(method = LoginMethod.DEVICE, deviceName = "unit", opener = { opened += it }),
+                        InteractiveLoginOptions(
+                            method = LoginMethod.DEVICE,
+                            deviceName = "unit",
+                            opener = { opened.complete(it to Thread.currentThread().name) },
+                        ),
                         emptyMap(),
                         "macos",
                     )
                 }
             }
             assertEquals("dev-id", token.getValue("token_id").jsonPrimitive.content)
-            assertEquals(listOf("https://thalovant.com/activate?code=WDJB-MJHT"), opened)
+            val (url, thread) = withTimeout(5_000) { opened.await() }
+            assertEquals("https://thalovant.com/activate?code=WDJB-MJHT", url)
+            assertEquals("thalovant-browser", thread)
             // A forced device login never asks for the configuration.
             assertFalse(api.requests.any { "native" in it }, api.requests.toString())
+        }
+    }
+
+    @Test
+    fun `an opener that blocks does not hold up a device login`(): Unit = runBlocking {
+        // A console browser can hold the call until it exits. Run inline, the
+        // opener kept the device login from polling, and from starting its
+        // deadline, until it returned. Bounded, so that a regression fails
+        // here rather than hanging the suite.
+        Api().use { api ->
+            val release = java.util.concurrent.CountDownLatch(1)
+            val plane = ThalovantControlPlane(api.url)
+            try {
+                val began = System.nanoTime()
+                val (token, _) = printed {
+                    runBlocking {
+                        plane.interactiveLogin(
+                            InteractiveLoginOptions(
+                                method = LoginMethod.DEVICE,
+                                deviceName = "unit",
+                                opener = { release.await(3, java.util.concurrent.TimeUnit.SECONDS) },
+                            ),
+                            emptyMap(),
+                            "macos",
+                        )
+                    }
+                }
+                val took = (System.nanoTime() - began) / 1_000_000
+                assertEquals("dev-id", token.getValue("token_id").jsonPrimitive.content)
+                assertTrue(took < 2_000, "the device login waited $took ms for its opener")
+            } finally {
+                release.countDown()
+            }
+        }
+    }
+
+    @Test
+    fun `an API out of reach for the configuration means a device login, unless the browser is forced`(): Unit = runBlocking {
+        // The reference reads an unreachable API as ThalovantAPIUnreachableError,
+        // an API error its chooser falls back on; this SDK throws IOException.
+        // The connection is dropped once the request is read, so no answer at
+        // all comes back -- not an empty 200, which would be "unusable".
+        val gone = { MockResponse().setSocketPolicy(okhttp3.mockwebserver.SocketPolicy.DISCONNECT_AFTER_REQUEST) }
+        Api(configAnswer = gone).use { api ->
+            val plane = ThalovantControlPlane(api.url)
+            // Forced, the failure is the caller's, as the transport error it
+            // is -- which also proves this is a transport failure.
+            assertFailsWith<java.io.IOException> {
+                plane.interactiveLogin(
+                    InteractiveLoginOptions(method = LoginMethod.BROWSER, opener = { error("the browser was opened") }),
+                    mapOf("DISPLAY" to ":0"),
+                    "linux",
+                )
+            }
+            assertFalse(api.requests.any { "device" in it }, api.requests.toString())
+            val opened = CopyOnWriteArrayList<String>()
+            val (token, _) = printed {
+                runBlocking {
+                    plane.interactiveLogin(
+                        InteractiveLoginOptions(deviceName = "unit", opener = { opened += it }),
+                        mapOf("DISPLAY" to ":0"),
+                        "linux",
+                    )
+                }
+            }
+            assertEquals("dev-id", token.getValue("token_id").jsonPrimitive.content)
+            assertTrue("POST /v1/auth/device/authorize" in api.requests, api.requests.toString())
+            assertFalse(opened.any { "response_type=code" in it }, "the consent page was opened")
         }
     }
 

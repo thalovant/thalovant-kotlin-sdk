@@ -110,10 +110,18 @@ internal fun presentBrowserLogin(
         openBrowser -> println("Opening your browser to sign in to Thalovant. If it does not open, visit:\n$url")
         else -> println("To sign in to Thalovant, visit:\n$url")
     }
-    if (openBrowser) {
-        val open = opener ?: ::openInPlatformBrowser
-        Thread({ runCatching { open(url) } }, "thalovant-browser").apply { isDaemon = true }.start()
-    }
+    if (openBrowser) openOnBrowserThread(url, opener ?: ::openInPlatformBrowser)
+}
+
+/**
+ * Runs [open] for [url] on a daemon thread of its own, named
+ * `thalovant-browser`, and ignores what it throws. Whatever opens the browser
+ * -- a console browser that holds the call until it exits, an opener that
+ * waits for its process -- must not hold up the sign-in: neither the
+ * listener's answer nor a device login's polling and deadline.
+ */
+internal fun openOnBrowserThread(url: String, open: (String) -> Unit) {
+    Thread({ runCatching { open(url) } }, "thalovant-browser").apply { isDaemon = true }.start()
 }
 
 /**

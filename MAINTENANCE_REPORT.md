@@ -51,6 +51,25 @@ Last Edit: Claude Opus 5.5 - 2026-11-08 - Motive: Browser sign-in (0.10.0): port
   - Against `main` (`44b6e2b`, the current digest), where it notes `browser-login` as a capability the reference does not know yet. That note is the rollout state for a consumer that goes first.
 - Not run: Windows, macOS, a real browser, or a live API. thalovant-api #501 is not deployed yet.
 
+### CodeRabbit review on #59
+
+Five threads were raised. Two were code findings and three were documentation findings. The review asked for no change to behaviour that the shared vectors or the porting brief fix.
+
+| Thread | Outcome |
+| :--- | :--- |
+| FAQ: which configuration failures choose a device login | **Fixed in code.** The AUTO branch now also catches the `IOException` of an API out of reach, as the reference does through `ThalovantAPIUnreachableError`. A test covers it, and the FAQ, README and CHANGELOG say so. |
+| FAQ: the browser and device timeouts | **Fixed in the docs.** 300 s is the browser sign-in's timeout (`ThalovantDeviceLoginExpiredException`). 900 s is the device login's (`ThalovantTimeoutException`, which is not the expired exception). `ThalovantDeviceLoginExpiredException` also covers a device code the API reports as expired. |
+| README: the example called a suspend function at top level | **Fixed.** The example is now a `runBlocking` `main`. It and the quick start were compiled as written. |
+| README, FAQ, CHANGELOG: the same-computer claim | **Fixed in the docs.** A link that reaches somebody on another computer gives them nothing. Another user on the same computer can approve it as themselves (AUDIT.md). |
+| ControlPlane.kt: the device-path opener ran inline | **Fixed in code.** It now runs on a daemon thread, as on the browser path. Two tests cover it. |
+
+Verification for this round:
+- `./gradlew --no-daemon clean build -PtestJavaVersion=17` and `-PtestJavaVersion=21` each pass 421 tests with 0 failures.
+- Conformance was re-recorded, and the results are unchanged.
+- Each new test fails against the code from before its fix.
+- `check-sdk-parity.py --consumer thalovant-kotlin-sdk` passes. The reference digests are left as they were; the lead sends the final candidate.
+- The config fetch was checked once against the live API (`https://api.thalovant.com/v1/auth/native/config`, thalovant-api #501), through `browserLogin()` with the sign-in abandoned at the prompt.
+
 ### Transparency Report
 
 - **AI Model:** Claude Opus 5.5 (claude-opus-5-5), as a Claude Code agent, one of several agents porting the same reference to the other SDKs in parallel.

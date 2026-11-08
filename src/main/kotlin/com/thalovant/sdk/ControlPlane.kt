@@ -1031,9 +1031,9 @@ public class ThalovantControlPlane(
      * `WAYLAND_DISPLAY`) and the API answers `GET /v1/auth/native/config`
      * with a configuration it can use; otherwise it uses a device login
      * ([loginWithBrowser]), whose code can be approved from any browser. A
-     * 404, any other refusal, an unusable answer and a cleartext API URL all
-     * mean a device login, which is not a downgrade: nothing has been opened
-     * yet. [LoginMethod.BROWSER] and [LoginMethod.DEVICE] force one;
+     * 404, any other refusal, an unusable answer, an API out of reach (an
+     * [IOException]) and a cleartext API URL all mean a device login, which
+     * is not a downgrade: nothing has been opened yet. [LoginMethod.BROWSER] and [LoginMethod.DEVICE] force one;
      * [LoginMethod.DEVICE] never asks for the configuration, and
      * [LoginMethod.BROWSER] raises its failure rather than turn into a device
      * login. Once the browser has been sent to the consent page, the browser
@@ -1070,6 +1070,12 @@ public class ThalovantControlPlane(
                     // An older API (404), or one that cannot say: the browser
                     // has not been opened, so a device login is not a downgrade.
                     null
+                } catch (_: IOException) {
+                    // An API out of reach is a failure too. The reference reads
+                    // it as ThalovantAPIUnreachableError, an API error, and
+                    // falls back the same way; this SDK throws it as the
+                    // IOException it is, so it is caught by name.
+                    null
                 }
             } else {
                 null
@@ -1084,7 +1090,9 @@ public class ThalovantControlPlane(
                     openBrowser = options.openBrowser,
                     timeoutMillis = options.timeoutMillis ?: DEFAULT_DEVICE_LOGIN_TIMEOUT_MILLIS,
                 ),
-                launch = opener?.let { open -> { uri: java.net.URI -> open(uri.toString()) } },
+                // On its own thread, as on the browser path: an opener that
+                // blocks must not hold up the polling or its deadline.
+                launch = opener?.let { open -> { uri: java.net.URI -> openOnBrowserThread(uri.toString(), open) } },
             )
         }
         return runBrowserLogin(

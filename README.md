@@ -1,4 +1,4 @@
-<!-- Last Edit: Claude Opus 5.5 - 2026-11-08 - Motive: Sign-in section for browser sign-in (0.10.0); the quick start signs in with interactiveLogin(). -->
+<!-- Last Edit: Claude Opus 5.5 - 2026-11-08 - Motive: Sign-in section for browser sign-in (0.10.0); CodeRabbit on #59: the example runs in a coroutine, and the shared-computer limit is said. -->
 
 <p align="center">
   <picture>
@@ -79,22 +79,35 @@ log or persist it.
 import com.thalovant.sdk.InteractiveLoginOptions
 import com.thalovant.sdk.LoginMethod
 import com.thalovant.sdk.ThalovantControlPlane
+import kotlinx.coroutines.runBlocking
 
-val api = ThalovantControlPlane()
-api.interactiveLogin() // the browser here, or a device code where there is none
-// InteractiveLoginOptions(method = LoginMethod.BROWSER) or LoginMethod.DEVICE forces one.
+fun main(args: Array<String>) = runBlocking {
+    val api = ThalovantControlPlane()
+    // AUTO: the browser here, or a device code where there is none.
+    // --browser or --device forces one.
+    val method = when {
+        "--browser" in args -> LoginMethod.BROWSER
+        "--device" in args -> LoginMethod.DEVICE
+        else -> LoginMethod.AUTO
+    }
+    api.interactiveLogin(InteractiveLoginOptions(method = method))
+    println("Signed in; token id ${api.tokenId}")
+}
 ```
 
 `interactiveLogin()` opens your browser at the Thalovant consent page and
 listens on `127.0.0.1` for the answer (OAuth with PKCE on a loopback redirect,
 RFC 8252). It always prints the address too, in case the browser does not
-open. Only the browser on this computer can complete the sign-in, so a sign-in
-link that reaches somebody else gives them nothing.
+open. Only a browser on this computer can complete the sign-in, so a sign-in
+link that reaches somebody on another computer gives them nothing. That does
+not hold against another user signed in to the same computer: one who can read
+the URL can approve it with their own account, and the program is then signed
+in as them (see [AUDIT.md](AUDIT.md)).
 
 On a machine that cannot show a browser, it prints a code to enter at
 `thalovant.com/activate` from any browser instead: over SSH, in CI, or on Linux
 with neither `DISPLAY` nor `WAYLAND_DISPLAY`. It does the same against an API
-that does not offer browser sign-in yet. `browserLogin()` and
+that does not offer browser sign-in yet, or that it cannot reach. `browserLogin()` and
 `loginWithBrowser()` (the device login) are the two methods on their own. All
 of them are `suspend` functions, and cancelling one stops the sign-in.
 
@@ -108,7 +121,8 @@ dashboard. It counts against your plan. `api.revokeApiToken()` revokes it.
 
 A denied sign-in throws `ThalovantDeviceLoginDeniedException`. A browser
 sign-in that nobody answers within 300 seconds (`timeoutMillis`) throws
-`ThalovantDeviceLoginExpiredException`. Accounts with a password can still use
+`ThalovantDeviceLoginExpiredException`; a device login that runs past its own
+900 seconds throws `ThalovantTimeoutException`. Accounts with a password can still use
 `api.login(email, password)`.
 
 Browser sign-in is for a JVM on a desktop or a server. Android reports itself
