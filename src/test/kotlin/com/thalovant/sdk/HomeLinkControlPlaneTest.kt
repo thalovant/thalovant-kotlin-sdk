@@ -134,13 +134,28 @@ class HomeLinkControlPlaneTest {
 
     @Test
     fun `a revoke racing a sign-in on other threads never splits a token from its id`(): Unit = runBlocking {
+        // The sign-in is answered only once the DELETE has arrived, so the
+        // revoke has always read its target -- the old token -- first, and the
+        // race is the one this is about: which of the two answers lands
+        // first. Without the gate a sign-in that finished before the revoke
+        // began made it revoke the *new* token, which is right, and failed
+        // this test on a loaded machine.
+        val deleteArrived = java.util.concurrent.atomic.AtomicReference(java.util.concurrent.CountDownLatch(1))
         server.dispatcher = object : okhttp3.mockwebserver.Dispatcher() {
             override fun dispatch(request: okhttp3.mockwebserver.RecordedRequest): MockResponse =
-                if (request.method == "DELETE") MockResponse().setResponseCode(204)
-                else MockResponse().setResponseCode(200).setHeader("Content-Type", "application/json")
-                    .setBody("""{"access_token":"new-token","token_id":"new-id"}""")
+                if (request.method == "DELETE") {
+                    deleteArrived.get().countDown()
+                    MockResponse().setResponseCode(204)
+                } else if (deleteArrived.get().await(10, java.util.concurrent.TimeUnit.SECONDS)) {
+                    MockResponse().setResponseCode(200).setHeader("Content-Type", "application/json")
+                        .setBody("""{"access_token":"new-token","token_id":"new-id"}""")
+                } else {
+                    // A gate that times out proves nothing about the order.
+                    MockResponse().setResponseCode(500).setBody("the revoke never sent its DELETE")
+                }
         }
         repeat(100) {
+            deleteArrived.set(java.util.concurrent.CountDownLatch(1))
             val plane = api("old-token").also { it.tokenId = "old-id" }
             val revoking = launch(kotlinx.coroutines.Dispatchers.IO) { plane.revokeApiToken() }
             val signing = launch(kotlinx.coroutines.Dispatchers.Default) { plane.pollDeviceLogin("dc-1") }
