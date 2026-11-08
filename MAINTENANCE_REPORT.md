@@ -1,6 +1,118 @@
-Last Edit: Claude Opus 5.5 - 2026-11-07 - Motive: Record the remaining CodeRabbit review-body items (outside-diff comments) on merged PRs #41, #42, #46 and #47, the listedIn doc fix and the acceptance-window disconnect test.
+Last Edit: Claude Opus 5.5 - 2026-11-08 - Motive: Browser sign-in (0.10.0): port of the Python reference's browser-login capability, the flaky revoke-race test fix, verification and transparency report.
 
 # Maintenance Report
+
+## 2026-11-08: Browser sign-in (0.10.0)
+
+**What changed:** browser sign-in is ported from the Python reference (thalovant-python-sdk#113, `e3999cb`, 0.11.0) as the `browser-login` capability. It is the authorization code grant with PKCE (S256) on a loopback redirect (RFC 8252).
+
+| File | Change |
+| :--- | :--- |
+| `src/main/kotlin/com/thalovant/sdk/ControlPlane.kt` | `browserLogin(BrowserLoginOptions)` and `interactiveLogin(InteractiveLoginOptions)`, with the private steps `nativeSignInConfig`, `runBrowserLogin` and `exchangeBrowserCode`. `loginWithBrowser` delegates to a private `deviceLogin` with the same steps, so the chooser's opener reaches the verification page. |
+| `src/main/kotlin/com/thalovant/sdk/NativeSignIn.kt` | `browserAuthorizationUrl`, `loopbackRedirectUri`, `newState`, `canOpenBrowser`, `defaultDeviceName`, the constants, and `NativeSignInConfig.fromJson`. `begin` and `codeFrom` are unchanged. |
+| `src/main/kotlin/com/thalovant/sdk/Loopback.kt` (new) | `LoopbackListener` (a `ServerSocket` on `127.0.0.1`), `classifyLoopbackRequest`, `formDecode` and `loopbackResponse`. |
+| `src/main/kotlin/com/thalovant/sdk/BrowserLogin.kt` (new) | `LoginMethod`, `BrowserLoginOptions`, `InteractiveLoginOptions`, the prompt and the platform opener, and `withoutSecrets`. |
+| `src/main/kotlin/com/thalovant/sdk/Errors.kt` | `ThalovantApiException.errorCode` gets an internal setter. |
+| `src/test/kotlin/com/thalovant/sdk/BrowserLoginVectorsTest.kt`, `BrowserLoginTest.kt` (new) | Run the 98 shared vectors, and test this SDK's own edges (29 tests). |
+| `src/test/resources/thalovant/browser-login-vectors.json` (new) | Copied byte for byte from the reference (sha256 `9058adf2…1651e`). |
+| `src/test/kotlin/com/thalovant/sdk/HomeLinkControlPlaneTest.kt` | The flaky revoke-race test is fixed (see AUDIT.md). |
+| `contracts/sdk-parity.json`, `contracts/conformance-results.json` | The candidate reference digest, the `browser-login` capability, refreshed evidence hashes, and the re-recorded results. |
+| `build.gradle.kts`, `Constants.kt`, `README.md`, `CHANGELOG.md` | 0.10.0, a README "Sign in" section, and the changelog entry. |
+| `AGENTS.md`, `AUDIT.md`, `FAQ.md`, `QUICK_FACTS.md`, `SUGGESTIONS.md` | The sign-in rule, known limits, Q&A, facts and follow-ups. |
+
+**Why:**
+- A device code can be relayed to somebody else: device-code phishing.
+- With a loopback redirect, the browser that approves delivers the code to its own computer's `127.0.0.1`, so a link or code sent to someone on another computer delivers nothing to the sender.
+- The parity reference marks `browser-login` as required here.
+
+**Decisions:**
+- **Listener:** a `ServerSocket` with a small reader rather than `com.sun.net.httpserver`. Android does not have the JDK server, and the JDK server answers some malformed requests itself.
+- **Android:** browser sign-in is documented as unsupported there. Android is `linux` with no display, so `interactiveLogin()` uses a device login, and the platform opener does nothing.
+- **Error types:** none are new. Denied and expired reuse the device-login exceptions with no status.
+
+### Verification
+
+- Before the change, `./gradlew --no-daemon build -PtestJavaVersion=17` on unmodified `main` (`090dbd4`) ran 377 tests with 1 failure. The failure was the flaky revoke-race test, which failed in 3 of 4 runs.
+- After the change, `THALOVANT_CONFORMANCE_OUT=$PWD/contracts/conformance-results.json ./gradlew --no-daemon clean build -PtestJavaVersion=17` ran 419 tests: 0 failed, 0 skipped, `BUILD SUCCESSFUL`.
+- `./gradlew --no-daemon build -PtestJavaVersion=21 --rerun-tasks` ran 419 tests: 0 failed, 0 skipped, `BUILD SUCCESSFUL`.
+- The compiler warnings left are the two that `ConformanceRecord.kt` already had.
+- Conformance was re-recorded. All 98 `browser-login-vectors.json` case digests, and the file digest `b17cb434…`, are identical to the reference's recorded results at `e3999cb`. The other eight vector files' results are unchanged, and each equals the reference's.
+- Hand mutations, each caught by the section it targets:
+  - `URLEncoder` in the URL builder: `authorization_urls`
+  - a missing state accepted: `callbacks`, `sign_ins`
+  - a fifth exchange field: `sign_ins`, `chooser`
+  - `CI` ignored: `environment`, `chooser`
+  - With `revokeApiToken` changed to forget unconditionally, the fixed revoke-race test fails.
+- The fixed revoke-race test passed 5 runs out of 5.
+- `tools/interop/run.sh` against the pinned Node peer (`thalovant-node-sdk@261123f5`) passes `IndependentInteropTest`.
+- `python3 -m unittest discover -s tools -p 'test_maven_publication_status.py'` passes 7 tests.
+- `check-sdk-parity.py --workspace <checkouts> --consumer thalovant-kotlin-sdk` passes in two places:
+  - Against thalovant-python-sdk `e3999cb`, the PR head with the candidate digest: "acceptance records verified".
+  - Against `main` (`44b6e2b`, the current digest), where it notes `browser-login` as a capability the reference does not know yet. That note is the rollout state for a consumer that goes first.
+- Not run: Windows, macOS, a real browser, or a live API. thalovant-api #501 is not deployed yet.
+
+### CodeRabbit review on #59
+
+Five threads were raised. Two were code findings and three were documentation findings. The review asked for no change to behaviour that the shared vectors or the porting brief fix.
+
+| Thread | Outcome |
+| :--- | :--- |
+| FAQ: which configuration failures choose a device login | **Fixed in code.** The AUTO branch now also catches the `IOException` of an API out of reach, as the reference does through `ThalovantAPIUnreachableError`. A test covers it, and the FAQ, README and CHANGELOG say so. |
+| FAQ: the browser and device timeouts | **Fixed in the docs.** 300 s is the browser sign-in's timeout (`ThalovantDeviceLoginExpiredException`). 900 s is the device login's (`ThalovantTimeoutException`, which is not the expired exception). `ThalovantDeviceLoginExpiredException` also covers a device code the API reports as expired. |
+| README: the example called a suspend function at top level | **Fixed.** The example is now a `runBlocking` `main`. It and the quick start were compiled as written. |
+| README, FAQ, CHANGELOG: the same-computer claim | **Fixed in the docs.** A link that reaches somebody on another computer gives them nothing. Another user on the same computer can approve it as themselves (AUDIT.md). |
+| ControlPlane.kt: the device-path opener ran inline | **Fixed in code.** It now runs on a daemon thread, as on the browser path. Two tests cover it. |
+
+Verification for this round:
+- `./gradlew --no-daemon clean build -PtestJavaVersion=17` and `-PtestJavaVersion=21` each pass 421 tests with 0 failures.
+- Conformance was re-recorded, and the results are unchanged.
+- Each new test fails against the code from before its fix.
+- `check-sdk-parity.py --consumer thalovant-kotlin-sdk` passes. The reference digests are left as they were; the lead sends the final candidate.
+- The config fetch was checked once against the live API (`https://api.thalovant.com/v1/auth/native/config`, thalovant-api #501), through `browserLogin()` with the sign-in abandoned at the prompt.
+
+### Final reference (thalovant-python-sdk `39e31d8`, digest `6dfb3bb31ac7`)
+
+The vectors were re-vendored byte for byte (sha256 `b0c73f80…59e73`, 119 cases). In `reference_digests`, the candidate `6dfb3bb31ac7…` replaces the interim `49744ee385bf…`, which was never published, and `57c7e71f6456…` stays.
+
+| # | Change | Implementation | Test |
+| :--- | :--- | :--- | :--- |
+| 1 | No request leaves the API's origin | `sameOrigin`, checked in `request()` for every request (`ControlPlane.kt`); error with no status | `no request leaves the API's origin`, `an ordinary API path still reaches the API`; vector `sign_ins/a token endpoint that would leave the API is refused before anything is opened` |
+| 2 | `token_endpoint`: no `:`; every `%` has two hex digits | `usableTokenEndpoint` (`NativeSignIn.kt`) | five `config/a token endpoint …` vectors, plus `a configuration that is not an object is unusable` |
+| 3 | `authorization_endpoint`: port 0 refused; the host is what a browser opens | `usableAuthorizationEndpoint`, `realHost`, `isIpv4` (`NativeSignIn.kt`); IPvFuture is no longer accepted | nine `config/…` vectors, plus `an authorization endpoint no browser can open is unusable`, checked against the reference's own function |
+| 4 | Only RFC 6749's error codes are kept | `OAUTH_ERRORS` in `classifyLoopbackRequest` (`Loopback.kt`); the `PROBLEM_CODE` filter is gone | three `callbacks/…` vectors, plus `sign_ins/an error that repeats the state never reaches the error` |
+| 5 | Only a missing `deviceName` gets the default | `runBrowserLogin` and `interactiveLogin` (`ControlPlane.kt`); an empty `client_name` is already left out | `sign_ins/an empty device name keeps the hostname off the consent page`, `chooser/an empty device name is not sent to a device login either` |
+| 6 | The accepted tab waits until the sign-in ends | the 60 s `ANSWER_TIMEOUT_MILLIS` is removed (`LoopbackListener.serve`) | `the accepted tab waits as long as the sign-in takes`, `closing the listener answers a tab that is still waiting` |
+| 7 | `HEAD`: headers and no body | `loopbackResponse(head = true)` | `a HEAD request gets the headers and no body` |
+| 8 | Redact before building the message, in one pass; always a new error | `scrubSecrets`, `scrubJson`, `scrubBody` (`BrowserLogin.kt`), applied in `apiError` before the message is built; `withoutSecrets` always builds a new error; a transport failure becomes a new `IOException` | `a message cut to length keeps no part of a secret`, `a state echoed across the cut keeps no part of it either`, `scrubbing is one pass, longest first, and leaves its marker alone`, `a transport failure during the exchange carries nothing of the request, and is not retried` |
+| 8b | The exchange is sent once | `onceHttpClient` (`retryOnConnectionFailure(false)`) and `oneShot` body (`ControlPlane.kt`) | `the exchange is sent at most once, whatever the answer asks` (408, and 503 with `Retry-After: 0`) |
+| 9 | Drain before closing | `LoopbackListener.answer`: shut the write side, then read up to `DRAIN_TIMEOUT_MILLIS` (2 s) and `DRAIN_LIMIT` (1 MiB) | `an early answer is not lost to a reset` (oversized head, unread body), `draining a connection is bounded` |
+| 10 | Wording | KDoc in `NativeSignIn.kt` and `ControlPlane.kt`, and the README, FAQ and CHANGELOG | — |
+
+Verification for this round:
+
+- `THALOVANT_CONFORMANCE_OUT=$PWD/contracts/conformance-results.json ./gradlew --no-daemon clean build -PtestJavaVersion=17` ran 433 tests: 0 failed, 0 skipped. 43 of them are in `BrowserLoginTest` and 13 in `BrowserLoginVectorsTest`.
+- `./gradlew --no-daemon clean build -PtestJavaVersion=21` ran 433 tests: 0 failed, 0 skipped.
+- An earlier JVM 21 run recorded one `sign_ins/denied in the browser` with `closed: false`. That means a new connection to the freed ephemeral port was accepted after the sign-in ended. Four reruns of the vector runner, and this final build, passed.
+  - The likely cause is another process on this shared host binding the freed port.
+  - A runner check that probed who answered would have hidden a listener left bound, which a mutation proved. So the strict check, which is the reference's, stays.
+- Conformance was re-recorded. All 119 `browser-login-vectors.json` case digests, and the file digest `855c37cb…`, are identical to the reference's results at `39e31d8`. The 98 earlier cases and the other eight vector files are unchanged.
+- `check-sdk-parity.py --workspace <checkouts> --consumer thalovant-kotlin-sdk` against thalovant-python-sdk `39e31d8` reports "acceptance records verified". Against `main` (`44b6e2b`) it passes, with the rollout note that `browser-login` is not known there yet.
+- `tools/interop/run.sh` against the pinned Node peer passes. `test_maven_publication_status.py` passes 7 tests.
+- Not run: Windows and macOS.
+
+### Transparency Report
+
+- **AI Model:** Claude Opus 5.5 (claude-opus-5-5), as a Claude Code agent, one of several agents porting the same reference to the other SDKs in parallel.
+- **Actions Taken:**
+  - Read the contract, the Python reference's porting brief, its implementation, its tests and the parity checker.
+  - Wrote the Kotlin implementation and both test files.
+  - Vendored the vectors.
+  - Re-recorded conformance and checked it against the reference case for case.
+  - Ran hand mutations to prove the vector runner bites.
+  - Found and fixed the flaky test that failed on unmodified `main`.
+  - Updated the parity record, with a review note for every refreshed hash.
+  - Wrote the docs, the changelog and these records.
+- **Oversight:** the platform owner's coordinating agent reviews and merges after the PR's hosted CI and review. Nothing was merged, tagged or released by this agent; a merge to `main` releases 0.10.0.
 
 ## 2026-11-07: CodeRabbit review-body items, second pass
 

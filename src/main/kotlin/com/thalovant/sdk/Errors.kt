@@ -382,8 +382,13 @@ public open class ThalovantApiException(
      * else, when its `detail` is itself an object -- FastAPI's own envelope,
      * which the API's Problem+JSON handler normally lifts -- that object's
      * `code` under the same rule. Returned exactly as sent.
+     *
+     * A browser sign-in the consent page ended with an `error` other than
+     * `access_denied` (`server_error`, say) carries that `error` here, with
+     * no [statusCode]: the browser said it, not the API.
      */
-    public val errorCode: String? = problemMember(problem, "code")
+    public var errorCode: String? = problemMember(problem, "code")
+        internal set
 
     /**
      * The sentence the API wrote for a person, whole, or null.
