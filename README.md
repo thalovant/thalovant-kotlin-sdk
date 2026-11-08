@@ -1,4 +1,4 @@
-<!-- Last Edit: Claude Opus 5.5 - 2026-11-08 - Motive: Sign-in section for browser sign-in (0.10.0); CodeRabbit on #59: the example runs in a coroutine, and the shared-computer limit is said. -->
+<!-- Last Edit: Claude Opus 5.5 - 2026-11-08 - Motive: Sign-in section for browser sign-in (0.10.0), final reference 39e31d8: what a loopback sign-in promises, an empty device name, the example in a coroutine. -->
 
 <p align="center">
   <picture>
@@ -98,11 +98,11 @@ fun main(args: Array<String>) = runBlocking {
 `interactiveLogin()` opens your browser at the Thalovant consent page and
 listens on `127.0.0.1` for the answer (OAuth with PKCE on a loopback redirect,
 RFC 8252). It always prints the address too, in case the browser does not
-open. Only a browser on this computer can complete the sign-in, so a sign-in
-link that reaches somebody on another computer gives them nothing. That does
-not hold against another user signed in to the same computer: one who can read
-the URL can approve it with their own account, and the program is then signed
-in as them (see [AUDIT.md](AUDIT.md)).
+open. The browser that approves delivers the code to this computer's
+`127.0.0.1`, so a link or code sent to someone on another computer delivers
+nothing to the sender. That is all it promises: a forwarded callback port
+(`ssh -L`, a port-forwarding tool) or another user of the same computer can
+still complete a sign-in (see [AUDIT.md](AUDIT.md)).
 
 On a machine that cannot show a browser, it prints a code to enter at
 `thalovant.com/activate` from any browser instead: over SSH, in CI, or on Linux
@@ -113,7 +113,8 @@ of them are `suspend` functions, and cancelling one stops the sign-in.
 
 `scopes` asks for what the token may do. The default is `hubs:read` and
 `clients:write`. `deviceName` is what the consent page and the token show. The
-default is `thalovant-kotlin-sdk on <hostname>`. `BrowserLoginOptions.opener`
+default (`null`) is `thalovant-kotlin-sdk on <hostname>`; an empty string sends
+none. `BrowserLoginOptions.opener`
 opens the URL your own way, and `prompt` presents it yourself.
 
 The result is a scoped API token that lasts 365 days and is listed in the

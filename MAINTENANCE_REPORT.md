@@ -22,7 +22,7 @@ Last Edit: Claude Opus 5.5 - 2026-11-08 - Motive: Browser sign-in (0.10.0): port
 
 **Why:**
 - A device code can be relayed to somebody else: device-code phishing.
-- A loopback redirect cannot be relayed, because the browser that approves delivers the code to its own computer.
+- With a loopback redirect, the browser that approves delivers the code to its own computer's `127.0.0.1`, so a link or code sent to someone on another computer delivers nothing to the sender.
 - The parity reference marks `browser-login` as required here.
 
 **Decisions:**
@@ -69,6 +69,36 @@ Verification for this round:
 - Each new test fails against the code from before its fix.
 - `check-sdk-parity.py --consumer thalovant-kotlin-sdk` passes. The reference digests are left as they were; the lead sends the final candidate.
 - The config fetch was checked once against the live API (`https://api.thalovant.com/v1/auth/native/config`, thalovant-api #501), through `browserLogin()` with the sign-in abandoned at the prompt.
+
+### Final reference (thalovant-python-sdk `39e31d8`, digest `6dfb3bb31ac7`)
+
+The vectors were re-vendored byte for byte (sha256 `b0c73f80…59e73`, 119 cases). In `reference_digests`, the candidate `6dfb3bb31ac7…` replaces the interim `49744ee385bf…`, which was never published, and `57c7e71f6456…` stays.
+
+| # | Change | Implementation | Test |
+| :--- | :--- | :--- | :--- |
+| 1 | No request leaves the API's origin | `sameOrigin`, checked in `request()` for every request (`ControlPlane.kt`); error with no status | `no request leaves the API's origin`, `an ordinary API path still reaches the API`; vector `sign_ins/a token endpoint that would leave the API is refused before anything is opened` |
+| 2 | `token_endpoint`: no `:`; every `%` has two hex digits | `usableTokenEndpoint` (`NativeSignIn.kt`) | five `config/a token endpoint …` vectors, plus `a configuration that is not an object is unusable` |
+| 3 | `authorization_endpoint`: port 0 refused; the host is what a browser opens | `usableAuthorizationEndpoint`, `realHost`, `isIpv4` (`NativeSignIn.kt`); IPvFuture is no longer accepted | nine `config/…` vectors, plus `an authorization endpoint no browser can open is unusable`, checked against the reference's own function |
+| 4 | Only RFC 6749's error codes are kept | `OAUTH_ERRORS` in `classifyLoopbackRequest` (`Loopback.kt`); the `PROBLEM_CODE` filter is gone | three `callbacks/…` vectors, plus `sign_ins/an error that repeats the state never reaches the error` |
+| 5 | Only a missing `deviceName` gets the default | `runBrowserLogin` and `interactiveLogin` (`ControlPlane.kt`); an empty `client_name` is already left out | `sign_ins/an empty device name keeps the hostname off the consent page`, `chooser/an empty device name is not sent to a device login either` |
+| 6 | The accepted tab waits until the sign-in ends | the 60 s `ANSWER_TIMEOUT_MILLIS` is removed (`LoopbackListener.serve`) | `the accepted tab waits as long as the sign-in takes`, `closing the listener answers a tab that is still waiting` |
+| 7 | `HEAD`: headers and no body | `loopbackResponse(head = true)` | `a HEAD request gets the headers and no body` |
+| 8 | Redact before building the message, in one pass; always a new error | `scrubSecrets`, `scrubJson`, `scrubBody` (`BrowserLogin.kt`), applied in `apiError` before the message is built; `withoutSecrets` always builds a new error; a transport failure becomes a new `IOException` | `a message cut to length keeps no part of a secret`, `a state echoed across the cut keeps no part of it either`, `scrubbing is one pass, longest first, and leaves its marker alone`, `a transport failure during the exchange carries nothing of the request, and is not retried` |
+| 8b | The exchange is sent once | `onceHttpClient` (`retryOnConnectionFailure(false)`) and `oneShot` body (`ControlPlane.kt`) | `the exchange is sent at most once, whatever the answer asks` (408, and 503 with `Retry-After: 0`) |
+| 9 | Drain before closing | `LoopbackListener.answer`: shut the write side, then read up to `DRAIN_TIMEOUT_MILLIS` (2 s) and `DRAIN_LIMIT` (1 MiB) | `an early answer is not lost to a reset` (oversized head, unread body), `draining a connection is bounded` |
+| 10 | Wording | KDoc in `NativeSignIn.kt` and `ControlPlane.kt`, and the README, FAQ and CHANGELOG | — |
+
+Verification for this round:
+
+- `THALOVANT_CONFORMANCE_OUT=$PWD/contracts/conformance-results.json ./gradlew --no-daemon clean build -PtestJavaVersion=17` ran 433 tests: 0 failed, 0 skipped. 43 of them are in `BrowserLoginTest` and 13 in `BrowserLoginVectorsTest`.
+- `./gradlew --no-daemon clean build -PtestJavaVersion=21` ran 433 tests: 0 failed, 0 skipped.
+- An earlier JVM 21 run recorded one `sign_ins/denied in the browser` with `closed: false`. That means a new connection to the freed ephemeral port was accepted after the sign-in ended. Four reruns of the vector runner, and this final build, passed.
+  - The likely cause is another process on this shared host binding the freed port.
+  - A runner check that probed who answered would have hidden a listener left bound, which a mutation proved. So the strict check, which is the reference's, stays.
+- Conformance was re-recorded. All 119 `browser-login-vectors.json` case digests, and the file digest `855c37cb…`, are identical to the reference's results at `39e31d8`. The 98 earlier cases and the other eight vector files are unchanged.
+- `check-sdk-parity.py --workspace <checkouts> --consumer thalovant-kotlin-sdk` against thalovant-python-sdk `39e31d8` reports "acceptance records verified". Against `main` (`44b6e2b`) it passes, with the rollout note that `browser-login` is not known there yet.
+- `tools/interop/run.sh` against the pinned Node peer passes. `test_maven_publication_status.py` passes 7 tests.
+- Not run: Windows and macOS.
 
 ### Transparency Report
 

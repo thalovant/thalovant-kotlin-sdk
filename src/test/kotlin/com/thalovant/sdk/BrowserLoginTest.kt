@@ -301,8 +301,13 @@ class BrowserLoginTest {
         assertEquals(401, clean.statusCode)
         assertEquals("bad [redacted]", clean.detail)
         assertEquals(7.0, clean.retryAfterSeconds)
-        // Nothing to take out: the error itself.
-        assertTrue(withoutSecrets(original, listOf("absent")) === original)
+        // Always a new error, never the original, even with nothing to take out.
+        val untouched = withoutSecrets(original, listOf("absent"))
+        assertTrue(untouched !== original)
+        assertIs<ThalovantAuthException>(untouched)
+        assertEquals(original.message, untouched.message)
+        assertEquals(original.body, untouched.body)
+        assertNull(untouched.cause)
         // A body that is not JSON is scrubbed as text.
         assertEquals("<p>[redacted]</p>", withoutSecrets(ThalovantApiException("x", 500, "<p>nc_code_value</p>"), listOf("nc_code_value")).body)
     }
@@ -523,7 +528,7 @@ class BrowserLoginTest {
 
     @Test
     fun `a connection that closes before its answer changes nothing`(): Unit = runBlocking {
-        val listener = LoopbackListener("the-state", answerTimeoutMillis = 50)
+        val listener = LoopbackListener("the-state")
         val port = listener.start()
         try {
             withContext(Dispatchers.IO) {
@@ -534,12 +539,14 @@ class BrowserLoginTest {
                 }
             }
             assertNull(listener.wait(100))
-            // Nothing was accepted, so this sign-in's own answer still is; its
-            // page, never told how the sign-in ended, says it was not completed.
-            val answer = get(port, "/callback?code=c&state=the-state")
+            // Nothing was accepted, so this sign-in's own answer still is; told
+            // the sign-in did not complete, its page says so.
+            val tab = async(Dispatchers.IO) { http(port, "GET", "/callback?code=c&state=the-state") }
+            assertNotNull(listener.wait(5_000))
+            listener.finish(false)
+            val answer = withTimeout(5_000) { tab.await() }
             assertEquals(200, answer.status)
             assertTrue("Sign-in was not completed." in answer.body)
-            assertNotNull(listener.wait(0))
         } finally {
             listener.close()
         }
@@ -602,12 +609,17 @@ class BrowserLoginTest {
             "https://[1.2.3.4]/authorize", "https://x[::1]/authorize", "https://[::1]x/authorize", "https:///authorize",
             "ftp://dash.thalovant.com/authorize", "https://dash.thalovant.com/authorize?", "http://[::2]/authorize",
             "https://dash.thalovant.com /authorize", "",
+            "https://dash_staging.example/authorize", "https://dash.thalovant.com:0/authorize", "https://dash.thalovant.com:00/authorize",
+            "https://[v1.future]/authorize", "https://1.2.3/authorize", "https://dash.thalovant.com./authorize",
+            "https://-dash.thalovant.com/authorize", "https://dash-.thalovant.com/authorize", "https://${"a".repeat(64)}.example/authorize",
+            "https://${"a.".repeat(127)}a/authorize",
         )) {
             assertFalse(usable(endpoint), endpoint)
         }
         for (endpoint in listOf(
             "http://[::1]:5173/authorize", "https://[2001:db8::1]/authorize", "https://[::ffff:1.2.3.4]/authorize",
-            "https://dash_staging.example/authorize", "HTTPS://Dash.Thalovant.com/authorize", "http://LOCALHOST:5173/authorize",
+            "HTTPS://Dash.Thalovant.com/authorize", "http://LOCALHOST:5173/authorize", "https://a.b.c.1x/authorize",
+            "https://xn--dsh-0na.example/authorize", "https://192.0.2.10/authorize", "https://${"a".repeat(63)}.example/authorize",
             "https://dash.thalovant.com:/authorize", "https://dash.thalovant.com",
         )) {
             assertTrue(usable(endpoint), endpoint)
@@ -620,7 +632,8 @@ class BrowserLoginTest {
         assertFailsWith<IllegalArgumentException> { NativeSignInConfig.fromJson(null) }
         val base = ThalovantJson.parseToJsonElement(config).jsonObject
         assertEquals("/v1/auth/device/authorize", NativeSignInConfig.fromJson(base).deviceAuthorizationEndpoint)
-        for (tokenEndpoint in listOf("/v1/auth\\native", "/v1/auth native", "v1/auth/native/token", "/v1/#x")) {
+        for (tokenEndpoint in listOf("/v1/auth\\native", "/v1/auth native", "v1/auth/native/token", "/v1/#x",
+                "/v1/a:b", "/https://collector.example/token", "/v1/%zz", "/v1/%2", "/v1/token%")) {
             assertFailsWith<IllegalArgumentException>(tokenEndpoint) {
                 NativeSignInConfig.fromJson(JsonObject(base + ("token_endpoint" to JsonPrimitive(tokenEndpoint))))
             }
@@ -628,6 +641,7 @@ class BrowserLoginTest {
         assertFailsWith<IllegalArgumentException> {
             NativeSignInConfig.fromJson(JsonObject(base + ("sdk_client_id" to JsonPrimitive("x".repeat(65)))))
         }
+        assertEquals("/v1/a%2Fb", NativeSignInConfig.fromJson(JsonObject(base + ("token_endpoint" to JsonPrimitive("/v1/a%2Fb")))).tokenEndpoint)
     }
 
     @Test
@@ -661,17 +675,312 @@ class BrowserLoginTest {
         }
     }
 
+    // -- the accepted tab, HEAD, and draining ---------------------------------
+
     @Test
-    fun `a tab whose answer never comes is told the sign-in was not completed`(): Unit = runBlocking {
-        val listener = LoopbackListener("the-state", answerTimeoutMillis = 50)
+    fun `the accepted tab waits as long as the sign-in takes`(): Unit = runBlocking {
+        // The page says how the sign-in ended, so it is written once it has,
+        // however long the exchange took: no deadline of its own.
+        val listener = LoopbackListener("the-state")
         val port = listener.start()
         try {
-            val answer = get(port, "/callback?code=c&state=the-state")
-            assertEquals(200, answer.status)
-            assertNotNull(listener.wait(0))
-            assertTrue("Sign-in was not completed." in answer.body)
+            val began = System.nanoTime()
+            val tab = async(Dispatchers.IO) { http(port, "GET", "/callback?code=c&state=the-state") }
+            assertNotNull(listener.wait(5_000))
+            kotlinx.coroutines.delay(300)
+            assertFalse(tab.isCompleted)
+            listener.finish(true)
+            val answer = withTimeout(5_000) { tab.await() }
+            assertTrue("Signed in to Thalovant. You can close this tab." in answer.body, answer.body)
+            assertTrue((System.nanoTime() - began) / 1_000_000 >= 300)
         } finally {
             listener.close()
+        }
+    }
+
+    @Test
+    fun `closing the listener answers a tab that is still waiting`(): Unit = runBlocking {
+        val listener = LoopbackListener("the-state")
+        val port = listener.start()
+        val tab = async(Dispatchers.IO) { http(port, "GET", "/callback?code=c&state=the-state") }
+        assertNotNull(listener.wait(5_000))
+        listener.close()
+        assertTrue("Sign-in was not completed." in withTimeout(5_000) { tab.await() }.body)
+    }
+
+    @Test
+    fun `a HEAD request gets the headers and no body`(): Unit = runBlocking {
+        val listener = LoopbackListener("the-state")
+        val port = listener.start()
+        try {
+            val raw = withContext(Dispatchers.IO) {
+                Socket().use { socket ->
+                    socket.connect(InetSocketAddress("127.0.0.1", port), 5_000)
+                    socket.soTimeout = 10_000
+                    socket.getOutputStream().write("HEAD /callback?code=c&state=the-state HTTP/1.1\r\n\r\n".toByteArray())
+                    socket.getInputStream().readBytes()
+                }
+            }
+            val text = String(raw, Charsets.ISO_8859_1)
+            val head = text.substringBefore("\r\n\r\n")
+            assertTrue(head.startsWith("HTTP/1.1 404 "), head)
+            assertEquals("", text.substringAfter("\r\n\r\n"))
+            assertTrue("Content-Type: text/html; charset=utf-8" in head)
+            // What a GET would have carried.
+            assertTrue(Regex("Content-Length: (\\d+)").find(head)!!.groupValues[1].toInt() > 0)
+            // A HEAD never accepts a sign-in.
+            assertNull(listener.wait(0))
+        } finally {
+            listener.close()
+        }
+    }
+
+    /**
+     * Sends [request] while reading the answer, as a browser does; says how
+     * the connection ended, for the reader and for the sender. Linux keeps an
+     * answer readable after a reset and shows the reset to the side still
+     * sending; macOS throws the unread answer away.
+     */
+    private fun sendAndRead(port: Int, request: ByteArray): Pair<ByteArray, String?> {
+        val socket = Socket()
+        socket.connect(InetSocketAddress("127.0.0.1", port), 5_000)
+        socket.soTimeout = 10_000
+        var sendFailed: String? = null
+        val sender = Thread({
+            try {
+                socket.getOutputStream().write(request)
+                socket.getOutputStream().flush()
+            } catch (error: java.io.IOException) {
+                sendFailed = "send: " + error::class.simpleName + ": " + error.message
+            }
+        }, "sender").apply { isDaemon = true; start() }
+        val data = ByteArrayOutputStream()
+        var ended: String? = null
+        try {
+            val chunk = ByteArray(65_536)
+            while (true) {
+                val count = socket.getInputStream().read(chunk)
+                if (count < 0) break
+                data.write(chunk, 0, count)
+            }
+        } catch (error: java.io.IOException) {
+            ended = error::class.simpleName + ": " + error.message
+        }
+        sender.join(5_000)
+        // Still sending after the answer has been read, as a browser may be:
+        // a listener that drains takes it, one that has closed resets it.
+        if (ended == null && sendFailed == null) {
+            try {
+                repeat(3) {
+                    socket.getOutputStream().write(ByteArray(1_024) { 'c'.code.toByte() })
+                    socket.getOutputStream().flush()
+                    Thread.sleep(100)
+                }
+            } catch (error: java.io.IOException) {
+                sendFailed = "late send: " + error::class.simpleName + ": " + error.message
+            }
+        }
+        socket.close()
+        return data.toByteArray() to (ended ?: sendFailed)
+    }
+
+    @Test
+    fun `an early answer is not lost to a reset`(): Unit = runBlocking {
+        // Closing with bytes unread resets the connection: macOS then drops the
+        // answer the browser had not read, and Linux reports ECONNRESET.
+        val requests = mapOf(
+            // A head far over the listener's limit: most of it is never read.
+            "oversized head" to "GET /callback?code=".toByteArray() + ByteArray(600_000) { 'a'.code.toByte() } +
+                " HTTP/1.1\r\nHost: x\r\n\r\n".toByteArray(),
+            // A body nobody asked for, behind a 404.
+            "unread body" to "POST /callback HTTP/1.1\r\nHost: x\r\nContent-Length: 600000\r\n\r\n".toByteArray() +
+                ByteArray(600_000) { 'b'.code.toByte() },
+        )
+        for ((name, request) in requests) {
+            val listener = LoopbackListener("the-state")
+            val port = listener.start()
+            try {
+                val (data, ended) = withContext(Dispatchers.IO) { sendAndRead(port, request) }
+                val first = String(data, Charsets.ISO_8859_1).substringBefore("\r\n")
+                assertTrue(first == "HTTP/1.1 400 Bad Request" || first == "HTTP/1.1 404 Not Found", "$name: $first")
+                assertNull(ended, "$name: the connection ended with $ended")
+            } finally {
+                listener.close()
+            }
+        }
+    }
+
+    @Test
+    fun `draining a connection is bounded`(): Unit = runBlocking {
+        // A browser that never closes its side cannot keep a connection open.
+        val listener = LoopbackListener("the-state", drainTimeoutMillis = 200)
+        val port = listener.start()
+        try {
+            withContext(Dispatchers.IO) {
+                Socket().use { socket ->
+                    socket.connect(InetSocketAddress("127.0.0.1", port), 5_000)
+                    socket.soTimeout = 5_000
+                    socket.getOutputStream().write("GET /favicon.ico HTTP/1.1\r\n\r\n".toByteArray())
+                    // The answer ends: our side is shut. Theirs stays open.
+                    assertTrue(String(socket.getInputStream().readBytes()).startsWith("HTTP/1.1 404 "))
+                    Thread.sleep(500)
+                    assertEquals(0, listener.openConnections)
+                }
+            }
+        } finally {
+            listener.close()
+        }
+    }
+
+    // -- the exchange, once, redacted, on the API's origin ---------------------
+
+    @Test
+    fun `a message cut to length keeps no part of a secret`(): Unit = runBlocking {
+        // The detail is redacted before the bounded message is made of it.
+        var sent: JsonObject? = null
+        val straddle: (JsonObject) -> MockResponse = { body ->
+            sent = body
+            // The verifier starts ten characters before the message's 200-character cut.
+            json(400, buildJsonObject { put("detail", "a".repeat(190) + body.getValue("code_verifier").jsonPrimitive.content) }.toString())
+        }
+        Api(tokenAnswer = straddle).use { api ->
+            val plane = ThalovantControlPlane(api.url)
+            val started = start(plane) { handOver -> BrowserLoginOptions(openBrowser = false, prompt = handOver) }
+            val parts = started.parts()
+            get(parts.port, "/callback?code=c&state=${parts.state}")
+            val error = assertFailsWith<ThalovantApiException> { started.result() }
+            assertEquals(400, error.statusCode)
+            val prefix = assertNotNull(sent).getValue("code_verifier").jsonPrimitive.content.take(10)
+            for (shown in listOf(error.message.orEmpty(), error.toString(), error.detail.orEmpty(), error.body.orEmpty())) {
+                assertFalse(prefix in shown, shown)
+            }
+            assertEquals("a".repeat(190) + "[redacted]", error.detail)
+        }
+    }
+
+    @Test
+    fun `a state echoed across the cut keeps no part of it either`(): Unit = runBlocking {
+        // The state is not in the exchange's body, so only the redaction done
+        // before the message is built can catch a prefix of it at the cut.
+        val state = CompletableDeferred<String>()
+        val straddle: (JsonObject) -> MockResponse = {
+            json(400, buildJsonObject { put("detail", "a".repeat(190) + runBlocking { state.await() }) }.toString())
+        }
+        Api(tokenAnswer = straddle).use { api ->
+            val plane = ThalovantControlPlane(api.url)
+            val started = start(plane) { handOver -> BrowserLoginOptions(openBrowser = false, prompt = handOver) }
+            val parts = started.parts()
+            state.complete(parts.state)
+            get(parts.port, "/callback?code=c&state=${parts.state}")
+            val error = assertFailsWith<ThalovantApiException> { started.result() }
+            for (shown in listOf(error.message.orEmpty(), error.toString(), error.detail.orEmpty(), error.body.orEmpty())) {
+                assertFalse(parts.state.take(10) in shown, shown)
+            }
+            assertEquals("a".repeat(190) + "[redacted]", error.detail)
+        }
+    }
+
+    @Test
+    fun `scrubbing is one pass, longest first, and leaves its marker alone`() {
+        val hidden = listOf("abc", "abcdef", "c")
+        assertEquals("xx-[redacted]-[redacted]-[redacted]", scrubSecrets("xx-abc-abcdef-[redacted]", hidden))
+        val nested = ThalovantJson.parseToJsonElement("""{"seen:abcdef":["c",{"deep":"abc"}]}""")
+        val once = scrubJson(nested, hidden)
+        assertEquals(ThalovantJson.parseToJsonElement("""{"seen:[redacted]":["[redacted]",{"deep":"[redacted]"}]}"""), once)
+        assertEquals(once, scrubJson(once, hidden))
+        assertEquals("nothing hidden", scrubSecrets("nothing hidden", emptyList()))
+        // A secret with regex metacharacters is matched as text.
+        assertEquals("[redacted]x", scrubSecrets("a.b*x", listOf("a.b*")))
+    }
+
+    @Test
+    fun `a transport failure during the exchange carries nothing of the request, and is not retried`(): Unit = runBlocking {
+        // The connection the config came over is kept and reused for the
+        // exchange; dropping it after the request is read is the case in which
+        // a retrying client would present the code a second time.
+        val drop = { _: JsonObject -> MockResponse().setSocketPolicy(okhttp3.mockwebserver.SocketPolicy.DISCONNECT_AFTER_REQUEST) }
+        Api(tokenAnswer = drop).use { api ->
+            val plane = ThalovantControlPlane(api.url)
+            val started = start(plane) { handOver -> BrowserLoginOptions(openBrowser = false, prompt = handOver) }
+            val parts = started.parts()
+            assertEquals(200, get(parts.port, "/callback?code=transport-code&state=${parts.state}").status)
+            val error = assertFailsWith<java.io.IOException> { started.result() }
+            assertNull(error.cause)
+            assertTrue(error.suppressed.isEmpty())
+            val shown = error.toString() + error.stackTraceToString()
+            assertFalse("transport-code" in shown || parts.state in shown, shown)
+            assertEquals(1, api.requests.count { it == "POST /v1/auth/native/token" }, api.requests.toString())
+        }
+    }
+
+    @Test
+    fun `the exchange is sent at most once, whatever the answer asks`(): Unit = runBlocking {
+        // OkHttp replays a 408, and a 503 that says Retry-After: 0. A code
+        // presented twice revokes the token the first exchange minted.
+        val answers = mapOf(
+            "408" to { MockResponse().setResponseCode(408).setBody("""{"detail":"timeout"}""") },
+            "503 Retry-After 0" to { MockResponse().setResponseCode(503).setHeader("Retry-After", "0").setBody("""{"detail":"busy"}""") },
+        )
+        for ((name, answer) in answers) {
+            Api(tokenAnswer = { answer() }).use { api ->
+                val plane = ThalovantControlPlane(api.url)
+                val started = start(plane) { handOver -> BrowserLoginOptions(openBrowser = false, prompt = handOver) }
+                val parts = started.parts()
+                get(parts.port, "/callback?code=c&state=${parts.state}")
+                val outcome = runCatching { started.result() }
+                assertTrue(outcome.isFailure, name)
+                assertEquals(1, api.requests.count { it == "POST /v1/auth/native/token" }, "$name: ${api.requests}")
+            }
+        }
+    }
+
+    @Test
+    fun `no request leaves the API's origin`(): Unit = runBlocking {
+        // A path is appended to the API's address, so even one that reads as
+        // a URL of its own stays on the API; and the origin is checked anyway.
+        Api().use { collector ->
+            Api().use { api ->
+                val plane = ThalovantControlPlane(api.url, accessToken = "tvpat_must_stay_home")
+                val paths = listOf(
+                    "/https://elsewhere.example/v1/x", "/elsewhere.example:443/v1/x", "/${collector.url}v1/x",
+                    "https://elsewhere.example/v1/x", "//${collector.server.hostName}:${collector.server.port}/v1/x",
+                )
+                for (path in paths) {
+                    runCatching { plane.request("GET", path) }
+                    runCatching { plane.request("POST", path, body = buildJsonObject { put("code", "c") }, auth = false) }
+                }
+                assertTrue(collector.requests.isEmpty(), collector.requests.toString())
+                assertEquals(paths.size * 2, api.requests.size, api.requests.toString())
+            }
+        }
+        assertTrue(sameOrigin("https://api.thalovant.com/", "https://api.thalovant.com:443/v1/x"))
+        assertFalse(sameOrigin("https://api.thalovant.com/", "https://elsewhere.example/v1/x"))
+        assertFalse(sameOrigin("https://api.thalovant.com/", "http://api.thalovant.com/v1/x"))
+        assertFalse(sameOrigin("https://api.thalovant.com/", "https://api.thalovant.com:8443/v1/x"))
+        assertFalse(sameOrigin("https://api.thalovant.com/", "not a url"))
+    }
+
+    @Test
+    fun `an ordinary API path still reaches the API`(): Unit = runBlocking {
+        Api().use { api ->
+            val plane = ThalovantControlPlane(api.url)
+            val answer = plane.request("GET", "/v1/auth/native/config", auth = false)
+            assertEquals("thalovant-sdk", answer.getValue("sdk_client_id").jsonPrimitive.content)
+            assertEquals(listOf("GET /v1/auth/native/config"), api.requests.toList())
+        }
+    }
+
+    @Test
+    fun `every secret is written the same way percent-encoded`() {
+        // The scrub matches a secret however a URL or form would encode it,
+        // because nothing in one needs encoding: the verifier and the state
+        // are base64url, and the API mints codes URL-safe.
+        repeat(200) {
+            for (secret in listOf(NativeSignIn.newVerifier(), NativeSignIn.newState())) {
+                assertEquals(secret, NativeSignIn.percentEncode(secret))
+                assertEquals(secret, java.net.URLEncoder.encode(secret, "UTF-8"))
+                assertFalse(secret in scrubSecrets("echo: ${NativeSignIn.percentEncode(secret)}", listOf(secret)))
+            }
         }
     }
 }

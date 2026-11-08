@@ -33,9 +33,10 @@ public data class BrowserLoginOptions(
      */
     public val scopes: List<String>? = null,
     /**
-     * What the consent page and the token show; null or empty is
-     * [NativeSignIn.defaultDeviceName], `thalovant-kotlin-sdk on <hostname>`.
-     * Cut to 120 code points.
+     * What the consent page and the token show. Null is
+     * [NativeSignIn.defaultDeviceName], `thalovant-kotlin-sdk on <hostname>`;
+     * an empty string sends none, which keeps the hostname off the consent
+     * page. Cut to 120 code points.
      */
     public val deviceName: String? = null,
     /**
@@ -68,7 +69,8 @@ public data class InteractiveLoginOptions(
     public val scopes: List<String>? = null,
     /**
      * What the consent page and the token show (a device login's
-     * `client_name`); null or empty is [NativeSignIn.defaultDeviceName].
+     * `client_name`). Null is [NativeSignIn.defaultDeviceName]; an empty
+     * string sends none, to the consent page or as a `client_name`.
      */
     public val deviceName: String? = null,
     /** Open the browser: the consent page, or a device login's verification page. */
@@ -84,12 +86,6 @@ public data class InteractiveLoginOptions(
 
 /** What a device login waits for by default, when [InteractiveLoginOptions.timeoutMillis] is null. */
 internal const val DEFAULT_DEVICE_LOGIN_TIMEOUT_MILLIS: Long = 900_000
-
-/** The `error` a consent page sends back, kept when it reads as a code and nothing else. */
-private val PROBLEM_CODE = Regex("[A-Za-z0-9_.:-]{1,80}")
-
-/** [error] as an error code worth carrying, or null. */
-internal fun browserErrorCode(error: String?): String? = error?.takeIf { PROBLEM_CODE.matches(it) }
 
 /** [millis] in seconds the way the reference prints them: `300`, `0.4`. */
 internal fun secondsText(millis: Long): String = BigDecimal.valueOf(millis, 3).stripTrailingZeros().toPlainString()
@@ -181,48 +177,64 @@ private fun browseWithDesktop(url: String): Boolean = try {
     false
 }
 
+/** What a secret is replaced with, in a message or a body. */
+internal const val REDACTED: String = "[redacted]"
+
 /**
- * [error], with every value in [hidden] taken out of its message and its body.
+ * [text] with every value in [hidden] replaced by [REDACTED].
  *
- * The message of a refused request already has what the request sent
- * redacted, but its [ThalovantApiException.body] -- and so its `problem` and
- * `detail` -- is what the API sent, and an API that echoes a request back (a
- * FastAPI 422 lists each field's `input`) would hand the code and the
- * verifier to whoever logs the error. A JSON body is scrubbed member by
- * member, keys included; any other body as text. The clean copy keeps the
- * status, the kind of error and the retry hint, and carries no cause.
+ * One pass, the longest value first, so that a value which is part of another
+ * cannot break the longer one up before it is matched; and never inside a
+ * [REDACTED] already there, so scrubbing twice changes nothing.
+ */
+internal fun scrubSecrets(text: String, hidden: List<String?>): String {
+    val values = hidden.filterNotNull().filter { it.isNotEmpty() }.distinct().sortedByDescending { it.length }
+    if (values.isEmpty()) return text
+    val pattern = Regex(values.joinToString("|") { Regex.escape(it) })
+    return text.split(REDACTED).joinToString(REDACTED) { part -> pattern.replace(part) { REDACTED } }
+}
+
+/** [element] with [hidden] taken out of every key and every string in it, at any depth. */
+internal fun scrubJson(element: JsonElement, hidden: List<String?>): JsonElement = when (element) {
+    is JsonObject -> JsonObject(element.entries.associate { (key, value) -> scrubSecrets(key, hidden) to scrubJson(value, hidden) })
+    is JsonArray -> JsonArray(element.map { scrubJson(it, hidden) })
+    is JsonPrimitive -> when {
+        element.isString -> JsonPrimitive(scrubSecrets(element.content, hidden))
+        // A number or a literal that holds one: a string from here on.
+        scrubSecrets(element.content, hidden) != element.content -> JsonPrimitive(scrubSecrets(element.content, hidden))
+        else -> element
+    }
+}
+
+/**
+ * A response body with [hidden] taken out. A JSON object or array is scrubbed
+ * as parsed -- an escaped value is still the value -- and written back; any
+ * other body as text (the parser takes a bare word such as `<p>...</p>` for a
+ * literal, which is text all the same).
+ */
+internal fun scrubBody(text: String, hidden: List<String?>): String {
+    val parsed = runCatching { ThalovantJson.parseToJsonElement(text) }.getOrNull()
+        ?.takeIf { it is JsonObject || it is JsonArray }
+        ?: return scrubSecrets(text, hidden)
+    val clean = scrubJson(parsed, hidden)
+    return if (clean == parsed) text else ThalovantJson.encodeToString(JsonElement.serializer(), clean)
+}
+
+/**
+ * A new error like [error], with every value in [hidden] taken out of its
+ * message and its body (so of `problem` and `detail` too).
+ *
+ * The exchange's answer has already been scrubbed before its message was
+ * built ([scrubBody] in `apiError`); this covers the rest, and the local
+ * errors with no status. Always a new object, never [error] itself, and with
+ * no cause: it keeps the status, the kind of error and the retry hint.
  */
 internal fun withoutSecrets(error: ThalovantApiException, hidden: List<String?>): ThalovantApiException {
-    val values = hidden.filterNotNull().filter { it.isNotEmpty() }.distinct().sortedByDescending { it.length }
-    if (values.isEmpty()) return error
-    fun scrub(text: String): String = values.fold(text) { result, value -> result.replace(value, "[redacted]") }
-    fun scrub(element: JsonElement): JsonElement = when (element) {
-        is JsonObject -> JsonObject(element.entries.associate { (key, value) -> scrub(key) to scrub(value) })
-        is JsonArray -> JsonArray(element.map(::scrub))
-        is JsonPrimitive -> when {
-            element.isString -> JsonPrimitive(scrub(element.content))
-            // A number or a literal that holds one: a string from here on.
-            scrub(element.content) != element.content -> JsonPrimitive(scrub(element.content))
-            else -> element
-        }
-    }
-    val message = scrub(error.message.orEmpty())
-    val body = error.body?.let { text ->
-        // Only an object or an array is read as JSON: the parser takes a bare
-        // word such as `<p>...</p>` for a literal, which is text all the same.
-        val parsed = runCatching { ThalovantJson.parseToJsonElement(text) }.getOrNull()
-            ?.takeIf { it is JsonObject || it is JsonArray }
-        if (parsed != null) {
-            val clean = scrub(parsed)
-            if (clean == parsed) text else ThalovantJson.encodeToString(JsonElement.serializer(), clean)
-        } else {
-            scrub(text)
-        }
-    }
-    if (message == error.message && body == error.body) return error
+    val message = scrubSecrets(error.message.orEmpty(), hidden)
+    val body = error.body?.let { scrubBody(it, hidden) }
     val status = error.statusCode
     val clean = if (status != null) apiException(message, status, body.orEmpty()) else ThalovantApiException(message, null, body)
     clean.retryAfterSeconds = error.retryAfterSeconds
-    if (status == null) clean.errorCode = error.errorCode?.let(::scrub)
+    if (status == null) clean.errorCode = error.errorCode?.let { scrubSecrets(it, hidden) }
     return clean
 }

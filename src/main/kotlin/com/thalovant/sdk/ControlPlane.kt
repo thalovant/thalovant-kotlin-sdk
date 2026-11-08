@@ -24,9 +24,11 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import okhttp3.HttpUrl.Companion.toHttpUrl
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.RequestBody
 import okhttp3.RequestBody.Companion.toRequestBody
 
 /** Durable operation lifecycle status, matching the API `OperationStatus` literal. */
@@ -983,9 +985,10 @@ public class ThalovantControlPlane(
      * the browser at the dashboard's consent page (read from
      * `GET /v1/auth/native/config`), and waits for the browser to come back
      * to `http://127.0.0.1:<port>/callback`. The browser that approves hands
-     * the code to its own computer, so a sign-in link sent to somebody else
-     * delivers nothing to the sender -- which a device code, read off one
-     * screen and typed into another, cannot promise.
+     * the code to its own computer, so a link or code sent to someone on
+     * another computer delivers nothing to the sender -- which a device code,
+     * read off one screen and typed in anywhere, cannot promise. A forwarded
+     * callback port or another user of the same computer is another matter.
      *
      * The URL is always printed as well as opened (`Opening your browser to
      * sign in to Thalovant. If it does not open, visit:` and the URL); pass
@@ -1055,7 +1058,10 @@ public class ThalovantControlPlane(
         environment: Map<String, String>,
         platform: String,
     ): JsonObject {
-        val name = options.deviceName?.takeIf { it.isNotEmpty() } ?: NativeSignIn.defaultDeviceName()
+        // Only a missing name asks for the default: an empty one is the
+        // caller's way of sending none, and keeps the hostname out of both
+        // the consent page and a device login's client_name.
+        val name = options.deviceName ?: NativeSignIn.defaultDeviceName()
         val config: NativeSignInConfig? = when (options.method) {
             LoginMethod.DEVICE -> null
             LoginMethod.BROWSER -> {
@@ -1144,7 +1150,8 @@ public class ThalovantControlPlane(
                 codeChallenge = NativeSignIn.challengeFor(verifier),
                 state = state,
                 scopes = options.scopes,
-                deviceName = options.deviceName?.takeIf { it.isNotEmpty() } ?: NativeSignIn.defaultDeviceName(),
+                // Only null asks for the default; an empty name sends none.
+                deviceName = options.deviceName ?: NativeSignIn.defaultDeviceName(),
                 clientId = config.sdkClientId,
             )
             presentBrowserLogin(url, options.prompt, options.openBrowser, options.opener)
@@ -1157,7 +1164,9 @@ public class ThalovantControlPlane(
                 LoopbackCallback.Outcome.DENIED ->
                     throw ThalovantDeviceLoginDeniedException("The sign-in request was denied in the browser.")
                 LoopbackCallback.Outcome.FAILED -> {
-                    val code = browserErrorCode(callback.error)
+                    // One of RFC 6749's codes or nothing: a value the page
+                    // chose could be the state or a code.
+                    val code = callback.error
                     throw ThalovantApiException(
                         "The browser came back without a sign-in code" + (code?.let { " ($it)." } ?: "."),
                     ).apply { errorCode = code }
@@ -1165,13 +1174,19 @@ public class ThalovantControlPlane(
                 LoopbackCallback.Outcome.CODE -> Unit
             }
             val code = callback.code!!
+            val hidden = listOf(code, verifier, state)
             val token = try {
-                exchangeBrowserCode(config, code, verifier, redirectUri)
+                exchangeBrowserCode(config, code, verifier, redirectUri, hidden)
             } catch (error: ThalovantApiException) {
                 // A code is single-use: retrying the exchange would only revoke
                 // the token a first exchange minted (RFC 9700). The API may
-                // have echoed the code and the verifier back; neither leaves.
-                throw withoutSecrets(error, listOf(code, verifier, state))
+                // have echoed the code and the verifier back; neither leaves,
+                // and the error is always a new one.
+                throw withoutSecrets(error, hidden)
+            } catch (_: IOException) {
+                // A new error, never the transport's own, which carries the
+                // request it failed on and whatever it chained to it.
+                throw IOException("Could not reach the Thalovant API to exchange the sign-in code.")
             }
             listener.finish(true)
             return token
@@ -1192,6 +1207,7 @@ public class ThalovantControlPlane(
         code: String,
         verifier: String,
         redirectUri: String,
+        hidden: List<String>,
     ): JsonObject {
         requireSecureTokenExchange()
         val body = buildJsonObject {
@@ -1200,7 +1216,9 @@ public class ThalovantControlPlane(
             put("client_id", config.sdkClientId)
             put("redirect_uri", redirectUri)
         }
-        val token = request("POST", config.tokenEndpoint, body = body, auth = false)
+        // The answer has the code, the verifier and the state taken out before
+        // any message is made of it, and the request is sent at most once.
+        val token = request("POST", config.tokenEndpoint, body = body, auth = false, hidden = hidden, retry = false)
         acceptToken(token)
         return token
     }
@@ -2001,13 +2019,22 @@ public class ThalovantControlPlane(
         }
     }
 
-    private suspend fun request(
+    /**
+     * One control-plane request, its 2xx answer read as a JSON object.
+     *
+     * [hidden] are values taken out of a failure's body before its message is
+     * built ([scrubBody]); [retry] false sends the request at most once, which
+     * a sign-in code needs: presented twice, it revokes the token it minted.
+     */
+    internal suspend fun request(
         method: String,
         path: String,
         body: JsonObject? = null,
         headers: Map<String, String> = emptyMap(),
         auth: Boolean = true,
         query: Map<String, String> = emptyMap(),
+        hidden: List<String> = emptyList(),
+        retry: Boolean = true,
     ): JsonObject {
         val urlBuilder = try { (apiUrl + path.trimStart('/')).toHttpUrl().newBuilder() }
             catch (_: IllegalArgumentException) { throw ThalovantApiException("Invalid Thalovant API URL.") }
@@ -2015,6 +2042,13 @@ public class ThalovantControlPlane(
             urlBuilder.addQueryParameter(key, value)
         }
         val url = urlBuilder.build()
+        // Every request, and the token on it, stays on the API's origin. The
+        // path is appended to the API's address, so it cannot name another
+        // host the way a URL joiner can read "/https://elsewhere/x"; this is
+        // the check that says so, whatever the path.
+        if (!sameOrigin(apiUrl, url.toString())) {
+            throw ThalovantApiException("Refusing a request off the Thalovant API's origin.")
+        }
         if (url.username.isNotEmpty() || url.password.isNotEmpty() || Regex("^[a-zA-Z][a-zA-Z0-9+.-]*://[^/?#]*@").containsMatchIn(apiUrl)) {
             throw ThalovantApiException("Thalovant API URLs must not contain userinfo credentials.")
         }
@@ -2041,9 +2075,10 @@ public class ThalovantControlPlane(
         }
         token?.let { builder.header("Authorization", "Bearer $it") }
         val requestBody = body?.toString()?.toRequestBody("application/json".toMediaType())
+            ?.let { if (retry) it else oneShot(it) }
         builder.method(method, requestBody)
         return suspendCancellableCoroutine { continuation ->
-            val call = httpClient.newCall(builder.build())
+            val call = (if (retry) httpClient else onceHttpClient).newCall(builder.build())
             continuation.invokeOnCancellation { call.cancel() }
             call.enqueue(object : Callback {
                 override fun onFailure(call: Call, e: IOException) {
@@ -2052,7 +2087,7 @@ public class ThalovantControlPlane(
                 override fun onResponse(call: Call, response: Response) {
                     continuation.resumeWith(runCatching {
                         response.use {
-                            if (!response.isSuccessful) throw apiError(response, sentSecrets(token, body))
+                            if (!response.isSuccessful) throw apiError(response, sentSecrets(token, body), hidden)
                             val text = response.body?.string().orEmpty()
                             // A 2xx this SDK cannot use is a local failure,
                             // with no status: the API did not refuse. A body
@@ -2067,6 +2102,15 @@ public class ThalovantControlPlane(
                 }
             })
         }
+    }
+
+    /**
+     * [httpClient] with no retry after a connection failure, for a request
+     * that must be sent at most once; its body is also sent one-shot
+     * ([oneShot]), which stops every follow-up replay.
+     */
+    private val onceHttpClient: OkHttpClient by lazy {
+        httpClient.newBuilder().retryOnConnectionFailure(false).build()
     }
 
     private companion object {
@@ -2156,8 +2200,11 @@ private fun apiErrorMessage(statusCode: Int, body: String, secrets: List<String>
  * `errorCode` and `detail` out of that text once, exactly as sent; only the
  * message, the bounded line [apiErrorMessage] builds, has [secrets] redacted.
  */
-private fun apiError(response: Response, secrets: List<String>): ThalovantApiException {
-    val text = response.body?.bytes()?.decodeToString()?.removePrefix("\uFEFF").orEmpty()
+private fun apiError(response: Response, secrets: List<String>, hidden: List<String> = emptyList()): ThalovantApiException {
+    val raw = response.body?.bytes()?.decodeToString()?.removePrefix("\uFEFF").orEmpty()
+    // Redacted before the message is built: the message is cut to length, and
+    // a cut can leave a prefix of a secret that no later replacement matches.
+    val text = if (hidden.isEmpty()) raw else scrubBody(raw, hidden)
     return apiException(apiErrorMessage(response.code, text, secrets), statusCode = response.code, body = text).also {
         if (it.retryAfterSeconds == null) it.retryAfterSeconds = retryAfterHeader(response)
     }
@@ -2206,6 +2253,30 @@ private fun refusesConnectionType(error: ThalovantApiException): Boolean {
         }
     }
     return said.any { "connection_type" in it || "connectionType" in it }
+}
+
+/**
+ * Whether [url] is on [api]'s origin -- scheme, host and port, the default
+ * port spelled out -- both read the way OkHttp reads them, so the check is
+ * about the address the request will really go to. Unreadable is not the same.
+ */
+internal fun sameOrigin(api: String, url: String): Boolean {
+    val home = api.toHttpUrlOrNull() ?: return false
+    val target = url.toHttpUrlOrNull() ?: return false
+    return home.scheme == target.scheme && home.host == target.host && home.port == target.port
+}
+
+/**
+ * [body], marked one-shot. OkHttp then never writes it twice: not after a
+ * connection failure once the request was sent, and not on any follow-up --
+ * a 408, a 421, an authenticator's 401 or 407, or a 503 that says
+ * `Retry-After: 0`, which it replays whatever `retryOnConnectionFailure` says.
+ */
+private fun oneShot(body: RequestBody): RequestBody = object : RequestBody() {
+    override fun contentType(): okhttp3.MediaType? = body.contentType()
+    override fun contentLength(): Long = body.contentLength()
+    override fun writeTo(sink: okio.BufferedSink) = body.writeTo(sink)
+    override fun isOneShot(): Boolean = true
 }
 
 /** A URL's origin: scheme, host and port, the scheme's default port spelled out; null when unreadable. */

@@ -465,7 +465,7 @@ class BrowserLoginVectorsTest {
         assertEquals(sections, browser.filterValues { value ->
             value is JsonArray && value.isNotEmpty() && (value[0] as? JsonObject)?.containsKey("name") == true
         }.keys)
-        assertEquals(98, sections.sumOf { cases(it).size })
+        assertEquals(119, sections.sumOf { cases(it).size })
     }
 
     @Test

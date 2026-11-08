@@ -1,15 +1,25 @@
-Last Edit: Claude Opus 5.5 - 2026-11-08 - Motive: Browser sign-in (0.10.0): known limits of the loopback flow, the flaky revoke-race test, and the two chooser findings from CodeRabbit on #59.
+Last Edit: Claude Opus 5.5 - 2026-11-08 - Motive: Browser sign-in (0.10.0) at the final reference 39e31d8: known limits, the flaky revoke-race test, the CodeRabbit findings on #59, and OkHttp replaying the exchange.
 
 # Audit
 
-These findings come from the CodeRabbit threads on merged PRs #35, #37, #41 and #46, and from the browser sign-in round (0.10.0). They were checked against the code and against `./gradlew build`, which passes 421 tests at the time of writing (branch `feat/browser-sign-in`, 2026-11-08, JVM 17 and 21).
+These findings come from the CodeRabbit threads on merged PRs #35, #37, #41 and #46, and from the browser sign-in round (0.10.0). They were checked against the code and against `./gradlew build`, which passes 433 tests at the time of writing (branch `feat/browser-sign-in`, 2026-11-08, JVM 17 and 21).
 
 ## Browser sign-in (0.10.0)
 
-Read at branch `feat/browser-sign-in` (from `main` 090dbd4). Behind it: the full suite, `BrowserLoginVectorsTest` (all 98 shared vectors, with results identical to the Python reference's case for case) and `BrowserLoginTest` (31 edge tests). Four hand mutations of the new code were run against the vectors, and the section each one targets caught it: `URLEncoder` in the URL builder, a missing state accepted, a fifth exchange field, and `CI` ignored.
+Read at branch `feat/browser-sign-in` (from `main` 090dbd4), ported to the final reference (thalovant-python-sdk `39e31d8`, digest `6dfb3bb31ac7`). Behind it:
+
+- the full suite;
+- `BrowserLoginVectorsTest`: all 119 shared vectors, with results identical to the reference's, case for case. The 98 earlier cases are unchanged.
+- `BrowserLoginTest`: 43 edge tests.
+
+Hand mutations of the new code, each caught by its own test or vector section:
+
+- against the vectors: `URLEncoder` in the URL builder, a missing state accepted, a fifth exchange field, `CI` ignored, and the RFC 6749 error filter removed;
+- against the edge tests: no redaction before the message, no one-shot body, a `HEAD` with a body, a 100 ms bound on the tab, and no drain.
 
 - **Another user on the same computer can sign the program in as themselves.** The authorization URL reaches the browser through `java.awt.Desktop.browse`, or as a process argument to `open`, `xdg-open` or `rundll32` (`openInPlatformBrowser` and `browserCommand`, `src/main/kotlin/com/thalovant/sdk/BrowserLogin.kt`). On a shared machine, another local user can read that argument from the process table. They can open it in their own browser and approve it with their own account, and the redirect lands on the same `127.0.0.1` port with the right `state`. The program is then signed in to *their* account. This is RFC 8252's loopback flow as `gh auth login` and `aws sso login` run it, and the reference records the same limit. No mitigation in the SDK. A single-user desktop is unaffected.
-- **A `HEAD` request gets a body.** Anything but `GET /callback` is answered with a 404 page, a `HEAD` included (`classifyLoopbackRequest` and `LoopbackListener.serve`, `src/main/kotlin/com/thalovant/sdk/Loopback.kt`; case `only GET is served: HEAD is 404`). Browsers do not send `HEAD` to a redirect target, and every connection closes after its answer.
+- **The origin check cannot fire through `request()` today.** `request()` appends a path to the API's address, so a path that reads as a URL of its own (`/https://elsewhere/x`) stays on the API, unlike the reference's `urljoin`. The check (`sameOrigin`, `ControlPlane.kt`) is there for every request anyway, as the contract asks. It is tested directly, and `BrowserLoginTest`, `no request leaves the API's origin`, proves that no such path reaches another server.
+- **A reset is seen differently on each system.** On this Linux host the reader sees a clean end of stream, and the sender sees the reset, because the JDK shuts the write side before it closes. macOS drops the unread answer instead. `an early answer is not lost to a reset` therefore keeps sending after it has read the answer. Without the drain it fails with `Broken pipe`. The macOS case is not run.
 - **Deny reaches the SDK only once the dashboard sends it.** `error=access_denied` raises `ThalovantDeviceLoginDeniedException`. Until the dashboard change in the same train ships, a Deny never calls back, and the sign-in expires after `timeoutMillis` (300 s).
 - **`canOpenBrowser()` does not prove a browser exists.** It reads `CI`, `SSH_*`, `DISPLAY` and `WAYLAND_DISPLAY` (`NativeSignIn.canOpenBrowser`, `NativeSignIn.kt`), as the contract says. A Linux desktop with a display but neither a browsing `java.awt.Desktop` nor `xdg-open` still chooses the browser. The printed URL is the fallback there. Once the browser is meant to open, the sign-in does not turn into a device login.
 - **`browserLogin()` is not refused on Android.** Android is `linux` without a display, so `interactiveLogin()` picks a device login, and the platform opener does nothing there (`isAndroid`, `BrowserLogin.kt`). A forced `browserLogin()` still binds a port and waits for a browser nobody opened, unless the caller passes an `opener`. It is documented as unsupported. See [SUGGESTIONS.md](SUGGESTIONS.md).
@@ -20,6 +30,12 @@ Read at branch `feat/browser-sign-in` (from `main` 090dbd4). Behind it: the full
 
 ## Fixed on 2026-11-08
 
+- **OkHttp could present a sign-in code twice.**
+  - Where: the exchange in `ControlPlane.kt`.
+  - Cause: OkHttp's `RetryAndFollowUpInterceptor` replays a request whose body is not one-shot. It does so after a connection failure on a pooled connection, which is the exchange's case, because it follows the configuration GET. It also replays on a 408, and on a 503 with `Retry-After: 0`; that last replay ignores `retryOnConnectionFailure`. A code presented twice revokes the token the first exchange minted (RFC 9700).
+  - Fix: the exchange goes through a client with `retryOnConnectionFailure(false)`, and its body is one-shot (`oneShot`). The bytecode of OkHttp 4.12 shows that the interceptor returns rather than follows up whenever the follow-up's body is one-shot.
+  - Test: `the exchange is sent at most once, whatever the answer asks`, which covers the 408 and the 503, and `a transport failure during the exchange carries nothing of the request, and is not retried`. The 503 case failed before the one-shot body.
+- **The final reference's rules were ported.** The changes are: the origin check, the `token_endpoint` and `authorization_endpoint` rules, the RFC 6749 error allow-list, an empty device name, the tab with no deadline of its own, `HEAD`, redaction before the message, and the drain. See MAINTENANCE_REPORT.md. Each has its vector cases or a test, and the earlier `HEAD`-with-a-body limit is gone.
 - **The chooser did not fall back when the API could not be reached.** CodeRabbit raised it on #59, about the FAQ.
   - Where: the `LoginMethod.AUTO` branch of `interactiveLogin` in `src/main/kotlin/com/thalovant/sdk/ControlPlane.kt`.
   - Cause: the branch caught only `ThalovantApiException`. A configuration request that could not reach the API threw the `IOException` out of `interactiveLogin()`. The Python reference reads that failure as `ThalovantAPIUnreachableError`, which is a `ThalovantAPIError`, and falls back to a device login. The porting brief counts "another failure" as not usable. So the FAQ described the reference and the code did not.

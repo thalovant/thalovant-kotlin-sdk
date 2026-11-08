@@ -71,11 +71,27 @@ internal const val MAX_REQUEST_HEAD: Int = 16 * 1024
 /** How long one connection may take to send its request head. */
 internal const val REQUEST_READ_TIMEOUT_MILLIS: Long = 10_000
 
-/** How long an accepted tab waits for its page while the code is exchanged. */
-internal const val ANSWER_TIMEOUT_MILLIS: Long = 60_000
+/**
+ * The `error` values RFC 6749 section 4.1.2.1 defines. Only these are kept
+ * from a callback: anything else is a value somebody else chose, and it could
+ * be the state or a code, which must never reach an error message.
+ */
+internal val OAUTH_ERRORS: Set<String> = setOf(
+    "invalid_request", "unauthorized_client", "access_denied", "unsupported_response_type",
+    "invalid_scope", "server_error", "temporarily_unavailable",
+)
 
 /** How long closing waits for an accepted tab's page to be written. */
 internal const val CLOSE_GRACE_MILLIS: Long = 1_000
+
+/**
+ * After an answer, how long, and how much, of what the browser still sends is
+ * read and dropped before the connection closes. A socket closed with bytes
+ * unread answers them with a reset, and macOS then throws away the answer the
+ * browser had not read yet -- an oversized head's 400, say.
+ */
+internal const val DRAIN_TIMEOUT_MILLIS: Long = 2_000
+internal const val DRAIN_LIMIT: Int = 1024 * 1024
 
 private val REASONS = mapOf(200 to "OK", 400 to "Bad Request", 404 to "Not Found")
 private val HEAD_END = byteArrayOf('\r'.code.toByte(), '\n'.code.toByte(), '\r'.code.toByte(), '\n'.code.toByte())
@@ -85,8 +101,9 @@ private val HEAD_END = byteArrayOf('\r'.code.toByte(), '\n'.code.toByte(), '\r'.
  *
  * [Outcome.CODE] when the person approved; [Outcome.DENIED] for
  * `error=access_denied`; [Outcome.FAILED] for any other `error`, or for
- * neither an error nor exactly one code. [error] is the `error` the page sent,
- * when it sent one. A plain class whose [toString] leaves [code] out.
+ * neither an error nor exactly one code. [error] is the `error` the page sent
+ * when it is one of [OAUTH_ERRORS], and null otherwise. A plain class whose
+ * [toString] leaves [code] out.
  */
 internal class LoopbackCallback(val outcome: Outcome, val code: String? = null, val error: String? = null) {
     enum class Outcome { CODE, DENIED, FAILED }
@@ -101,8 +118,9 @@ internal class LoopbackCallback(val outcome: Outcome, val code: String? = null, 
  * when `state` is missing, given more than once, or not this sign-in's
  * (compared in constant time, as UTF-8 bytes); otherwise `200 to callback`.
  * An `error` wins over a `code` sent with it: a refusal that also carries a
- * code is still a refusal. Query values are decoded once, as a form decodes
- * them ([formDecode]); `error_description` is not read.
+ * code is still a refusal. An `error` outside [OAUTH_ERRORS] is not kept.
+ * Query values are decoded once, as a form decodes them ([formDecode]);
+ * `error_description` is not read.
  */
 internal fun classifyLoopbackRequest(method: String, target: String, state: String): Pair<Int, LoopbackCallback?> {
     val path = target.substringBefore('?')
@@ -121,7 +139,7 @@ internal fun classifyLoopbackRequest(method: String, target: String, state: Stri
         if (errors == listOf("access_denied")) {
             return 200 to LoopbackCallback(LoopbackCallback.Outcome.DENIED, error = "access_denied")
         }
-        return 200 to LoopbackCallback(LoopbackCallback.Outcome.FAILED, error = errors[0].ifEmpty { null })
+        return 200 to LoopbackCallback(LoopbackCallback.Outcome.FAILED, error = errors[0].takeIf { it in OAUTH_ERRORS })
     }
     val codes = values["code"].orEmpty()
     if (codes.size == 1 && codes[0].isNotEmpty()) {
@@ -196,13 +214,17 @@ private fun loopbackPage(text: String): ByteArray =
         "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">" +
         "<title>Thalovant</title></head><body><p>$text</p></body></html>\n").toByteArray(Charsets.UTF_8)
 
-/** A whole HTTP/1.1 answer: the status, [LOOPBACK_PAGE_HEADERS], and a small page. */
-internal fun loopbackResponse(status: Int, text: String): ByteArray {
+/**
+ * A whole HTTP/1.1 answer: the status, [LOOPBACK_PAGE_HEADERS], and a small
+ * page. The answer to a `HEAD` ([head]) carries no body (RFC 9110 section
+ * 9.3.2); its `Content-Length` is the length the page would have had.
+ */
+internal fun loopbackResponse(status: Int, text: String, head: Boolean = false): ByteArray {
     val body = loopbackPage(text)
     val lines = mutableListOf("HTTP/1.1 $status ${REASONS.getValue(status)}")
     lines += LOOPBACK_PAGE_HEADERS.map { (name, value) -> "$name: $value" }
     lines += listOf("Content-Length: ${body.size}", "Connection: close", "", "")
-    return lines.joinToString("\r\n").toByteArray(Charsets.US_ASCII) + body
+    return lines.joinToString("\r\n").toByteArray(Charsets.US_ASCII) + if (head) ByteArray(0) else body
 }
 
 /** The method and target of a request head, or null when it has no request line. */
@@ -230,7 +252,7 @@ private sealed class Head {
  */
 internal class LoopbackListener(
     private val state: String,
-    private val answerTimeoutMillis: Long = ANSWER_TIMEOUT_MILLIS,
+    private val drainTimeoutMillis: Long = DRAIN_TIMEOUT_MILLIS,
 ) {
     private val lock = Any()
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -246,6 +268,9 @@ internal class LoopbackListener(
 
     /** The address bound, for a test to see that it is loopback and nothing else. */
     internal val boundAddress: InetAddress? get() = synchronized(lock) { server?.inetAddress }
+
+    /** The connections still being served, for a test to see that none outlives its drain. */
+    internal val openConnections: Int get() = synchronized(lock) { connections.size }
 
     /** Binds `127.0.0.1` on a port the system picks and starts accepting; returns the port. */
     fun start(): Int {
@@ -367,9 +392,14 @@ internal class LoopbackListener(
         }
         if (!mine) {
             val refused = if (callback != null) 400 else status
-            return answer(socket, refused, if (refused == 404) NOT_FOUND_TEXT else WRONG_STATE_TEXT)
+            return answer(socket, refused, if (refused == 404) NOT_FOUND_TEXT else WRONG_STATE_TEXT, head = request.first == "HEAD")
         }
-        val signedIn = withTimeoutOrNull(answerTimeoutMillis) { answer.await() } ?: false
+        // Until the sign-in has ended, however long the exchange takes: the
+        // page says how it ended, so it cannot be written before it has. A
+        // deadline of its own, shorter than the exchange's, would say "not
+        // completed" for a sign-in that then succeeds. close() always
+        // answers, so this never outlives the sign-in.
+        val signedIn = answer.await()
         answer(socket, 200, if (signedIn) SIGNED_IN_TEXT else NOT_COMPLETED_TEXT)
     }
 
@@ -399,23 +429,30 @@ internal class LoopbackListener(
     }
 
     /**
-     * Writes one answer and ends the connection. Its output is shut first and
-     * what the browser still had on its way is read off briefly, so the close
-     * does not reset a connection whose answer has not been read yet.
+     * Writes one answer, then lets the browser finish before the connection
+     * closes. The write side is shut first (the browser sees the answer end),
+     * then what the browser still sends -- the rest of an oversized head, a
+     * body nobody asked for -- is read and dropped until it closes its side,
+     * for at most [drainTimeoutMillis] and [DRAIN_LIMIT] bytes. Closing with
+     * bytes unread would reset the connection, and macOS then discards the
+     * answer the browser had not read yet.
      */
-    private fun answer(socket: Socket, status: Int, text: String) {
+    private fun answer(socket: Socket, status: Int, text: String, head: Boolean = false) {
         val output = socket.getOutputStream()
-        output.write(loopbackResponse(status, text))
+        output.write(loopbackResponse(status, text, head))
         output.flush()
         runCatching {
             socket.shutdownOutput()
-            socket.soTimeout = 200
+            val deadline = System.nanoTime() + drainTimeoutMillis * 1_000_000
             val input = socket.getInputStream()
-            val sink = ByteArray(4096)
+            val sink = ByteArray(64 * 1024)
             var drained = 0
-            while (drained < 64 * 1024) {
+            while (drained <= DRAIN_LIMIT) {
+                val left = (deadline - System.nanoTime()) / 1_000_000
+                if (left <= 0) return@runCatching
+                socket.soTimeout = left.coerceIn(1, Int.MAX_VALUE.toLong()).toInt()
                 val count = input.read(sink)
-                if (count < 0) break
+                if (count < 0) return@runCatching
                 drained += count
             }
         }

@@ -50,8 +50,11 @@ import kotlinx.serialization.json.JsonPrimitive
  * [loopbackRedirectUri] the redirect it comes back to, [newState] the value
  * that ties the two together, [NativeSignInConfig] reads where the API says to
  * send the browser, and [canOpenBrowser] says whether this machine has a
- * browser to send. A loopback redirect cannot be relayed: the browser that
- * approves hands the code to its own computer, never to whoever sent the link.
+ * browser to send. The browser that approves hands the code to its own
+ * computer's `127.0.0.1`, so a link or code sent to someone on another
+ * computer delivers nothing to the sender. That is all it promises: a
+ * forwarded callback port (`ssh -L`, a port-forwarding tool) or another user
+ * of the same computer can still complete a sign-in.
  */
 public object NativeSignIn {
 
@@ -435,9 +438,13 @@ public data class NativeSignInConfig(
          * Unusable: an answer that is not a JSON object; an
          * `authorization_endpoint` that is not https (or http on `localhost`,
          * `127.0.0.1` or `::1`), has no host, or carries credentials, a query
-         * (or a bare `?`), a fragment, whitespace, control characters, or a
-         * port no browser can open; a `token_endpoint` that is not a path on
-         * the API (one leading `/`, not `//`, no `?`, `#`, `\` or whitespace);
+         * (or a bare `?`), a fragment, whitespace, control characters, port 0
+         * or a port above 65535, or a host that is not, as written, a
+         * bracketed IPv6 address, an IPv4 address or an ASCII DNS name (no
+         * `%`, `_` or empty label; `xn--` for an international one); a
+         * `token_endpoint` that is not a path on the API (one leading `/`, not
+         * `//`, every `%` followed by two hex digits, no `:`, `?`, `#`, `\` or
+         * whitespace);
          * an `sdk_client_id` that is not 1-64 characters of `[A-Za-z0-9._-]`;
          * or `code_challenge_methods_supported` that is not a list holding
          * `S256`. Other members are ignored.
@@ -471,7 +478,8 @@ public data class NativeSignInConfig(
         }
 
         private val CLIENT_ID = Regex("[A-Za-z0-9._-]{1,64}")
-        private val IPV_FUTURE = Regex("v[a-fA-F0-9]+\\..+", RegexOption.DOT_MATCHES_ALL)
+        private val HOST_LABEL = Regex("[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
+        private val BROKEN_ESCAPE = Regex("%(?![0-9A-Fa-f]{2})")
         private val LOOPBACK_HOSTS = setOf("localhost", "127.0.0.1", "::1")
 
         /** Whitespace as Python's `str.isspace` has it, a C0 control, DEL, or a C1 control. */
@@ -506,14 +514,15 @@ public data class NativeSignInConfig(
                 val after = authority.substringAfter(']')
                 if (after.isNotEmpty() && !after.startsWith(':')) return false
                 port = after.removePrefix(":")
-                if (!(IPV_FUTURE.matches(host) || isIpv6Literal(host))) return false
             } else {
                 host = authority.substringBefore(':')
                 port = authority.substringAfter(':', "")
             }
-            if (port.isNotEmpty() && (!port.all { it in '0'..'9' } || port.toBigInteger() > 65535.toBigInteger())) return false
+            // A port above 65535 does not parse, and no browser opens port 0 either.
+            if (port.isNotEmpty() && (!port.all { it in '0'..'9' } || port.toBigInteger() > 65535.toBigInteger() ||
+                    port.toBigInteger().signum() == 0)) return false
             val hostname = host.lowercase()
-            if (hostname.isEmpty()) return false
+            if (hostname.isEmpty() || !realHost(hostname, bracketed = opens)) return false
             return when (scheme.lowercase()) {
                 "https" -> true
                 "http" -> hostname in LOOPBACK_HOSTS
@@ -521,9 +530,46 @@ public data class NativeSignInConfig(
             }
         }
 
-        /** A path on the API: one leading slash, no query, fragment, backslash, whitespace or control character. */
+        /**
+         * Whether [host] (lower case, brackets off) names something a browser
+         * can reach, read as it is written: an IPv6 address only between
+         * brackets; an IPv4 address whenever the last label is a number, as a
+         * browser reads it; otherwise a DNS name of ASCII labels of letters,
+         * digits and inner hyphens, 1-63 characters each, at most 253 in all
+         * (an international name in its `xn--` form). So `%`, `_`, an empty
+         * label, a trailing dot and a non-ASCII host are unusable.
+         */
+        private fun realHost(host: String, bracketed: Boolean): Boolean {
+            if (bracketed) return isIpv6Literal(host)
+            if (isIpv4(host)) return true
+            val labels = host.split('.')
+            // Numeric like an IPv4 address, and not one.
+            if (labels.last().isNotEmpty() && labels.last().all { it in '0'..'9' }) return false
+            return host.length <= 253 && labels.all { HOST_LABEL.matches(it) }
+        }
+
+        /** Four decimal octets of 0-255, without a leading zero, as the reference's `ipaddress` reads one. */
+        private fun isIpv4(text: String): Boolean {
+            val octets = text.split('.')
+            return octets.size == 4 && octets.all { octet ->
+                octet.isNotEmpty() && octet.length <= 3 && octet.all { it in '0'..'9' } &&
+                    !(octet.length > 1 && octet[0] == '0') && octet.toInt() <= 255
+            }
+        }
+
+        /**
+         * A path on the API: one leading slash, not two; every `%` followed by
+         * two hex digits; no `:`, `?`, `#`, `\`, whitespace or control character.
+         *
+         * No colon anywhere, because a URL joiner can read what follows the
+         * slash as a URL of its own (`/https://collector.example/token`,
+         * `/collector.example:443/token`), and the exchange carries the code
+         * and the verifier. A broken escape (`/v1/%zz`) is caught here, while a
+         * device login can still stand in, rather than after somebody approved.
+         */
         private fun usableTokenEndpoint(value: String): Boolean =
-            value.startsWith("/") && !value.startsWith("//") && value.none { it in "?#\\" || unsafe(it) }
+            value.startsWith("/") && !value.startsWith("//") && !BROKEN_ESCAPE.containsMatchIn(value) &&
+                value.none { it in ":?#\\" || unsafe(it) }
 
         private fun Char.isAsciiLetter(): Boolean = this in 'A'..'Z' || this in 'a'..'z'
 
@@ -548,11 +594,7 @@ public data class NativeSignInConfig(
             var width = 8
             val tail = address.substring(lastColon + 1)
             if ('.' in tail) {
-                val octets = tail.split('.')
-                if (octets.size != 4 || octets.any { octet ->
-                        octet.isEmpty() || octet.length > 3 || !octet.all { it in '0'..'9' } ||
-                            (octet.length > 1 && octet[0] == '0') || octet.toInt() > 255
-                    }) return false
+                if (!isIpv4(tail)) return false
                 address = address.substring(0, lastColon + 1) + "0"
                 width = 7
             }

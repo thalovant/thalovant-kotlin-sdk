@@ -1,4 +1,4 @@
-Last Edit: Claude Opus 5.5 - 2026-11-08 - Motive: Browser sign-in (0.10.0): version, sign-in entry points, parity digests.
+Last Edit: Claude Opus 5.5 - 2026-11-08 - Motive: Browser sign-in (0.10.0) at the final reference 39e31d8: digests and vectors.
 
 # Quick facts: thalovant-kotlin-sdk
 
@@ -10,8 +10,8 @@ Last Edit: Claude Opus 5.5 - 2026-11-08 - Motive: Browser sign-in (0.10.0): vers
 | Sign-in entry points | `ThalovantControlPlane.interactiveLogin(InteractiveLoginOptions)` (chooser), `browserLogin(BrowserLoginOptions)` (PKCE on a `127.0.0.1` loopback redirect, RFC 8252), `loginWithBrowser(DeviceLoginOptions)` (device login, RFC 8628), `login(email, password)` |
 | Browser sign-in pieces | `NativeSignIn.browserAuthorizationUrl`, `loopbackRedirectUri`, `newState`, `canOpenBrowser`, `defaultDeviceName`, `SDK_CLIENT_ID` (`thalovant-sdk`); `NativeSignInConfig.fromJson`; `LoginMethod` (NativeSignIn.kt, BrowserLogin.kt, Loopback.kt) |
 | Browser sign-in on Android | not supported: `interactiveLogin()` picks a device login there; an app uses `NativeSignIn.begin` and its own redirect |
-| Parity | consumer of the Python reference; acknowledges digests `57c7e71f6456` (current) and `49744ee385bf` (candidate, thalovant-python-sdk#113) in `contracts/sdk-parity.json` |
-| Conformance | vectors vendored in `src/test/resources/thalovant/`; results in `contracts/conformance-results.json` (`THALOVANT_CONFORMANCE_OUT`) |
+| Parity | consumer of the Python reference; acknowledges digests `57c7e71f6456` (current) and `6dfb3bb31ac7` (final candidate, thalovant-python-sdk#113 at `39e31d8`) in `contracts/sdk-parity.json` |
+| Conformance | vectors vendored in `src/test/resources/thalovant/` (`browser-login-vectors.json`: 119 cases); results in `contracts/conformance-results.json` (`THALOVANT_CONFORMANCE_OUT`) |
 | Chat apps (`/v1/bridges`) | not covered (`chat-apps` not applicable); see the Python, Node, Go or Rust SDK or the MCP server |
 | Validate | `./gradlew --no-daemon build -PtestJavaVersion=17` (CI also runs 21) |
 | Release | merge to `main` with release-relevant changes -> `auto-release.yml` |
