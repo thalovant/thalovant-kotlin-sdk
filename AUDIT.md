@@ -1,8 +1,30 @@
-Last Edit: Claude Opus 5.5 - 2026-11-07 - Motive: Record the HubIntentInventory.listedIn doc correction and the acceptance-window disconnect regression test from the CodeRabbit review-body follow-up on #41, #42, #46 and #47.
+Last Edit: Claude Opus 5.5 - 2026-11-08 - Motive: Browser sign-in (0.10.0): known limits of the loopback flow, from the test run and a reading of the new code; the flaky revoke-race test fixed.
 
 # Audit
 
-These findings come from the CodeRabbit threads on merged PRs #35, #37, #41 and #46. They were checked against the code and against `./gradlew build`, which passes 376 tests at the time of writing.
+These findings come from the CodeRabbit threads on merged PRs #35, #37, #41 and #46, and from the browser sign-in round (0.10.0). They were checked against the code and against `./gradlew build`, which passes 419 tests at the time of writing (branch `feat/browser-sign-in`, 2026-11-08, JVM 17 and 21).
+
+## Browser sign-in (0.10.0)
+
+Read at branch `feat/browser-sign-in` (from `main` 090dbd4). Behind it: the full suite, `BrowserLoginVectorsTest` (all 98 shared vectors, with results identical to the Python reference's case for case) and `BrowserLoginTest` (29 edge tests). Four hand mutations of the new code were run against the vectors, and the section each one targets caught it: `URLEncoder` in the URL builder, a missing state accepted, a fifth exchange field, and `CI` ignored.
+
+- **Another user on the same computer can sign the program in as themselves.** The authorization URL reaches the browser through `java.awt.Desktop.browse`, or as a process argument to `open`, `xdg-open` or `rundll32` (`openInPlatformBrowser` and `browserCommand`, `src/main/kotlin/com/thalovant/sdk/BrowserLogin.kt`). On a shared machine, another local user can read that argument from the process table. They can open it in their own browser and approve it with their own account, and the redirect lands on the same `127.0.0.1` port with the right `state`. The program is then signed in to *their* account. This is RFC 8252's loopback flow as `gh auth login` and `aws sso login` run it, and the reference records the same limit. No mitigation in the SDK. A single-user desktop is unaffected.
+- **A `HEAD` request gets a body.** Anything but `GET /callback` is answered with a 404 page, a `HEAD` included (`classifyLoopbackRequest` and `LoopbackListener.serve`, `src/main/kotlin/com/thalovant/sdk/Loopback.kt`; case `only GET is served: HEAD is 404`). Browsers do not send `HEAD` to a redirect target, and every connection closes after its answer.
+- **Deny reaches the SDK only once the dashboard sends it.** `error=access_denied` raises `ThalovantDeviceLoginDeniedException`. Until the dashboard change in the same train ships, a Deny never calls back, and the sign-in expires after `timeoutMillis` (300 s).
+- **`canOpenBrowser()` does not prove a browser exists.** It reads `CI`, `SSH_*`, `DISPLAY` and `WAYLAND_DISPLAY` (`NativeSignIn.canOpenBrowser`, `NativeSignIn.kt`), as the contract says. A Linux desktop with a display but neither a browsing `java.awt.Desktop` nor `xdg-open` still chooses the browser. The printed URL is the fallback there. Once the browser is meant to open, the sign-in does not turn into a device login.
+- **`browserLogin()` is not refused on Android.** Android is `linux` without a display, so `interactiveLogin()` picks a device login, and the platform opener does nothing there (`isAndroid`, `BrowserLogin.kt`). A forced `browserLogin()` still binds a port and waits for a browser nobody opened, unless the caller passes an `opener`. It is documented as unsupported. See [SUGGESTIONS.md](SUGGESTIONS.md).
+- **The default device name can wait on DNS on macOS.** `defaultDeviceName()` reads `COMPUTERNAME`, `/proc/sys/kernel/hostname` and `HOSTNAME` first, then falls back to `InetAddress.getLocalHost().hostName` (`localHostName`, `NativeSignIn.kt`). On macOS that can block for seconds when the host name does not resolve. Pass `deviceName` to avoid it.
+- **Windows and macOS were not run.** Only Linux was run (Fedora, JDK 17 and 21), and CI runs `ubuntu-latest`. The Windows exclusive bind (`reuseAddress = false` in `LoopbackListener.start`) and the `open` and `rundll32` commands are untested here. `browserCommand` is checked as data.
+- **`ai_disclosure` is still dropped by `ApiToken`.** It stays in the raw `JsonObject` that `browserLogin()` returns. See [SUGGESTIONS.md](SUGGESTIONS.md).
+- **Nothing secret in errors.** An exchange error goes through `withoutSecrets` (`BrowserLogin.kt`), which scrubs its message and its body, keys included, and builds a new error with no cause. `BrowserLoginTest`, `an echoed code and verifier never reach the error`, pins this with a 422 that echoes the code and the verifier, one of them in a key. A first version scrubbed only bodies that parse as JSON, and kotlinx reads a bare `<p>…</p>` as a literal, so a text body was left alone. `scrubbing keeps the kind of error, its status and its retry hint` caught that, and it is fixed.
+
+## Fixed on 2026-11-08
+
+- **A revoke-versus-sign-in test was flaky.**
+  - Where: `HomeLinkControlPlaneTest`, `a revoke racing a sign-in on other threads never splits a token from its id`.
+  - Cause: it failed on unmodified `main` (`090dbd4`) in 3 of 4 runs on a loaded machine. When `pollDeviceLogin` finished before `revokeApiToken` read `tokenId`, the revoke targeted the *new* token and correctly forgot it. The test asserted the new token survived either way.
+  - Fix: the sign-in's answer is held until the DELETE has arrived, so the revoke always reads its target first. The race left is the one the test is about: which answer lands first.
+  - Test: 5 of 5 runs pass. With `revokeApiToken` changed to forget unconditionally, the test fails.
 
 ## Fixed on 2026-11-07
 

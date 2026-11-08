@@ -667,7 +667,15 @@ public class ThalovantControlPlane(
      * and is stored on [accessToken] exactly like [login]. The server may
      * normalize and expand the echoed `scopes`.
      */
-    public suspend fun loginWithBrowser(options: DeviceLoginOptions = DeviceLoginOptions()): JsonObject {
+    public suspend fun loginWithBrowser(options: DeviceLoginOptions = DeviceLoginOptions()): JsonObject =
+        deviceLogin(options, launch = null)
+
+    /**
+     * [loginWithBrowser], with the browser [launch] given: what
+     * [interactiveLogin] runs, so that the opener its caller passed opens the
+     * verification page too.
+     */
+    private suspend fun deviceLogin(options: DeviceLoginOptions, launch: ((java.net.URI) -> Unit)?): JsonObject {
         val grant = request("POST", "/v1/auth/device/authorize", body = deviceAuthorizeBody(options.scopes, options.clientName, options.clientId), auth = false)
         val authorization = DeviceAuthorization.fromJson(grant)
 
@@ -678,7 +686,7 @@ public class ThalovantControlPlane(
             println("To sign in, visit ${authorization.verificationUri} and enter the code ${authorization.userCode}")
         }
         if (options.openBrowser) {
-            authorization.verificationUriComplete?.let { openBrowserBestEffort(it) }
+            authorization.verificationUriComplete?.let { openBrowserBestEffort(it, launch) }
         }
 
         val token = pollDeviceToken(authorization.deviceCode, authorization.intervalMillis, options.timeoutMillis)
@@ -965,6 +973,228 @@ public class ThalovantControlPlane(
             "Refusing to send an authorization code and PKCE verifier in cleartext to " +
                 "${uri.host ?: apiUrl}. Use https, or a loopback address while developing.",
         )
+    }
+
+    /**
+     * Signs in through the browser on this machine and stores the API token.
+     *
+     * The authorization code grant with PKCE on a loopback redirect (RFC
+     * 8252): the SDK listens on `127.0.0.1` on a port the system picks, opens
+     * the browser at the dashboard's consent page (read from
+     * `GET /v1/auth/native/config`), and waits for the browser to come back
+     * to `http://127.0.0.1:<port>/callback`. The browser that approves hands
+     * the code to its own computer, so a sign-in link sent to somebody else
+     * delivers nothing to the sender -- which a device code, read off one
+     * screen and typed into another, cannot promise.
+     *
+     * The URL is always printed as well as opened (`Opening your browser to
+     * sign in to Thalovant. If it does not open, visit:` and the URL); pass
+     * [BrowserLoginOptions.prompt] to present it yourself instead, and
+     * [BrowserLoginOptions.openBrowser] false to only show it.
+     *
+     * Returns the token answer and stores its `access_token` and `token_id`
+     * exactly as a device login does, so [revokeApiToken] revokes it the same
+     * way. A tab that answers with another sign-in's `state`, or none, is
+     * turned away with a 400 and the wait goes on.
+     *
+     * Throws [ThalovantDeviceLoginDeniedException] when the person denies it
+     * in the browser, [ThalovantDeviceLoginExpiredException] when nobody comes
+     * back within [BrowserLoginOptions.timeoutMillis] (both with no status:
+     * the API did not answer either one), and [ThalovantApiException] for the
+     * rest: a code the API will not exchange (status 400, `detail`
+     * `invalid_grant`; never retried, as a code presented twice revokes the
+     * token it minted), a consent page that came back without a code (no
+     * status), an answer that is not a token (no status), a cleartext API
+     * URL, or an API that does not offer browser sign-in (status 404, for
+     * which [interactiveLogin] falls back to a device login). The code, the
+     * verifier, the state and the token never appear in an error.
+     *
+     * Cancelling the coroutine stops the sign-in and closes the port. For a
+     * JVM desktop or server; on Android, which has no loopback browser
+     * hand-off of its own, an app signs in with [NativeSignIn] and its
+     * registered redirect.
+     */
+    public suspend fun browserLogin(options: BrowserLoginOptions = BrowserLoginOptions()): JsonObject {
+        // Before anything is asked or opened: a code and its verifier never
+        // cross the network in cleartext.
+        requireSecureTokenExchange()
+        val config = nativeSignInConfig()
+        return runBrowserLogin(config, options)
+    }
+
+    /**
+     * Signs a person in the best way this machine allows, and stores the API token.
+     *
+     * [LoginMethod.AUTO] signs in through the browser ([browserLogin]) when
+     * this machine can show one ([NativeSignIn.canOpenBrowser]: never over SSH
+     * or in CI; macOS and Windows yes; elsewhere only with `DISPLAY` or
+     * `WAYLAND_DISPLAY`) and the API answers `GET /v1/auth/native/config`
+     * with a configuration it can use; otherwise it uses a device login
+     * ([loginWithBrowser]), whose code can be approved from any browser. A
+     * 404, any other refusal, an unusable answer and a cleartext API URL all
+     * mean a device login, which is not a downgrade: nothing has been opened
+     * yet. [LoginMethod.BROWSER] and [LoginMethod.DEVICE] force one;
+     * [LoginMethod.DEVICE] never asks for the configuration, and
+     * [LoginMethod.BROWSER] raises its failure rather than turn into a device
+     * login. Once the browser has been sent to the consent page, the browser
+     * sign-in's own outcome stands, whether denied, expired or refused.
+     *
+     * Android reports itself as Linux without a display, so [LoginMethod.AUTO]
+     * picks a device login there.
+     *
+     * [InteractiveLoginOptions.deviceName] names this machine on the consent
+     * page (a device login's `client_name`). Returns the token answer, as
+     * both methods do.
+     */
+    public suspend fun interactiveLogin(options: InteractiveLoginOptions = InteractiveLoginOptions()): JsonObject =
+        interactiveLogin(options, System.getenv(), NativeSignIn.platformName())
+
+    /** [interactiveLogin] on a given machine: its environment and its platform name. */
+    internal suspend fun interactiveLogin(
+        options: InteractiveLoginOptions,
+        environment: Map<String, String>,
+        platform: String,
+    ): JsonObject {
+        val name = options.deviceName?.takeIf { it.isNotEmpty() } ?: NativeSignIn.defaultDeviceName()
+        val config: NativeSignInConfig? = when (options.method) {
+            LoginMethod.DEVICE -> null
+            LoginMethod.BROWSER -> {
+                requireSecureTokenExchange()
+                nativeSignInConfig()
+            }
+            LoginMethod.AUTO -> if (NativeSignIn.canOpenBrowser(environment, platform)) {
+                try {
+                    requireSecureTokenExchange()
+                    nativeSignInConfig()
+                } catch (_: ThalovantApiException) {
+                    // An older API (404), or one that cannot say: the browser
+                    // has not been opened, so a device login is not a downgrade.
+                    null
+                }
+            } else {
+                null
+            }
+        }
+        if (config == null) {
+            val opener = options.opener
+            return deviceLogin(
+                DeviceLoginOptions(
+                    scopes = options.scopes,
+                    clientName = name,
+                    openBrowser = options.openBrowser,
+                    timeoutMillis = options.timeoutMillis ?: DEFAULT_DEVICE_LOGIN_TIMEOUT_MILLIS,
+                ),
+                launch = opener?.let { open -> { uri: java.net.URI -> open(uri.toString()) } },
+            )
+        }
+        return runBrowserLogin(
+            config,
+            BrowserLoginOptions(
+                scopes = options.scopes,
+                deviceName = name,
+                openBrowser = options.openBrowser,
+                timeoutMillis = options.timeoutMillis ?: NativeSignIn.DEFAULT_BROWSER_LOGIN_TIMEOUT_MILLIS,
+                opener = options.opener,
+            ),
+        )
+    }
+
+    /** `GET /v1/auth/native/config`: where to send the browser, and where to exchange the code. */
+    private suspend fun nativeSignInConfig(): NativeSignInConfig {
+        val answer = try {
+            request("GET", "/v1/auth/native/config", auth = false)
+        } catch (error: ThalovantApiException) {
+            if (error.statusCode != 404) throw error
+            throw apiException(
+                "This Thalovant API does not offer browser sign-in; sign in with a device login instead.",
+                404,
+                error.body.orEmpty(),
+            )
+        }
+        return try {
+            NativeSignInConfig.fromJson(answer)
+        } catch (error: IllegalArgumentException) {
+            // A 2xx this SDK cannot use is an error with no status, as a token
+            // answer's is: the API did not refuse.
+            throw ThalovantApiException("Thalovant API answered an unusable browser sign-in configuration. ${error.message}")
+        }
+    }
+
+    /** One browser sign-in against [config]: listen, open, wait, exchange, answer the tab. */
+    private suspend fun runBrowserLogin(config: NativeSignInConfig, options: BrowserLoginOptions): JsonObject {
+        requireSecureTokenExchange()
+        val verifier = NativeSignIn.newVerifier()
+        val state = NativeSignIn.newState()
+        val listener = LoopbackListener(state)
+        // Bound before the URL is built: the redirect names the port.
+        val port = listener.start()
+        try {
+            val redirectUri = NativeSignIn.loopbackRedirectUri(port)
+            val url = NativeSignIn.browserAuthorizationUrl(
+                authorizationEndpoint = config.authorizationEndpoint,
+                redirectUri = redirectUri,
+                codeChallenge = NativeSignIn.challengeFor(verifier),
+                state = state,
+                scopes = options.scopes,
+                deviceName = options.deviceName?.takeIf { it.isNotEmpty() } ?: NativeSignIn.defaultDeviceName(),
+                clientId = config.sdkClientId,
+            )
+            presentBrowserLogin(url, options.prompt, options.openBrowser, options.opener)
+            val callback = listener.wait(options.timeoutMillis)
+                ?: throw ThalovantDeviceLoginExpiredException(
+                    "The browser sign-in was not completed within ${secondsText(options.timeoutMillis)} seconds. " +
+                        "Call browserLogin() again to start a new one.",
+                )
+            when (callback.outcome) {
+                LoopbackCallback.Outcome.DENIED ->
+                    throw ThalovantDeviceLoginDeniedException("The sign-in request was denied in the browser.")
+                LoopbackCallback.Outcome.FAILED -> {
+                    val code = browserErrorCode(callback.error)
+                    throw ThalovantApiException(
+                        "The browser came back without a sign-in code" + (code?.let { " ($it)." } ?: "."),
+                    ).apply { errorCode = code }
+                }
+                LoopbackCallback.Outcome.CODE -> Unit
+            }
+            val code = callback.code!!
+            val token = try {
+                exchangeBrowserCode(config, code, verifier, redirectUri)
+            } catch (error: ThalovantApiException) {
+                // A code is single-use: retrying the exchange would only revoke
+                // the token a first exchange minted (RFC 9700). The API may
+                // have echoed the code and the verifier back; neither leaves.
+                throw withoutSecrets(error, listOf(code, verifier, state))
+            }
+            listener.finish(true)
+            return token
+        } finally {
+            listener.close()
+        }
+    }
+
+    /**
+     * `POST {token_endpoint}` with exactly `code`, `code_verifier`,
+     * `client_id` and `redirect_uri`, and keep the token as a device login
+     * keeps it. A 2xx whose body is not a JSON object, or has no
+     * `access_token`, is an error with no status; any other failure carries
+     * the api-errors fields (`invalid_grant` for every way an exchange fails).
+     */
+    private suspend fun exchangeBrowserCode(
+        config: NativeSignInConfig,
+        code: String,
+        verifier: String,
+        redirectUri: String,
+    ): JsonObject {
+        requireSecureTokenExchange()
+        val body = buildJsonObject {
+            put("code", code)
+            put("code_verifier", verifier)
+            put("client_id", config.sdkClientId)
+            put("redirect_uri", redirectUri)
+        }
+        val token = request("POST", config.tokenEndpoint, body = body, auth = false)
+        acceptToken(token)
+        return token
     }
 
     public suspend fun listHubs(limit: Int = 100, cursor: String? = null, ownerId: String? = null): JsonObject {

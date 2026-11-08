@@ -11,6 +11,7 @@ Rules:
 - Do not create a release for internal platform changes with no Kotlin SDK impact; record `no SDK impact` in the coordinated change instead.
 - Validate package contents and a clean-project resolution of `com.thalovant:thalovant-sdk:<version>` before declaring a release complete.
 - Update affected `docs.thalovant.com` SDK pages in the same release train.
+- Sign-in: keep device login (`loginWithBrowser`, `beginDeviceLogin`, `pollDeviceLogin`, `describeDeviceLogin`) and `NativeSignIn.begin`/`completeNativeSignIn` unchanged; `interactiveLogin()` prefers browser sign-in and falls back to device login only before the browser is opened. Never log or put in an exception the authorization code, the PKCE verifier, the state or a token. `src/test/resources/thalovant/browser-login-vectors.json` is the shared contract, vendored byte for byte from the Python reference (`docs/browser-login-porting.md` there); `BrowserLoginVectorsTest` runs it.
 
 Validate with `./gradlew build` (compiles, runs the mock-server unit tests, and assembles the jar). A published release also requires a clean-project dependency resolution and an import smoke test on JVM 17.
 

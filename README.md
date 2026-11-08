@@ -1,4 +1,4 @@
-<!-- Last Edit: Codex - 2026-11-07 - Motive: Add the canonical Thalovant logo with light and dark theme support. -->
+<!-- Last Edit: Claude Opus 5.5 - 2026-11-08 - Motive: Sign-in section for browser sign-in (0.10.0); the quick start signs in with interactiveLogin(). -->
 
 <p align="center">
   <picture>
@@ -34,7 +34,7 @@ Full documentation: <https://docs.thalovant.com/developers/sdks/kotlin/>
 
 ```kotlin
 dependencies {
-    implementation("com.thalovant:thalovant-sdk:0.9.2")
+    implementation("com.thalovant:thalovant-sdk:0.10.0")
 }
 ```
 
@@ -48,7 +48,9 @@ import kotlinx.coroutines.runBlocking
 
 fun main() = runBlocking {
     val api = ThalovantControlPlane()
-    api.login("you@example.com", "password")
+    // Opens the browser on this machine, or prints a code to approve from any
+    // browser where there is none.
+    api.interactiveLogin()
 
     val result = api.createClientIdentity(
         "hub-id",
@@ -70,6 +72,49 @@ Keep `result.identity` secret, and treat the raw `result.hub` and
 credentials. The default `result.asJson()` redacts all of them and is safe to
 log. `result.asJson(includeSecrets = true)` returns the real secrets, so never
 log or persist it.
+
+## Sign in
+
+```kotlin
+import com.thalovant.sdk.InteractiveLoginOptions
+import com.thalovant.sdk.LoginMethod
+import com.thalovant.sdk.ThalovantControlPlane
+
+val api = ThalovantControlPlane()
+api.interactiveLogin() // the browser here, or a device code where there is none
+// InteractiveLoginOptions(method = LoginMethod.BROWSER) or LoginMethod.DEVICE forces one.
+```
+
+`interactiveLogin()` opens your browser at the Thalovant consent page and
+listens on `127.0.0.1` for the answer (OAuth with PKCE on a loopback redirect,
+RFC 8252). It always prints the address too, in case the browser does not
+open. Only the browser on this computer can complete the sign-in, so a sign-in
+link that reaches somebody else gives them nothing.
+
+On a machine that cannot show a browser, it prints a code to enter at
+`thalovant.com/activate` from any browser instead: over SSH, in CI, or on Linux
+with neither `DISPLAY` nor `WAYLAND_DISPLAY`. It does the same against an API
+that does not offer browser sign-in yet. `browserLogin()` and
+`loginWithBrowser()` (the device login) are the two methods on their own. All
+of them are `suspend` functions, and cancelling one stops the sign-in.
+
+`scopes` asks for what the token may do. The default is `hubs:read` and
+`clients:write`. `deviceName` is what the consent page and the token show. The
+default is `thalovant-kotlin-sdk on <hostname>`. `BrowserLoginOptions.opener`
+opens the URL your own way, and `prompt` presents it yourself.
+
+The result is a scoped API token that lasts 365 days and is listed in the
+dashboard. It counts against your plan. `api.revokeApiToken()` revokes it.
+
+A denied sign-in throws `ThalovantDeviceLoginDeniedException`. A browser
+sign-in that nobody answers within 300 seconds (`timeoutMillis`) throws
+`ThalovantDeviceLoginExpiredException`. Accounts with a password can still use
+`api.login(email, password)`.
+
+Browser sign-in is for a JVM on a desktop or a server. Android reports itself
+as Linux without a display, so `interactiveLogin()` uses a device login there,
+and `browserLogin()` is not supported on Android: an app signs in with
+`NativeSignIn` and its own registered redirect, as thalovant-android does.
 
 ## Documentation
 

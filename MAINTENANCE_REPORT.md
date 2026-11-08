@@ -1,6 +1,69 @@
-Last Edit: Claude Opus 5.5 - 2026-11-07 - Motive: Record the remaining CodeRabbit review-body items (outside-diff comments) on merged PRs #41, #42, #46 and #47, the listedIn doc fix and the acceptance-window disconnect test.
+Last Edit: Claude Opus 5.5 - 2026-11-08 - Motive: Browser sign-in (0.10.0): port of the Python reference's browser-login capability, the flaky revoke-race test fix, verification and transparency report.
 
 # Maintenance Report
+
+## 2026-11-08: Browser sign-in (0.10.0)
+
+**What changed:** browser sign-in is ported from the Python reference (thalovant-python-sdk#113, `e3999cb`, 0.11.0) as the `browser-login` capability. It is the authorization code grant with PKCE (S256) on a loopback redirect (RFC 8252).
+
+| File | Change |
+| :--- | :--- |
+| `src/main/kotlin/com/thalovant/sdk/ControlPlane.kt` | `browserLogin(BrowserLoginOptions)` and `interactiveLogin(InteractiveLoginOptions)`, with the private steps `nativeSignInConfig`, `runBrowserLogin` and `exchangeBrowserCode`. `loginWithBrowser` delegates to a private `deviceLogin` with the same steps, so the chooser's opener reaches the verification page. |
+| `src/main/kotlin/com/thalovant/sdk/NativeSignIn.kt` | `browserAuthorizationUrl`, `loopbackRedirectUri`, `newState`, `canOpenBrowser`, `defaultDeviceName`, the constants, and `NativeSignInConfig.fromJson`. `begin` and `codeFrom` are unchanged. |
+| `src/main/kotlin/com/thalovant/sdk/Loopback.kt` (new) | `LoopbackListener` (a `ServerSocket` on `127.0.0.1`), `classifyLoopbackRequest`, `formDecode` and `loopbackResponse`. |
+| `src/main/kotlin/com/thalovant/sdk/BrowserLogin.kt` (new) | `LoginMethod`, `BrowserLoginOptions`, `InteractiveLoginOptions`, the prompt and the platform opener, and `withoutSecrets`. |
+| `src/main/kotlin/com/thalovant/sdk/Errors.kt` | `ThalovantApiException.errorCode` gets an internal setter. |
+| `src/test/kotlin/com/thalovant/sdk/BrowserLoginVectorsTest.kt`, `BrowserLoginTest.kt` (new) | Run the 98 shared vectors, and test this SDK's own edges (29 tests). |
+| `src/test/resources/thalovant/browser-login-vectors.json` (new) | Copied byte for byte from the reference (sha256 `9058adf2…1651e`). |
+| `src/test/kotlin/com/thalovant/sdk/HomeLinkControlPlaneTest.kt` | The flaky revoke-race test is fixed (see AUDIT.md). |
+| `contracts/sdk-parity.json`, `contracts/conformance-results.json` | The candidate reference digest, the `browser-login` capability, refreshed evidence hashes, and the re-recorded results. |
+| `build.gradle.kts`, `Constants.kt`, `README.md`, `CHANGELOG.md` | 0.10.0, a README "Sign in" section, and the changelog entry. |
+| `AGENTS.md`, `AUDIT.md`, `FAQ.md`, `QUICK_FACTS.md`, `SUGGESTIONS.md` | The sign-in rule, known limits, Q&A, facts and follow-ups. |
+
+**Why:**
+- A device code can be relayed to somebody else: device-code phishing.
+- A loopback redirect cannot be relayed, because the browser that approves delivers the code to its own computer.
+- The parity reference marks `browser-login` as required here.
+
+**Decisions:**
+- **Listener:** a `ServerSocket` with a small reader rather than `com.sun.net.httpserver`. Android does not have the JDK server, and the JDK server answers some malformed requests itself.
+- **Android:** browser sign-in is documented as unsupported there. Android is `linux` with no display, so `interactiveLogin()` uses a device login, and the platform opener does nothing.
+- **Error types:** none are new. Denied and expired reuse the device-login exceptions with no status.
+
+### Verification
+
+- Before the change, `./gradlew --no-daemon build -PtestJavaVersion=17` on unmodified `main` (`090dbd4`) ran 377 tests with 1 failure. The failure was the flaky revoke-race test, which failed in 3 of 4 runs.
+- After the change, `THALOVANT_CONFORMANCE_OUT=$PWD/contracts/conformance-results.json ./gradlew --no-daemon clean build -PtestJavaVersion=17` ran 419 tests: 0 failed, 0 skipped, `BUILD SUCCESSFUL`.
+- `./gradlew --no-daemon build -PtestJavaVersion=21 --rerun-tasks` ran 419 tests: 0 failed, 0 skipped, `BUILD SUCCESSFUL`.
+- The compiler warnings left are the two that `ConformanceRecord.kt` already had.
+- Conformance was re-recorded. All 98 `browser-login-vectors.json` case digests, and the file digest `b17cb434…`, are identical to the reference's recorded results at `e3999cb`. The other eight vector files' results are unchanged, and each equals the reference's.
+- Hand mutations, each caught by the section it targets:
+  - `URLEncoder` in the URL builder: `authorization_urls`
+  - a missing state accepted: `callbacks`, `sign_ins`
+  - a fifth exchange field: `sign_ins`, `chooser`
+  - `CI` ignored: `environment`, `chooser`
+  - With `revokeApiToken` changed to forget unconditionally, the fixed revoke-race test fails.
+- The fixed revoke-race test passed 5 runs out of 5.
+- `tools/interop/run.sh` against the pinned Node peer (`thalovant-node-sdk@261123f5`) passes `IndependentInteropTest`.
+- `python3 -m unittest discover -s tools -p 'test_maven_publication_status.py'` passes 7 tests.
+- `check-sdk-parity.py --workspace <checkouts> --consumer thalovant-kotlin-sdk` passes in two places:
+  - Against thalovant-python-sdk `e3999cb`, the PR head with the candidate digest: "acceptance records verified".
+  - Against `main` (`44b6e2b`, the current digest), where it notes `browser-login` as a capability the reference does not know yet. That note is the rollout state for a consumer that goes first.
+- Not run: Windows, macOS, a real browser, or a live API. thalovant-api #501 is not deployed yet.
+
+### Transparency Report
+
+- **AI Model:** Claude Opus 5.5 (claude-opus-5-5), as a Claude Code agent, one of several agents porting the same reference to the other SDKs in parallel.
+- **Actions Taken:**
+  - Read the contract, the Python reference's porting brief, its implementation, its tests and the parity checker.
+  - Wrote the Kotlin implementation and both test files.
+  - Vendored the vectors.
+  - Re-recorded conformance and checked it against the reference case for case.
+  - Ran hand mutations to prove the vector runner bites.
+  - Found and fixed the flaky test that failed on unmodified `main`.
+  - Updated the parity record, with a review note for every refreshed hash.
+  - Wrote the docs, the changelog and these records.
+- **Oversight:** the platform owner's coordinating agent reviews and merges after the PR's hosted CI and review. Nothing was merged, tagged or released by this agent; a merge to `main` releases 0.10.0.
 
 ## 2026-11-07: CodeRabbit review-body items, second pass
 
