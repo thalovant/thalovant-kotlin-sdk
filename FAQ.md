@@ -1,4 +1,4 @@
-Last Edit: Claude Opus 5.5 - 2026-11-08 - Motive: Browser sign-in questions (0.10.0), final reference 39e31d8: what a loopback sign-in promises, the configuration rules, an empty device name, the consent page's error codes.
+Last Edit: Claude Opus 5.5 - 2026-11-08 - Motive: Browser sign-in questions (0.10.0), final reference 39e31d8: what a loopback sign-in promises, the configuration rules, an empty device name, the consent page's error codes (CodeRabbit on #59: a denial carries no errorCode).
 
 # FAQ: thalovant-kotlin-sdk
 
@@ -30,4 +30,4 @@ Open the printed URL (`Opening your browser to sign in to Thalovant. If it does 
 `deviceName = ""` sends none, on purpose: only `null` (the default) asks for `thalovant-kotlin-sdk on <hostname>`. From `interactiveLogin()`, an empty name also keeps a device login's `client_name` out.
 
 **The consent page sent back an error. Why is `errorCode` null?**
-Only RFC 6749's seven codes (`invalid_request`, `unauthorized_client`, `access_denied`, `unsupported_response_type`, `invalid_scope`, `server_error`, `temporarily_unavailable`) are kept. Anything else is a value the page chose, which could be the state or a code, so it never reaches an error.
+A single `error=access_denied` is a denial: it throws `ThalovantDeviceLoginDeniedException`, which has no `errorCode` at all. Any other `error` fails the sign-in with a `ThalovantApiException` with no status. Its `errorCode` is the error when it is one of RFC 6749's codes (`invalid_request`, `unauthorized_client`, `unsupported_response_type`, `invalid_scope`, `server_error`, `temporarily_unavailable`, or an `access_denied` given more than once), and null otherwise. Anything else is a value the page chose, which could be the state or a code, so it never reaches an error.
