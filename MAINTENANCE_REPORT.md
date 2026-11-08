@@ -1,6 +1,40 @@
-Last Edit: Claude Opus 5.5 - 2026-11-03 - Motive: Record the chat-apps parity acknowledgment (not applicable) and the CodeRabbit review-body items (nitpicks) on merged PRs #10, #11, #34, #35 and #46.
+Last Edit: Claude Opus 5.5 - 2026-11-07 - Motive: Record the remaining CodeRabbit review-body items (outside-diff comments) on merged PRs #41, #42, #46 and #47, the listedIn doc fix and the acceptance-window disconnect test.
 
 # Maintenance Report
+
+## 2026-11-07: CodeRabbit review-body items, second pass
+
+An inventory found 14 CodeRabbit review-body items on merged PRs: nitpicks and outside-diff comments. The 2026-11-03 pass below answered six of them, and those answers still hold. The other eight were outside-diff comments on #41, #42, #46 and #47. Each was checked against `main` at `ad47594`.
+
+| Old PR | Item | Outcome |
+| :--- | :--- | :--- |
+| #41 | `Transport.kt` `disconnect()`: complete `ended`, so a disconnect inside the acceptance window fails `connect()` | **Already fixed** in #46 (`c9a5351`). This change adds the missing regression test. |
+| #41 | `Transport.kt`: mark an authenticated binary frame as hub traffic before decoding it | **Already fixed** in #47 (`4873fd4`). `heardFromHub` is set right after a successful decrypt. The test is `ReviewFindingsTest`, `a WIRE-1 binary frame is the hub speaking too, so a close after it is a drop`. |
+| #42 | `Intents.kt`: serialise `listed_in`, and set `listedIn = languages` on the engine-manifest fallback | **Partly fixed, partly not valid.** `asJson()` has written `listed_in` since #52 (`b5b0da3`). The empty `listedIn` on a names-only inventory is what the Python reference does, so it stays. The KDoc that said otherwise is fixed in this change. |
+| #46 | `ConformanceRecord.kt:131`: convert before applying the integral-float rule (`0.99999999999999999`) | **Already fixed** in #47 (`4873fd4`). Only a literal with no `.`, `e` or `E` is read as an exact int. Anything else becomes a double first, and a whole double is written as an int. `HomeLinkVectorsTest` pins `"1.0000000000000000001" to "1"`. |
+| #46 | `ControlPlane.kt` `pollDeviceToken`: check the deadline before each POST, and bound each POST | **Already fixed** in #47 (`4873fd4`). Each POST runs under `withTimeoutOrNull(left)`, and none starts once `left <= 0`. The test is `ReviewFindingsTest`, `each device-token POST is bounded by what is left of the sign-in`. |
+| #46 | `ControlPlane.kt` `operationOrNull`: an unfamiliar status loses the operation id | **Already fixed** in #47 (`4873fd4`). `CreateClientIdentityResult.operationId` and `operationStatus` hold the id and the raw status, and `waitForAdmission(result)` follows the id through an unknown status. The test is `ReviewFindingsTest`, `an operation status this SDK does not know keeps its id`. |
+| #47 | `NoiseStore.kt` `forIdentity`: fall back to the default store when the folder beside the identity cannot be created | **Already fixed** in #47 before its merge (`4873fd4`; answered on the PR on 2026-09-28). |
+
+### Verification
+
+- `./gradlew --no-daemon build -PtestJavaVersion=17` passes 377 tests with 0 failures. That is the 376 tests from before plus the new transport test.
+- With `ended.complete(error)` removed from `disconnect()`, the new transport test fails: `connect()` sits out the window.
+- Conformance was re-recorded with `THALOVANT_CONFORMANCE_OUT`. The results are identical to `contracts/conformance-results.json`.
+- The evidence hashes for `Intents.kt` (`listing`) and `TransportTest.kt` (`refusal`, `runtime`) are refreshed. The `Intents.kt` change is to the KDoc only. `check-sdk-parity.py --consumer thalovant-kotlin-sdk` passes against thalovant-python-sdk `main` (`bd4061f`).
+- `python3 -m unittest discover -s tools -p 'test_maven_publication_status.py'` passes.
+- No version change. `src/` is a release path, so this change merges with `[skip ci]` and does not cut a patch release that has no library change in it. The next release picks it up.
+
+### Transparency Report
+
+- **AI Model:** Claude Opus 5.5 (claude-opus-5-5), as a Claude Code agent.
+- **Actions Taken:**
+  - Read the 14 review-body items and checked each one against current code and against the Python reference.
+  - Corrected one KDoc and added one regression test, which fails with its fix reverted. Extended one existing test.
+  - Refreshed two parity evidence hashes.
+  - Wrote this entry, the audit entry and the changelog entry.
+  - Replied once on each old PR with how each item was handled.
+- **Oversight:** Part of an agent-run CodeRabbit audit the repository owner asked for. Hosted CI and this pull request's review gate the merge.
 
 ## 2026-11-03 — Chat apps parity acknowledgment
 

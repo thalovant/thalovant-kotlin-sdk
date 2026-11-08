@@ -319,6 +319,12 @@ public data class HubIntentInventory(
      * which language they are in when this differs from what was asked in a
      * way the person would notice. Callers rendering sentences must read them
      * from the tag that answered.
+     *
+     * Empty when nothing was listed by manifest at all: an
+     * [HubIntentSource.ENGINE_MANIFESTS] inventory carries intent names and
+     * no sentences, so no tag answered for any language. This is what the
+     * Python reference does (`listed_in` is `()` there). Check [source], or
+     * the size, before reading it by the index of a language.
      */
     public val listedIn: List<String> = emptyList(),
 ) {
