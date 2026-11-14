@@ -2,6 +2,7 @@ package com.thalovant.sdk
 
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 
@@ -449,7 +450,7 @@ internal fun apiException(message: String, statusCode: Int, body: String): Thalo
             ThalovantPlanException(message, statusCode, body)
         statusCode == 409 && code == "home_assistant_already_linked" ->
             ThalovantAlreadyLinkedException(message, statusCode, body)
-        else -> ThalovantApiException(message, statusCode, body)
+        else -> connectionException(message, statusCode, code.orEmpty(), body) ?: ThalovantApiException(message, statusCode, body)
     }
 }
 
@@ -552,11 +553,198 @@ public class ThalovantAlreadyLinkedException(
  * a satellite's grants, so the SDK deletes that connection before throwing;
  * [statusCode] is null then, because the API itself answered 201.
  */
-public class ThalovantUnsupportedConnectionTypeException(
+public open class ThalovantUnsupportedConnectionTypeException(
     message: String,
     statusCode: Int? = null,
     body: String? = null,
 ) : ThalovantApiException(message, statusCode, body)
+
+/**
+ * The `code` of every refusal the connection routes gained with home links and
+ * home bridges (thalovant-api #521). Read `errorCode` first; the typed
+ * exception of each is named in its comment. A code not listed here is a plain
+ * [ThalovantApiException], with `errorCode` and `problem` either way.
+ */
+public object ConnectionProblemCode {
+    /** 422: no link on this hub; `reason` is `hub_operated_by_another_account`. [ThalovantConnectionTypeUnavailableException]. */
+    public const val CONNECTION_TYPE_UNAVAILABLE: String = "connection_type_unavailable"
+
+    /** 422: the kind is not one the API creates; `known` lists the ones it does. [ThalovantUnsupportedConnectionTypeException]. */
+    public const val CONNECTION_TYPE_UNKNOWN: String = "connection_type_unknown"
+
+    /** 422: `connection_type` and `connectionType` were both sent and differ. [ThalovantUnsupportedConnectionTypeException]. */
+    public const val CONNECTION_TYPE_AMBIGUOUS: String = "connection_type_ambiguous"
+
+    /** 422: the home bridge's connector list is empty, repeated or names an id it may not serve. [ThalovantConnectorsInvalidException]. */
+    public const val CONNECTORS_INVALID: String = "connectors_invalid"
+
+    /** 403: only the account owner may add a device beside a home link. [ThalovantOwnerOnlyBesideLinkException]. */
+    public const val DEVICE_OWNER_ONLY: String = "device_owner_only_beside_home_link"
+
+    /** 403: the same, for a device's setup session. [ThalovantOwnerOnlyBesideLinkException]. */
+    public const val SETUP_SESSION_OWNER_ONLY: String = "setup_session_owner_only_beside_home_link"
+
+    /** 403: the same, for downloading a device's identity. [ThalovantOwnerOnlyBesideLinkException]. */
+    public const val DEVICE_IDENTITY_OWNER_ONLY: String = "device_identity_owner_only_beside_home_link"
+
+    /** 409: a hub with links does not scale out. [ThalovantHubScaleOutBreaksLinksException]. */
+    public const val HUB_SCALE_OUT_BREAKS_LINKS: String = "hub_scale_out_breaks_links"
+
+    /** 409: the `Idempotency-Key` made something that was since removed. [ThalovantIdempotencyKeySpentException]. */
+    public const val IDEMPOTENCY_KEY_SPENT: String = "idempotency_key_spent"
+
+    /** 422: the setting is not for a public hub. [ThalovantPrivateHubOnlyException]. */
+    public const val SKILL_CONFIG_PRIVATE_HUB_ONLY: String = "skill_config_private_hub_only"
+
+    /** Not an error code: the `replay.code` of a connection answered from an earlier request with the same key. */
+    public const val IDEMPOTENT_REPLAY: String = "idempotent_replay"
+}
+
+/** The typed exception for a connection problem by status and [code], or null when the SDK does not list it. */
+private fun connectionException(message: String, statusCode: Int, code: String, body: String): ThalovantApiException? =
+    when (statusCode to code) {
+        422 to ConnectionProblemCode.CONNECTION_TYPE_UNAVAILABLE ->
+            ThalovantConnectionTypeUnavailableException(message, statusCode, body)
+        422 to ConnectionProblemCode.CONNECTORS_INVALID -> ThalovantConnectorsInvalidException(message, statusCode, body)
+        403 to ConnectionProblemCode.DEVICE_OWNER_ONLY,
+        403 to ConnectionProblemCode.SETUP_SESSION_OWNER_ONLY,
+        403 to ConnectionProblemCode.DEVICE_IDENTITY_OWNER_ONLY,
+        -> ThalovantOwnerOnlyBesideLinkException(message, statusCode, body)
+        409 to ConnectionProblemCode.HUB_SCALE_OUT_BREAKS_LINKS ->
+            ThalovantHubScaleOutBreaksLinksException(message, statusCode, body)
+        409 to ConnectionProblemCode.IDEMPOTENCY_KEY_SPENT -> ThalovantIdempotencyKeySpentException(message, statusCode, body)
+        422 to ConnectionProblemCode.SKILL_CONFIG_PRIVATE_HUB_ONLY -> ThalovantPrivateHubOnlyException(message, statusCode, body)
+        else -> null
+    }
+
+/** A problem member at its top or inside an object `detail`; the first one [usable] says yes to wins. */
+private fun problemElement(problem: JsonObject?, name: String, usable: (JsonElement) -> Boolean): JsonElement? {
+    if (problem == null) return null
+    for (source in listOfNotNull(problem, problem["detail"] as? JsonObject)) {
+        val value = source[name] ?: continue
+        if (value !is JsonNull && usable(value)) return value
+    }
+    return null
+}
+
+/** The non-empty strings of a problem's array member [name]; empty when it is not there. */
+private fun problemStrings(problem: JsonObject?, name: String): List<String> =
+    (problemElement(problem, name) { it is JsonArray } as? JsonArray)
+        ?.mapNotNull { (it as? JsonPrimitive)?.takeIf { p -> p.isString }?.content?.takeIf { text -> text.isNotEmpty() } }
+        .orEmpty()
+
+/**
+ * A link cannot be made on this hub (422 `connection_type_unavailable`).
+ *
+ * A kind of [ThalovantUnsupportedConnectionTypeException], so a handler of
+ * that keeps working. [reason] is `hub_operated_by_another_account` when the
+ * hub is run by another account: a link (`home_assistant` or `connector`) is
+ * made only on the caller's own hub or one Thalovant runs. Devices are not
+ * affected. Not retryable on this hub.
+ */
+public class ThalovantConnectionTypeUnavailableException(
+    message: String,
+    statusCode: Int? = null,
+    body: String? = null,
+) : ThalovantUnsupportedConnectionTypeException(message, statusCode, body) {
+    /** Why (an open value), or null when the body did not say. */
+    public val reason: String? get() = problemMember(problem, "reason")
+}
+
+/**
+ * A home bridge's `spec.connectors` was refused (422 `connectors_invalid`).
+ *
+ * [reason] is `duplicate`, `own_kind` (`home_assistant` has a kind of its own
+ * and is never a bridge's) or `unknown_or_malformed`; [known] lists the ids a
+ * bridge may serve. Send each known id once.
+ */
+public class ThalovantConnectorsInvalidException(
+    message: String,
+    statusCode: Int? = null,
+    body: String? = null,
+) : ThalovantApiException(message, statusCode, body) {
+    /** `duplicate`, `own_kind` or `unknown_or_malformed` (an open value), or null. */
+    public val reason: String? get() = problemMember(problem, "reason")
+
+    /** The connector ids a bridge may serve; empty when the body did not say. */
+    public val known: List<String> get() = problemStrings(problem, "known")
+}
+
+/**
+ * A device was added beside a home link by anybody but the account owner (403).
+ *
+ * Codes `device_owner_only_beside_home_link`,
+ * `setup_session_owner_only_beside_home_link` and
+ * `device_identity_owner_only_beside_home_link`. [linkClientId] names the link.
+ * The owner does it from their own session, never an impersonated one.
+ */
+public class ThalovantOwnerOnlyBesideLinkException(
+    message: String,
+    statusCode: Int? = null,
+    body: String? = null,
+) : ThalovantApiException(message, statusCode, body) {
+    /** The link that closes this, or null when the body did not say. */
+    public val linkClientId: String? get() = problemMember(problem, "link_client_id")
+}
+
+/**
+ * A hub's change would scale it out while it carries links (409 `hub_scale_out_breaks_links`).
+ *
+ * A link needs one listener; [links] counts the links on the hub. There is no
+ * override: remove the links first.
+ */
+public class ThalovantHubScaleOutBreaksLinksException(
+    message: String,
+    statusCode: Int? = null,
+    body: String? = null,
+) : ThalovantApiException(message, statusCode, body) {
+    /** How many links the hub carries, or null when the body did not say. */
+    public val links: Int?
+        get() = (problemElement(problem, "links") { value ->
+            value is JsonPrimitive && !value.isString && value.content.toIntOrNull()?.let { it >= 0 } == true
+        } as? JsonPrimitive)?.content?.toIntOrNull()
+}
+
+/** An `Idempotency-Key` made something that has since been removed (409 `idempotency_key_spent`): send a new key. */
+public class ThalovantIdempotencyKeySpentException(
+    message: String,
+    statusCode: Int? = null,
+    body: String? = null,
+) : ThalovantApiException(message, statusCode, body)
+
+/**
+ * A setting is for a private hub only (422 `skill_config_private_hub_only`).
+ *
+ * The music skill's direct route is refused while the skill set serves a
+ * public hub. Use the home bridge, or keep the hub private. [settings] names
+ * them.
+ */
+public class ThalovantPrivateHubOnlyException(
+    message: String,
+    statusCode: Int? = null,
+    body: String? = null,
+) : ThalovantApiException(message, statusCode, body) {
+    /** The refused settings by name; empty when the body did not say. */
+    public val settings: List<String> get() = problemStrings(problem, "settings")
+}
+
+/**
+ * A connection create was answered from an earlier request with the same key.
+ *
+ * The connection exists, but its credentials were in the first answer only:
+ * the platform does not store them, so a replay carries none. The SDK never
+ * hands back an identity it generated itself, because the platform issues the
+ * connection's real credentials. [client] is the replayed resource with no
+ * credentials; download the identity from the owner's own session, or delete
+ * the connection and create it again with a new key.
+ */
+public class ThalovantCredentialsNotReplayedException(
+    message: String,
+    public val client: JsonObject = JsonObject(emptyMap()),
+) : ThalovantException(message) {
+    /** The connection's id. */
+    public val clientId: String? get() = jsonText(client["id"])
+}
 
 /**
  * One device-login poll found nobody has decided yet: poll again later.

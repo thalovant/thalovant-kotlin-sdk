@@ -2,6 +2,12 @@ Last Edit: Claude Sonnet 5.5 - 2026-11-12 - Motive: Record the Python revision a
 
 # Maintenance Report
 
+## 2026-11-14: connector-connections (0.11.0)
+
+Ported from the Python reference (0.13.0, digest `8687c8429e28`): the `connector` kind, replay detection, `serves`, and the typed connection refusals (see CHANGELOG.md). Files: `ControlPlane.kt`, `Errors.kt`, `Constants.kt`, `build.gradle.kts`, `README.md`, new `ConnectorConnectionsTest.kt`, `contracts/sdk-parity.json`. Verification: `./gradlew test` passed, 448 tests (433 before, 15 new), and `check-sdk-parity.py --consumer thalovant-kotlin-sdk` verifies. Depends on thalovant-api #521 (not deployed); safe against the old API.
+
+Transparency Report: AI model Claude Sonnet 5.5; actions: ported the capability, wrote its tests and updated the parity file and docs; oversight: none yet, review pending.
+
 ## 2026-11-12: Python reference digests acknowledged on the intercom branch
 
 `contracts/sdk-parity.json` lists five reference digests that thalovant-python-sdk `feature/intercom-v1` (PR 114) published while it moved. Each is the digest of the `reference` object of that repository's `contracts/sdk-parity.json` (`scripts/check-sdk-parity.py`, `digest(reference)`), and each was reviewed by reading the Python diff of the `intercom` capability for impact on this SDK, then confirmed with `check-sdk-parity.py --workspace <checkouts> --consumer thalovant-kotlin-sdk`. This SDK has no control-plane announce client, so the `intercom` capability stays `not-applicable` (the reason is in the file) and every acknowledgement is a review, not a port:
