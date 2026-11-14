@@ -1,5 +1,3 @@
-Last Edit: Claude Opus 5.5 - 2026-11-08 - Motive: Browser sign-in (0.10.0) at the final reference 39e31d8: digests and vectors.
-
 # Quick facts: thalovant-kotlin-sdk
 
 | Fact | Value |

@@ -1,5 +1,3 @@
-Last Edit: Claude Opus 5.5 - 2026-11-08 - Motive: Browser sign-in questions (0.10.0), final reference 39e31d8: what a loopback sign-in promises, the configuration rules, an empty device name, the consent page's error codes (CodeRabbit on #59: a denial carries no errorCode).
-
 # FAQ: thalovant-kotlin-sdk
 
 **Can I manage chat apps (Telegram, Discord, Matrix, Mattermost, Twitch bridges) with this SDK?**

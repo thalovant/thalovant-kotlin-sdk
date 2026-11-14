@@ -1,5 +1,3 @@
-Last Edit: Claude Opus 5.5 - 2026-11-08 - Motive: Browser sign-in (0.10.0) at the final reference 39e31d8: known limits, the flaky revoke-race test, the CodeRabbit findings on #59, and OkHttp replaying the exchange.
-
 # Audit
 
 These findings come from the CodeRabbit threads on merged PRs #35, #37, #41 and #46, and from the browser sign-in round (0.10.0). They were checked against the code and against `./gradlew build`, which passes 433 tests at the time of writing (branch `feat/browser-sign-in`, 2026-11-08, JVM 17 and 21).
