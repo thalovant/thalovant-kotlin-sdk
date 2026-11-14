@@ -32,7 +32,7 @@ Full documentation: <https://docs.thalovant.com/developers/sdks/kotlin/>
 
 ```kotlin
 dependencies {
-    implementation("com.thalovant:thalovant-sdk:0.11.0")
+    implementation("com.thalovant:thalovant-sdk:0.11.1")
 }
 ```
 

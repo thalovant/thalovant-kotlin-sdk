@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.11.1
+
+- Automated patch release of the unreleased changes on `main` since v0.11.0.
+
 ## 0.11.0
 
 The Python reference's `connector-connections` capability (thalovant-python-sdk 0.13.0, reference digest `8687c8429e28…`). It depends on thalovant-api #521, which is not deployed yet, and is safe against the old API: every new field is optional and an API without it behaves as before.
