@@ -1,5 +1,3 @@
-Last Edit: Claude Opus 5.5 - 2026-11-08 - Motive: Follow-ups from browser sign-in (0.10.0): Android's browserLogin, ai_disclosure on ApiToken, a typed browser-unavailable error, a Java-friendly sign-in.
-
 # Suggestions: thalovant-kotlin-sdk
 
 ## Decide what `browserLogin()` does on Android
