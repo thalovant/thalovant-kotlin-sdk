@@ -230,6 +230,17 @@ class ConnectorConnectionsTest {
     }
 
     @Test
+    fun `a connectors refusal that names connection_type stays itself`() {
+        answer(
+            422,
+            """{"detail": "Invalid connectors for connection_type connector", "code": "connectors_invalid", "reason": "duplicate", "known": ["music_assistant"]}""",
+        )
+        val caught = assertFailsWith<ThalovantConnectorsInvalidException> { create() }
+        assertEquals("duplicate", caught.reason)
+        assertEquals(listOf("music_assistant"), caught.known)
+    }
+
+    @Test
     fun `an unlisted code stays a plain api error`() {
         problem(409, "something_new")
         val caught = assertFailsWith<ThalovantApiException> { create(kind = null) }

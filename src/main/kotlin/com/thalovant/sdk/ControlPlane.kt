@@ -1798,7 +1798,9 @@ public class ThalovantControlPlane(
                 onHeaders = { replayHeader = it["Idempotent-Replayed"]?.trim().equals("true", ignoreCase = true) },
             )
         } catch (error: ThalovantApiException) {
-            if (error is ThalovantConnectionTypeUnavailableException) throw error
+            // Only an error no typed mapping claimed gets the text check: a connectors_invalid
+            // whose detail names connection_type stays itself.
+            if (error::class != ThalovantApiException::class) throw error
             if (kind != null && refusesConnectionType(error)) {
                 throw ThalovantUnsupportedConnectionTypeException(
                     "The Thalovant API cannot create a '$kind' connection yet.",
