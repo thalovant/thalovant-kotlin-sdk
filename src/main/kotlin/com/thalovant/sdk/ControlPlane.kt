@@ -312,6 +312,13 @@ public val HOME_ASSISTANT_SCOPES: List<String> = listOf("hubs:read", "clients:re
 public const val CONNECTION_TYPE_HOME_ASSISTANT: String = "home_assistant"
 
 /**
+ * `spec.connection_type` of a home bridge: a link that serves the connector ids
+ * in `spec.connectors` (`music_assistant` today). Home Assistant has the kind
+ * above and is never one of a bridge's connectors.
+ */
+public const val CONNECTION_TYPE_CONNECTOR: String = "connector"
+
+/**
  * How long [ThalovantControlPlane.waitForAdmission] waits by default. A hub
  * admits a new connection about ninety seconds after it is created.
  */
@@ -495,7 +502,7 @@ public data class CreateClientIdentityOptions(
     /**
      * The kind of connection to create, sent as `spec.connection_type`:
      * `voice_satellite`, `web_chat`, `developer`, `embedded`, or
-     * [CONNECTION_TYPE_HOME_ASSISTANT]. The kind decides what the connection
+     * [CONNECTION_TYPE_HOME_ASSISTANT] or [CONNECTION_TYPE_CONNECTOR]. The kind decides what the connection
      * may send and receive. Null sends none, and the API makes its default.
      *
      * When set, the API must say the connection is of that kind; see
@@ -521,6 +528,26 @@ public class BootstrapIdentityResult internal constructor(
     public val client: JsonObject,
     public val endpoint: SelectedHubEndpoint?,
 ) {
+    /**
+     * True when the API answered from an earlier create with the same
+     * `Idempotency-Key`. A replay carries no credentials, so
+     * [ThalovantControlPlane.createClientIdentity] throws
+     * [ThalovantCredentialsNotReplayedException] instead of returning one:
+     * this is always false on a result you hold.
+     */
+    public val replayed: Boolean get() = false
+
+    /**
+     * What a new link will serve: `devices` (`id`, `name`, `connection_type`,
+     * `active`), `count` and `warning`. Present for a `home_assistant` or
+     * `connector` link: the same account's devices on the same hub and nobody
+     * else's. Null for any other kind, and from an API that does not say.
+     */
+    public val serves: JsonObject? get() = client["serves"].asObjectOrNull()
+
+    /** The warning in [serves]: this link will serve none of the account's devices. Null when there is none. */
+    public val servesWarning: String? get() = jsonText(serves?.get("warning"))
+
     public val selectedProtocol: HubProtocol? get() = endpoint?.protocol
 
     /** The new connection's id. */
@@ -1723,6 +1750,19 @@ public class ThalovantControlPlane(
      * The new connection is admitted by its hub about ninety seconds later;
      * [BootstrapIdentityResult.operation] tracks that, and [waitForAdmission]
      * waits for it.
+     *
+     * [CONNECTION_TYPE_CONNECTOR] makes a home bridge; name what it serves in
+     * `spec.connectors` (each id once; [ThalovantConnectorsInvalidException]).
+     * A link of either kind is made only on your own hub or one Thalovant runs
+     * ([ThalovantConnectionTypeUnavailableException]) and serves only your own
+     * devices on it: read [BootstrapIdentityResult.serves].
+     *
+     * The platform issues the connection's access key and password: an
+     * `apiKey` or `password` in the spec is ignored by an API that has this
+     * behaviour, and the identity returned is the one in the answer. A create
+     * answered from an earlier request with the same idempotency key (the
+     * `Idempotent-Replayed: true` header, or a `replay` marker) carries no
+     * credentials and throws [ThalovantCredentialsNotReplayedException].
      */
     public suspend fun createClientIdentity(hub: JsonObject, options: CreateClientIdentityOptions): BootstrapIdentityResult {
         val hubId = hub.optionalString("id")
@@ -1748,9 +1788,17 @@ public class ThalovantControlPlane(
             options.ownerId?.let { put("owner_id", it) }
         }
         val kind = options.connectionType
+        var replayHeader = false
         val client = try {
-            createClient(payload, options.idempotencyKey)
+            request(
+                "POST",
+                "/v1/clients",
+                body = payload,
+                headers = mapOf("Idempotency-Key" to (options.idempotencyKey ?: UUID.randomUUID().toString())),
+                onHeaders = { replayHeader = it["Idempotent-Replayed"]?.trim().equals("true", ignoreCase = true) },
+            )
         } catch (error: ThalovantApiException) {
+            if (error is ThalovantConnectionTypeUnavailableException) throw error
             if (kind != null && refusesConnectionType(error)) {
                 throw ThalovantUnsupportedConnectionTypeException(
                     "The Thalovant API cannot create a '$kind' connection yet.",
@@ -1759,6 +1807,15 @@ public class ThalovantControlPlane(
                 )
             }
             throw error
+        }
+        if (replayHeader || isReplayMarker(client)) {
+            throw ThalovantCredentialsNotReplayedException(
+                "This create was answered from an earlier request with the same Idempotency-Key. " +
+                    "The connection exists, but its credentials were in the first answer only and are " +
+                    "not stored. Download its identity from the owner's session, or delete it and " +
+                    "create it again with a new key.",
+                redactBootstrapSecrets(client),
+            )
         }
         if (kind != null) requireConnectionType(client, kind)
         val protocols = HubProtocolSettings.from(hub)
@@ -2035,6 +2092,7 @@ public class ThalovantControlPlane(
         query: Map<String, String> = emptyMap(),
         hidden: List<String> = emptyList(),
         retry: Boolean = true,
+        onHeaders: ((okhttp3.Headers) -> Unit)? = null,
     ): JsonObject {
         val urlBuilder = try { (apiUrl + path.trimStart('/')).toHttpUrl().newBuilder() }
             catch (_: IllegalArgumentException) { throw ThalovantApiException("Invalid Thalovant API URL.") }
@@ -2088,6 +2146,7 @@ public class ThalovantControlPlane(
                     continuation.resumeWith(runCatching {
                         response.use {
                             if (!response.isSuccessful) throw apiError(response, sentSecrets(token, body), hidden)
+                            onHeaders?.invoke(response.headers)
                             val text = response.body?.string().orEmpty()
                             // A 2xx this SDK cannot use is a local failure,
                             // with no status: the API did not refuse. A body
@@ -2222,6 +2281,10 @@ private fun retryAfterHeader(response: Response): Double? {
     }
     return null
 }
+
+/** True when a create's answer carries the `replay` marker (`code: "idempotent_replay"`). */
+private fun isReplayMarker(client: JsonObject): Boolean =
+    jsonText((client["replay"] as? JsonObject)?.get("code")) == ConnectionProblemCode.IDEMPOTENT_REPLAY
 
 /**
  * A 422 whose problem is about `connection_type`: the API does not know the kind asked for.

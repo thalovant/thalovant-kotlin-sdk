@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.11.0
+
+The Python reference's `connector-connections` capability (thalovant-python-sdk 0.13.0, reference digest `8687c8429e28…`). It depends on thalovant-api #521, which is not deployed yet, and is safe against the old API: every new field is optional and an API without it behaves as before.
+
+- `CONNECTION_TYPE_CONNECTOR` (`"connector"`): a home bridge, the second link kind beside `CONNECTION_TYPE_HOME_ASSISTANT`. Its connector ids ride in `spec.connectors` (each once; `music_assistant` today; `home_assistant` is never one). The SDK does not validate them; the API does and says why.
+- The platform issues a link's access key and password: an `apiKey` or `password` in the spec is ignored by the new API, and `createClientIdentity` returns the identity in the answer's `initial_identify`. An answer with none that is not a replay keeps the old fallback (the locally generated pair).
+- A create answered from an earlier request with the same `Idempotency-Key` (response header `Idempotent-Replayed: true`, or a `replay` object with `code: "idempotent_replay"`) carries no credentials. `createClientIdentity` now throws `ThalovantCredentialsNotReplayedException`, carrying the resource (`client`, `clientId`; no credentials), and never returns an identity it made up. `BootstrapIdentityResult.replayed` is always false on a result you hold.
+- `BootstrapIdentityResult.serves` (`devices`, `count`, `warning`) and `servesWarning` (null when there is none) expose what a new link will serve.
+- Typed exceptions by status and `code`, read at the top of the problem or inside an object `detail`, each keeping `statusCode`, `errorCode`, `detail` and `problem`: 422 `connection_type_unavailable` is `ThalovantConnectionTypeUnavailableException` (a subclass of `ThalovantUnsupportedConnectionTypeException`, now `open`, so existing handlers keep working; `reason`); 422 `connectors_invalid` is `ThalovantConnectorsInvalidException` (`reason`, `known`); 403 `device_owner_only_beside_home_link`, `setup_session_owner_only_beside_home_link` and `device_identity_owner_only_beside_home_link` are `ThalovantOwnerOnlyBesideLinkException` (`linkClientId`); 409 `hub_scale_out_breaks_links` is `ThalovantHubScaleOutBreaksLinksException` (`links`); 409 `idempotency_key_spent` is `ThalovantIdempotencyKeySpentException`; 422 `skill_config_private_hub_only` is `ThalovantPrivateHubOnlyException` (`settings`). A code not listed stays a plain `ThalovantApiException`. `ConnectionProblemCode` exports the codes.
+- `ConnectorConnectionsTest` (15 tests) mirrors the reference's cases; there are no shared vectors for this capability. `contracts/sdk-parity.json` acknowledges the candidate digest and binds the new `connector-connections` capability.
+
 ## 0.10.0
 
 The Python reference's 0.11.0 round (thalovant-python-sdk#113 at `39e31d8`, reference digest `57c7e71f6456…` → `6dfb3bb31ac7…`).
