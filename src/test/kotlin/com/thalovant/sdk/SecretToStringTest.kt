@@ -89,7 +89,8 @@ class SecretToStringTest {
         val begun = NativeSignIn.begin(clientId = "sdk", redirectUri = "myapp://auth")
         for (rendered in listOf(begun.toString(), "$begun", listOf(begun).toString(), mapOf("k" to begun).toString())) {
             assertFalse(begun.verifier in rendered, "Begun printed its verifier: $rendered")
-            assertTrue("state=<redacted>" in rendered, "Begun printed its state: $rendered")
+            assertFalse(begun.state in rendered, "Begun printed its state (the URL carries it too): $rendered")
+            assertTrue("state=<redacted>" in rendered, "Begun did not mark the state: $rendered")
         }
         // The values stay reachable, and a copy is still equal.
         assertTrue(begun.verifier.isNotEmpty() && begun.copy() == begun)

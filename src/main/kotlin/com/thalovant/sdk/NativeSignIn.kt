@@ -112,7 +112,8 @@ public object NativeSignIn {
          * still return the real values.
          */
         override fun toString(): String =
-            "Begun(authorizationUrl=$authorizationUrl, state=<redacted>, verifier=<redacted>, redirectUri=$redirectUri)"
+            "Begun(authorizationUrl=${authorizationUrl.replace(Regex("([?&]state=)[^&#]*"), "$1<redacted>")}, " +
+                "state=<redacted>, verifier=<redacted>, redirectUri=$redirectUri)"
 
         /**
          * The authorization code out of the redirect the browser came back
