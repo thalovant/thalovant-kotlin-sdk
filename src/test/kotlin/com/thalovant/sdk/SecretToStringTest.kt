@@ -3,6 +3,7 @@ package com.thalovant.sdk
 import kotlin.test.Test
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
+import kotlin.test.assertTrue
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonObject
@@ -81,5 +82,17 @@ class SecretToStringTest {
     fun `ThalovantControlPlane toString does not leak the access token`() {
         val api = ThalovantControlPlane(accessToken = "access-token-SECRET")
         assertNoSecrets("ThalovantControlPlane", api.toString())
+    }
+
+    @Test
+    fun `a begun browser sign-in does not print its verifier or state`() {
+        val begun = NativeSignIn.begin(clientId = "sdk", redirectUri = "myapp://auth")
+        for (rendered in listOf(begun.toString(), "$begun", listOf(begun).toString(), mapOf("k" to begun).toString())) {
+            assertFalse(begun.verifier in rendered, "Begun printed its verifier: $rendered")
+            assertFalse(begun.state in rendered, "Begun printed its state (the URL carries it too): $rendered")
+            assertTrue("state=<redacted>" in rendered, "Begun did not mark the state: $rendered")
+        }
+        // The values stay reachable, and a copy is still equal.
+        assertTrue(begun.verifier.isNotEmpty() && begun.copy() == begun)
     }
 }

@@ -29,3 +29,7 @@ Open the printed URL (`Opening your browser to sign in to Thalovant. If it does 
 
 **The consent page sent back an error. Why is `errorCode` null?**
 A single `error=access_denied` is a denial: it throws `ThalovantDeviceLoginDeniedException`, which has no `errorCode` at all. Any other `error` fails the sign-in with a `ThalovantApiException` with no status. Its `errorCode` is the error when it is one of RFC 6749's codes (`invalid_request`, `unauthorized_client`, `unsupported_response_type`, `invalid_scope`, `server_error`, `temporarily_unavailable`, or an `access_denied` given more than once), and null otherwise. Anything else is a value the page chose, which could be the state or a code, so it never reaches an error.
+
+## Does printing `NativeSignIn.Begun` leak the PKCE verifier?
+
+Not from 0.11.2: `toString()` shows `<redacted>` for `verifier` and `state`. 0.11.1 and earlier printed them (the class is a `data class`).

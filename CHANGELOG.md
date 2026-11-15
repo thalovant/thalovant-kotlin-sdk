@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.11.2
+
+- Security hardening: upgrading from 0.11.1 is advised; 0.11.1 stays published. Connector docs name `jellyfin` and `music_assistant`.
+- `NativeSignIn.Begun` is a `data class`, so its generated `toString()` printed the PKCE `verifier` (found by installing 0.11.1 from Maven Central and printing it). It now prints `<redacted>` for `verifier` and `state`; the properties, `copy()` and `componentN()` are unchanged. Evidence: `SecretToStringTest`.
+
 ## 0.11.1
 
 - Automated patch release of the unreleased changes on `main` since v0.11.0.

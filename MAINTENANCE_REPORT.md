@@ -1,5 +1,13 @@
 # Maintenance Report
 
+## 2026-11-15: `NativeSignIn.Begun` printed its PKCE verifier (0.11.2)
+
+Resolved `com.thalovant:thalovant-sdk:0.11.1` from Maven Central into a consumer project and printed every secret-bearing result: `BootstrapIdentityResult`, `ThalovantIdentity`, `MqttBrokerCredentials`, `ThalovantControlPlane`, `DeviceAuthorization` and `asJson()` were clean (plain classes with hand-written `toString`); `NativeSignIn.Begun` (`NativeSignIn.kt`) is a `data class` and printed `verifier`. Fix: an explicit `toString()` on `Begun`. `contracts/sdk-parity.json` has the new `NativeSignIn.kt` hash (browser-login capability); the parity check passes. Version is bumped by the release workflow.
+
+Verification: `./gradlew test` (JDK 17.0.21, Gradle 9.2): 450 tests, 0 failed; one new test in `SecretToStringTest`. Not verified against a live API.
+
+Transparency Report: AI model Claude Sonnet 5.5; actions: reproduced from the published artifact, added the `toString`, test and docs; oversight: PR review and CI only.
+
 ## 2026-11-14: connector-connections (0.11.0)
 
 Ported from the Python reference (0.13.0, digest `8687c8429e28`): the `connector` kind, replay detection, `serves`, and the typed connection refusals (see CHANGELOG.md). Files: `ControlPlane.kt`, `Errors.kt`, `Constants.kt`, `build.gradle.kts`, `README.md`, new `ConnectorConnectionsTest.kt`, `contracts/sdk-parity.json`. Verification: `./gradlew test` passed, 448 tests (433 before, 15 new), and `check-sdk-parity.py --consumer thalovant-kotlin-sdk` verifies. Depends on thalovant-api #521 (not deployed); safe against the old API.

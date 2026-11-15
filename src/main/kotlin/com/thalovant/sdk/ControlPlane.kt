@@ -313,7 +313,7 @@ public const val CONNECTION_TYPE_HOME_ASSISTANT: String = "home_assistant"
 
 /**
  * `spec.connection_type` of a home bridge: a link that serves the connector ids
- * in `spec.connectors` (`music_assistant` today). Home Assistant has the kind
+ * in `spec.connectors` (`jellyfin` and `music_assistant` today). Home Assistant has the kind
  * above and is never one of a bridge's connectors.
  */
 public const val CONNECTION_TYPE_CONNECTOR: String = "connector"
