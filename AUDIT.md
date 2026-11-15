@@ -1,5 +1,9 @@
 # Audit
 
+## 2026-11-15: fixed in 0.11.2, `NativeSignIn.Begun.toString()` printed the verifier
+
+`Begun` (`NativeSignIn.kt`) is a `data class`; the generated `toString()` printed `verifier` and `state`. Now redacted; `SecretToStringTest` pins it. Open: serializer reflection (Jackson, Gson) over getters is not guarded; the SDK's own `asJson()` forms redact.
+
 These findings come from the CodeRabbit threads on merged PRs #35, #37, #41 and #46, and from the browser sign-in round (0.10.0). They were checked against the code and against `./gradlew build`, which passes 433 tests at the time of writing (branch `feat/browser-sign-in`, 2026-11-08, JVM 17 and 21).
 
 ## Browser sign-in (0.10.0)

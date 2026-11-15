@@ -106,6 +106,15 @@ public object NativeSignIn {
         public val redirectUri: String,
     ) {
         /**
+         * The generated `data class` form would print [verifier] and [state],
+         * this attempt's two secrets, into any log line or stack trace. They
+         * show as `<redacted>`; the properties, `copy()` and `componentN()`
+         * still return the real values.
+         */
+        override fun toString(): String =
+            "Begun(authorizationUrl=$authorizationUrl, state=<redacted>, verifier=<redacted>, redirectUri=$redirectUri)"
+
+        /**
          * The authorization code out of the redirect the browser came back
          * with, or null when it is not an answer to this attempt.
          *
